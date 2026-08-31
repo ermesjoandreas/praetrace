@@ -22,10 +22,21 @@ export interface ViewResponse {
 let origin: Promise<string> | null = null;
 
 export function serverOrigin(): Promise<string> {
-  origin ??= isTauri()
-    ? invoke<number>('get_server_port').then((port) => `http://127.0.0.1:${port}`)
-    : Promise.resolve('');
+  origin ??= resolveOrigin();
   return origin;
+}
+
+function resolveOrigin(): Promise<string> {
+  if (!isTauri()) return Promise.resolve('');
+
+  return invoke<number>('get_server_port')
+    .then((port) => `http://127.0.0.1:${port}`)
+    .catch((cause: unknown) => {
+      // A cached rejection would disable every request for the life of the page.
+      // The sidecar can still be starting, so the next caller gets a fresh try.
+      origin = null;
+      throw cause;
+    });
 }
 
 export async function fetchView(search: string): Promise<ViewResponse> {
@@ -95,12 +106,37 @@ export async function installHook(): Promise<HookStatus> {
 }
 
 /**
+ * Which editor a project opens in. Stored per project and resolved once per
+ * root; `vscode` unless the project says otherwise. Rust allowlists the same
+ * two schemes, so an unrecognised value falls back rather than being refused.
+ */
+const SCHEMES = ['vscode', 'cursor'] as const;
+
+let cachedScheme: { root: string; scheme: string } | null = null;
+
+async function editorScheme(root: string): Promise<string> {
+  if (!isDesktop) return 'vscode';
+  if (cachedScheme?.root === root) return cachedScheme.scheme;
+
+  const settings = await invoke<{ editor?: unknown }>('project_settings', { path: root }).catch(
+    () => ({}) as { editor?: unknown },
+  );
+  const scheme = SCHEMES.find((known) => known === settings.editor) ?? 'vscode';
+  cachedScheme = { root, scheme };
+  return scheme;
+}
+
+/**
  * Deep-links into the editor. The line comes from the graph, so a symbol opens
  * on its own declaration rather than at the top of the file.
  */
 export async function openInEditor(root: string, filePath: string, line: number): Promise<void> {
-  // encodeURI keeps the separators and escapes spaces, which paths do contain.
-  const url = `vscode://file${encodeURI(`${root}/${filePath}`)}:${line}`;
+  const scheme = await editorScheme(root);
+  // Per segment, because encodeURI deliberately preserves the URI-reserved set —
+  // and `#` and `?` are both legal in a filename, where either would truncate
+  // the path or turn the rest of it into a fragment.
+  const encoded = `${root}/${filePath}`.split('/').map(encodeURIComponent).join('/');
+  const url = `${scheme}://file${encoded}:${line}`;
 
   if (isDesktop) {
     await invoke('open_in_editor', { url });

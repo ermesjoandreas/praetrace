@@ -34,6 +34,8 @@ export function App() {
   const socketRef = useRef<WebSocket | null>(null);
   /** Files the view covered before the update now being processed. */
   const coveredRef = useRef(new Set<string>());
+  /** The spec of the view on screen, so a push computed for an older one is refused. */
+  const specRef = useRef<string | null>(null);
 
   // The view lives in the URL, so the back button is the navigation history.
   useEffect(() => {
@@ -49,6 +51,7 @@ export function App() {
       (result) => {
         if (cancelled) return;
         coveredRef.current = new Set(result.view.nodes.flatMap((node) => node.files));
+        specRef.current = JSON.stringify(result.view.spec);
         setData(result);
         setError(null);
       },
@@ -105,12 +108,23 @@ export function App() {
           setMissed([]);
           setPulsing([]);
           coveredRef.current = new Set(message.view.nodes.flatMap((node) => node.files));
+          specRef.current = JSON.stringify(message.view.spec);
           setData({ root: message.root, view: message.view });
           setError(null);
           return;
         }
 
         if (message.type !== 'update') return;
+
+        // The server computes each push from the spec it currently holds for this
+        // socket, and that lags a navigation until the new spec has been sent.
+        // Applying such a frame would silently revert the view, so it is refused
+        // and a refetch takes its place rather than losing the update.
+        const incoming = JSON.stringify(message.view.spec);
+        if (specRef.current !== null && incoming !== specRef.current) {
+          setReloadToken((token) => token + 1);
+          return;
+        }
 
         const after = new Set(message.view.nodes.flatMap((node) => node.files));
         // A file the view held a moment ago counts as in-view even when the

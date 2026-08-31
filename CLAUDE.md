@@ -246,10 +246,11 @@ chokidar watcher ─────────────────────
 
 ## Desktop shell (phase D, in progress)
 
-Items 1-5 are done: the Tauri shell exists, it owns a Node sidecar on an
-OS-assigned port, the project is chosen at runtime, the app installs the Claude
-Code hook itself, and boxes deep-link into the editor. Item 6 (local
-persistence) is not started.
+All six items are done. The app launches, picks a project through a native
+dialog, starts its sidecar on an OS-assigned port, renders the graph, updates
+live from both the hook and the watcher, opens files in the editor on click,
+remembers what it should between launches, and exits without leaving a stray
+Node process.
 
 ```
 Tauri shell (Rust — process lifecycle, nothing else)
@@ -292,6 +293,32 @@ around the session history that phase 1 of VISION.md will need. A list of paths
 is not a reason to improvise that schema early. On launch the app opens the most
 recent directory that still exists; with none, an empty placeholder directory —
 never $HOME, which would set a parser pool loose on the whole filesystem.
+
+**Local persistence.** `src-tauri/src/store.rs` keeps recent projects, window
+state and per-project settings in SQLite under the app config directory.
+
+SQLite rather than more JSON files because of what comes next: session diff
+(`VISION.md`, phase 1) records many rows per project over time and wants to query
+them by project and by date. The schema is shaped for that now, so it arrives
+without a migration — `project` carries a surrogate `id` from day one purely so a
+later `session(project_id REFERENCES project(id))` needs no back-fill. Recents as
+a bare list of paths, which is all this phase needs, would have forced exactly
+that rewrite later.
+
+Item 3's `recent-projects.json` is imported once on first open and then deleted,
+so the two cannot drift. The import assigns distinct descending timestamps: a
+whole import lands inside one second, and equal timestamps left the recency order
+to whatever SQLite happened to return.
+
+Window geometry is tracked in memory — recorded once at startup and on every
+resize or move — and written once on exit, rather than a database write per frame
+of a drag. A restored position is checked against the attached monitors first,
+since a saved position can name a screen that is no longer there.
+
+Per-project settings are a JSON column, read and written whole for one project at
+a time and never queried across projects. Its first consumer is the editor
+scheme, which is why `openInEditor` asks for it rather than hard-coding
+`vscode://`. There is no UI for changing it yet.
 
 **Editor deep links.** A click on a box already navigates the graph, so opening
 an editor uses a different target: clicking a **symbol** opens its file at that
@@ -452,6 +479,17 @@ either way, so the hook failing silently costs latency, not correctness.
   still costs a parse and a publish.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
+- **Saving window state on quit is unverified.** Driving or quitting a native
+  window from outside needs macOS accessibility permission, which is not granted
+  here, so the restore path was proved from a log line and the save path only by
+  reading. Check it by resizing, quitting with Cmd-Q, and relaunching.
+- `codemap.db-wal` and `-shm` are left behind on exit: Tauri leaves through
+  `std::process::exit`, so no final checkpoint runs. Harmless — the commits are
+  already durable and the next open recovers — but the files persist.
+- Errors in the persistence layer are swallowed. A read-only or full config
+  directory loses a remembered preference silently rather than saying so.
+- `schema_version` is written but never read. There is a place to put an upgrade,
+  not an upgrade path.
 - Grouping keys off the directory tree only. There is no filtering by name, kind
   or path glob, and a flat directory above the threshold cannot be grouped at all
   (it now reports `grouped: false` honestly rather than claiming otherwise).
