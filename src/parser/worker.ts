@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { parentPort } from 'node:worker_threads';
 import { parseSource } from './extract.js';
 import type { ParseRequest, ParseResponse } from './types.js';
@@ -18,7 +18,12 @@ async function handle(request: ParseRequest): Promise<ParseResponse> {
     // Reading here rather than on the main thread keeps all per-file work,
     // I/O included, off the event loop the collector runs on.
     const source = request.source ?? (await readFile(request.absolutePath, 'utf8'));
-    return { id: request.id, ok: true, parsed: parseSource(request.filePath, source) };
+    const modifiedAt = await stat(request.absolutePath).then((s) => s.mtimeMs, () => 0);
+    return {
+      id: request.id,
+      ok: true,
+      parsed: parseSource(request.filePath, source, modifiedAt),
+    };
   } catch (error) {
     return { id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) };
   }

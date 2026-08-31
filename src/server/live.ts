@@ -1,4 +1,5 @@
 import type { GraphStore } from '../graph/store.js';
+import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
 
@@ -11,7 +12,7 @@ export interface LiveSocket {
 const OPEN = 1;
 
 /** What a client is shown when it connects, and after a project switch. */
-export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, showCalls: false };
+export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER };
 
 export interface LiveHub {
   add(socket: LiveSocket, spec: ViewSpec): void;
@@ -46,7 +47,9 @@ export function createLiveHub(getSession: () => { root: string; store: GraphStor
       JSON.stringify({
         type,
         root: session.root,
-        view: selectView(session.store.graph, spec),
+        // Recomputed per push, so a "changed in the last 5 minutes" filter keeps
+        // meaning five minutes from now rather than five minutes from when it was set.
+        view: selectView(session.store.graph, spec, Date.now()),
         changedFiles,
       }),
     );

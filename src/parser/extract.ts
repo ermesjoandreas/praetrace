@@ -161,7 +161,7 @@ function collectTopLevel(node: Node, imports: string[], symbols: ParsedSymbol[])
   }
 }
 
-export function parseSource(filePath: string, source: string): ParsedFile {
+export function parseSource(filePath: string, source: string, modifiedAt = 0): ParsedFile {
   const tree = parserFor(filePath).parse(source);
   const imports: string[] = [];
   const symbols: ParsedSymbol[] = [];
@@ -170,5 +170,11 @@ export function parseSource(filePath: string, source: string): ParsedFile {
     collectTopLevel(child, imports, symbols);
   }
 
-  return { filePath, imports, symbols, lineCount: tree.rootNode.endPosition.row + 1 };
+  return {
+    filePath,
+    imports,
+    symbols,
+    lineCount: tree.rootNode.endPosition.row + 1,
+    modifiedAt,
+  };
 }

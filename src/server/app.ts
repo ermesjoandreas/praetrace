@@ -6,6 +6,11 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
 import { describe } from '../view/detail.js';
+import {
+  DEFAULT_EDGE_KINDS,
+  parseDuration,
+  type ViewFilter,
+} from '../view/filter.js';
 import { search } from '../view/search.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -38,7 +43,9 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const session = host.current();
     return {
       root: session.root,
-      view: selectView(session.store.graph, toSpec(request.query as Record<string, unknown>)),
+      // The cutoff for "changed recently" is computed per request, so a stored
+      // spec does not freeze time at the moment it was set.
+      view: selectView(session.store.graph, toSpec(request.query as Record<string, unknown>), Date.now()),
     };
   });
 
@@ -130,8 +137,30 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     scope: typeof raw['scope'] === 'string' ? raw['scope'] : '',
     focus,
     depth: readDepth(raw['depth']),
-    showCalls: raw['calls'] === '1' || raw['calls'] === true,
+    filter: toFilter(raw),
   };
+}
+
+const NODE_KINDS = ['class', 'function', 'interface', 'type'] as const;
+const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls'] as const;
+
+/** Every field is user input, from a query string or a socket frame. */
+function toFilter(raw: Record<string, unknown>): ViewFilter {
+  const edges = readList(raw['edges'], EDGE_KINDS);
+
+  return {
+    hidePath: typeof raw['hide'] === 'string' ? raw['hide'] : '',
+    onlyPath: typeof raw['only'] === 'string' ? raw['only'] : '',
+    kinds: readList(raw['kinds'], NODE_KINDS),
+    edgeKinds: edges.length > 0 ? edges : DEFAULT_EDGE_KINDS,
+    sinceMs: typeof raw['since'] === 'string' ? parseDuration(raw['since']) : 0,
+  };
+}
+
+function readList<T extends string>(raw: unknown, allowed: readonly T[]): T[] {
+  if (typeof raw !== 'string' || raw === '') return [];
+  const wanted = new Set(raw.split(','));
+  return allowed.filter((value) => wanted.has(value));
 }
 
 function readDepth(raw: unknown): number {

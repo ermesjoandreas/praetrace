@@ -1,4 +1,5 @@
 import type { EdgeKind, NodeKind } from '../graph/types.js';
+import type { ViewFilter } from './filter.js';
 
 /**
  * Which slice of the graph to show. Carried in the page URL, so navigation is
@@ -11,11 +12,8 @@ export interface ViewSpec {
   focus: string | null;
   /** Hops from the focus, following imports in both directions. */
   depth: number;
-  /**
-   * Draw who calls whom, not just who imports whom. Off by default: at file
-   * granularity most calls follow an import, so it is extra ink until asked for.
-   */
-  showCalls: boolean;
+  /** What to leave out. Filtering is not navigating. */
+  filter: ViewFilter;
 }
 
 export interface ViewMember {

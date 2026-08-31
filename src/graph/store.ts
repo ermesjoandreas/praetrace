@@ -56,6 +56,7 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
       name: path.posix.basename(parsed.filePath),
       filePath: parsed.filePath,
       range: { startLine: 1, endLine: parsed.lineCount },
+      modifiedAt: parsed.modifiedAt,
     });
 
     const byName = new Map<string, string>();

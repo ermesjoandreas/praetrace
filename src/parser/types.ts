@@ -27,6 +27,9 @@ export interface ParsedFile {
   imports: string[];
   symbols: ParsedSymbol[];
   lineCount: number;
+  /** Unix milliseconds from the filesystem, so "changed recently" survives a
+   * restart and covers edits made before the app was even open. */
+  modifiedAt: number;
 }
 
 /** Message shapes exchanged with the parser worker threads. */

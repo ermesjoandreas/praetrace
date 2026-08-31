@@ -15,6 +15,8 @@ export interface GraphNode {
   /** POSIX path relative to the scanned root, so ids do not vary by machine. */
   filePath: string;
   range: { startLine: number; endLine: number };
+  /** File nodes only: unix milliseconds of the last write. */
+  modifiedAt?: number;
 }
 
 export interface GraphEdge {

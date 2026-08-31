@@ -1,4 +1,5 @@
 import type { Graph } from '../graph/types.js';
+import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
 import type { ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
 
 /**
@@ -17,9 +18,12 @@ const GROUP_THRESHOLD = 40;
  *
  * Pure, so a view can be checked without a browser.
  */
-export function selectView(graph: Graph, spec: ViewSpec): ViewGraph {
-  const files = collectFiles(graph);
-  const edges = liftEdgesToFiles(graph, spec.showCalls);
+export function selectView(graph: Graph, spec: ViewSpec, now: number): ViewGraph {
+  const files = collectFiles(graph, spec.filter, now);
+  // Edges to a file the filter removed would point at a box that is not there.
+  const edges = liftEdgesToFiles(graph, spec.filter).filter(
+    (edge) => files.has(edge.from) && files.has(edge.to),
+  );
 
   if (spec.focus !== null && files.has(spec.focus)) {
     return focusView(spec, files, edges);
@@ -35,17 +39,24 @@ interface FileEdge {
 }
 
 /** File path -> the symbols it declares, in declaration order. */
-function collectFiles(graph: Graph): Map<string, ViewMember[]> {
+function collectFiles(graph: Graph, filter: ViewFilter, now: number): Map<string, ViewMember[]> {
   const files = new Map<string, ViewMember[]>();
 
   for (const node of graph.nodes.values()) {
-    if (node.kind === 'file') {
-      if (!files.has(node.filePath)) files.set(node.filePath, []);
-    }
+    if (node.kind !== 'file') continue;
+    if (!keepsFile(node.filePath, node.modifiedAt ?? 0, filter, now)) continue;
+    if (!files.has(node.filePath)) files.set(node.filePath, []);
   }
   for (const node of graph.nodes.values()) {
-    if (node.kind === 'file') continue;
+    if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
     files.get(node.filePath)?.push({ name: node.name, kind: node.kind, line: node.range.startLine });
+  }
+
+  // With a kind filter on, a file left holding nothing is not worth a box.
+  if (filter.kinds.length > 0) {
+    for (const [filePath, members] of [...files]) {
+      if (members.length === 0) files.delete(filePath);
+    }
   }
 
   return files;
@@ -59,12 +70,12 @@ function collectFiles(graph: Graph): Map<string, ViewMember[]> {
  * take the same path on screen, and "calls twelve things in here" says more
  * than "imported a type from here", which is all an import on its own tells you.
  */
-function liftEdgesToFiles(graph: Graph, showCalls: boolean): FileEdge[] {
+function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
   const byKey = new Map<string, FileEdge>();
+  const showCalls = keepsEdge('calls', filter);
 
   for (const edge of graph.edges) {
-    if (edge.kind === 'contains') continue;
-    if (edge.kind === 'calls' && !showCalls) continue;
+    if (edge.kind === 'contains' || !keepsEdge(edge.kind, filter)) continue;
 
     const from = graph.nodes.get(edge.from)?.filePath;
     const to = graph.nodes.get(edge.to)?.filePath;
@@ -227,7 +238,7 @@ function scopeView(
   return {
     nodes: boxes,
     edges: [...aggregated.values()],
-    spec: { scope, focus: null, depth: spec.depth, showCalls: spec.showCalls },
+    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter },
     trail: trailFor(scope),
     totalFiles: inScope.length,
     // Whether grouping actually happened, not whether it was attempted. A flat

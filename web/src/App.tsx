@@ -21,6 +21,8 @@ import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
 const nodeTypes = { box: BoxNode };
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
+/** The default edge kinds plus calls; the button is a shortcut for this set. */
+const CALL_EDGES = 'imports,extends,implements,calls';
 
 interface LiveMessage {
   /** `project` means the server switched roots; every path on screen is stale. */
@@ -189,7 +191,8 @@ export function App() {
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
-  const showCalls = view?.spec.showCalls ?? false;
+  // The calls button is one case of the edge filter, not a flag of its own.
+  const showCalls = view?.spec.filter.edgeKinds.includes('calls') ?? false;
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
 
   // Tell the server which slice this client is looking at, so its updates are
@@ -282,7 +285,7 @@ export function App() {
         params.set('focus', target);
         if (depth !== 1) params.set('depth', String(depth));
       }
-      if (showCalls) params.set('calls', '1');
+      if (showCalls) params.set('edges', CALL_EDGES);
       navigate(params);
     },
     [navigate, depth, showCalls],
@@ -297,7 +300,7 @@ export function App() {
     (scope: string) => {
       const params = new URLSearchParams();
       if (scope !== '') params.set('scope', scope);
-      if (showCalls) params.set('calls', '1');
+      if (showCalls) params.set('edges', CALL_EDGES);
       navigate(params);
     },
     [navigate, showCalls],
@@ -309,7 +312,7 @@ export function App() {
       const params = new URLSearchParams();
       params.set('focus', focus);
       if (next !== 1) params.set('depth', String(next));
-      if (showCalls) params.set('calls', '1');
+      if (showCalls) params.set('edges', CALL_EDGES);
       navigate(params);
     },
     [focus, navigate, showCalls],
@@ -327,8 +330,8 @@ export function App() {
   const toggleCalls = useCallback(() => {
     // Built from the live URL so every other part of the view survives the flip.
     const params = new URLSearchParams(window.location.search);
-    if (params.get('calls') === '1') params.delete('calls');
-    else params.set('calls', '1');
+    if (params.get('edges') === CALL_EDGES) params.delete('edges');
+    else params.set('edges', CALL_EDGES);
     navigate(params);
   }, [navigate]);
 
