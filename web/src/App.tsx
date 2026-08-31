@@ -1,7 +1,7 @@
 import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { fetchView, type ViewGraph, type ViewResponse } from './api';
+import { fetchView, liveUrl, type ViewGraph, type ViewResponse } from './api';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
 
@@ -64,11 +64,12 @@ export function App() {
     let attempt = 0;
     let disposed = false;
 
-    const connect = (): void => {
+    const connect = async (): Promise<void> => {
       if (disposed) return;
 
-      const url = new URL('/live', window.location.href);
-      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = await liveUrl();
+      if (disposed) return;
+
       socket = new WebSocket(url);
       socketRef.current = socket;
 
@@ -87,7 +88,7 @@ export function App() {
         // back on its own rather than needing a reload.
         const delay = Math.min(500 * 2 ** attempt, 10_000);
         attempt += 1;
-        retry = window.setTimeout(connect, delay);
+        retry = window.setTimeout(() => void connect(), delay);
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
@@ -109,7 +110,7 @@ export function App() {
       };
     };
 
-    connect();
+    void connect();
 
     return () => {
       disposed = true;

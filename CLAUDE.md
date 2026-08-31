@@ -162,6 +162,10 @@ npm run dev:web                   # vite dev server, proxies /api to a running s
 npm run codemap -- <dir>          # the same graph as text
 npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
+
+node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
+npm run tauri dev                 # the desktop app
+npm run tauri build               # bundled app
 ```
 
 ## Layout
@@ -224,6 +228,47 @@ chokidar watcher ─────────────────────
   response is 200, including for payloads the endpoint cannot use.
 - The hook's URL hard-codes port 4400. Running the server on another port means
   the hook silently misses and only the watcher feeds the graph.
+
+## Desktop shell (phase D, in progress)
+
+Items 1 and 2 are done: the Tauri shell exists, and it owns a Node sidecar on an
+OS-assigned port. Items 3-6 (project picker, hook installation, editor deep
+links, local persistence) are not started.
+
+```
+Tauri shell (Rust — process lifecycle, nothing else)
+  ├── spawns the Node sidecar, reads its port from stdout
+  ├── exposes get_server_port() to the webview
+  └── webview → the same React page the browser serves
+                  ↓ HTTP + websocket on the OS-assigned port
+      Node sidecar — dist/server/main.js, unchanged in substance
+```
+
+**The server is not bundled into a single executable.** Node SEA on Node 24 runs
+CommonJS only and this app is ESM throughout; it also cannot spawn a worker from
+its own blob, which is exactly what `parser/pool.ts` does, and it cannot see
+tree-sitter's native addon because node-gyp-build resolves it with a runtime
+filesystem scan. A working SEA was built during research, but only by rewriting
+third-party package internals that `npm install` overwrites. pkg is archived.
+
+Instead `scripts/prepare-sidecar.mjs` produces a real Node binary from the one
+running the script — thinned with `lipo` and ad-hoc signed, or macOS SIGKILLs it
+— and the app's own `dist/` ships beside it as a Tauri resource. Both hard
+constraints stop being constraints: worker_threads loads a real sibling file, and
+the addons are found exactly as in development. The binary is 111 MB, generated
+rather than committed, and gitignored.
+
+**The port contract.** `--port=0` asks the OS to assign one; the server prints
+`codemap-port=<n>` as its first stdout line and Rust parses that. The CLI default
+is still 4400. Nothing in the web page hard-codes a port: it calls
+`get_server_port` under Tauri and uses relative URLs everywhere else, which is
+what keeps the same page working when Fastify serves it directly.
+
+**No orphaned processes.** Rust kills the child on `RunEvent::Exit`, and the
+sidecar additionally runs with `--exit-on-stdin-close`: Rust holds the stdin
+pipe, so if the app dies without getting to kill anything, the pipe closes and
+the server exits. Verified by SIGKILLing the app, which skips the exit handler
+entirely — the sidecar still went away and released its port.
 
 ## The view layer
 
