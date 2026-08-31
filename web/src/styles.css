@@ -195,3 +195,16 @@ main { position: relative; flex: 1; min-height: 0; }
 @media (prefers-reduced-motion: reduce) {
   .box-changed { animation: none; }
 }
+
+/* React Flow's minimap and attribution ship light-theme fills that ignore the
+   container background, so they are overridden rather than merely re-coloured. */
+.react-flow__minimap {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.react-flow__minimap-mask { fill: rgba(20, 22, 26, 0.68); }
+.react-flow__minimap-node { fill: var(--line-strong); stroke: none; }
+
+.react-flow__attribution { background: transparent; }
+.react-flow__attribution a { color: var(--line-strong); }
