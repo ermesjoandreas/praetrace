@@ -121,13 +121,16 @@ fn position_is_visible(window: &WebviewWindow, x: i32, y: i32) -> bool {
     let Ok(monitors) = window.available_monitors() else {
         return false;
     };
+    // Monitor bounds are physical; the saved position is logical. Comparing the
+    // two directly rejects a perfectly good position on a Retina display, and
+    // accepts a bad one on a scaled external.
     monitors.iter().any(|monitor| {
-        let origin = monitor.position();
-        let size = monitor.size();
-        x >= origin.x
-            && y >= origin.y
-            && x < origin.x + size.width as i32
-            && y < origin.y + size.height as i32
+        let scale = monitor.scale_factor();
+        let origin = monitor.position().to_logical::<f64>(scale);
+        let size = monitor.size().to_logical::<f64>(scale);
+        let (x, y) = (f64::from(x), f64::from(y));
+
+        x >= origin.x && y >= origin.y && x < origin.x + size.width && y < origin.y + size.height
     })
 }
 
@@ -221,10 +224,14 @@ fn server_entry(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// The project to open on launch. The picker replaces it from then on.
-fn initial_project_root(app: &AppHandle) -> PathBuf {
+/// The project to open on launch, and whether it is one the user actually chose.
+///
+/// Only a chosen project belongs in the recents list. The development fallback
+/// and the empty placeholder are conveniences, and writing them in would put a
+/// directory the user has never heard of at the top of their own menu.
+fn initial_project_root(app: &AppHandle) -> (PathBuf, bool) {
     if let Ok(explicit) = std::env::var("CODEMAP_PROJECT") {
-        return PathBuf::from(explicit);
+        return (PathBuf::from(explicit), true);
     }
     if let Some(recent) = app
         .state::<Store>()
@@ -232,10 +239,10 @@ fn initial_project_root(app: &AppHandle) -> PathBuf {
         .into_iter()
         .find(|path| PathBuf::from(path).is_dir())
     {
-        return PathBuf::from(recent);
+        return (PathBuf::from(recent), true);
     }
     if cfg!(debug_assertions) {
-        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+        return (PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."), false);
     }
 
     // Nothing opened yet. An empty directory keeps the server on one code path
@@ -247,17 +254,19 @@ fn initial_project_root(app: &AppHandle) -> PathBuf {
         .map(|dir| dir.join("no-project"))
         .unwrap_or_else(|_| std::env::temp_dir().join("codemap-no-project"));
     let _ = std::fs::create_dir_all(&placeholder);
-    placeholder
+    (placeholder, false)
 }
 
 fn spawn_server(app: &AppHandle) -> Result<(), String> {
     let entry = server_entry(app)?;
-    let root = initial_project_root(app);
+    let (root, chosen) = initial_project_root(app);
 
-    // Launching into a project counts as using it. Without this only an
-    // explicit switch moved a project up the list, so the order drifted away
-    // from what "recent" means.
-    app.state::<Store>().remember_project(&root.to_string_lossy());
+    // Launching into a project counts as using it, so its place in the list
+    // reflects use rather than only explicit switches. Fallback roots are not
+    // projects the user picked and stay out of the list entirely.
+    if chosen {
+        app.state::<Store>().remember_project(&root.to_string_lossy());
+    }
 
     let (mut events, child) = app
         .shell()
@@ -375,13 +384,20 @@ pub fn run() {
                         app.state::<Store>().save_window_state(state);
                     }
                 }
-                // Killing the child explicitly, rather than relying on the pipe
-                // closing, so a clean quit never leaves a Node process behind.
+                // Dropped, not killed. Dropping closes our end of the sidecar's
+                // stdin, which is the signal it already listens for, so it runs
+                // its own shutdown and removes .claude/codemap.port. kill() is
+                // SIGKILL, which skipped that and left the file naming a dead
+                // port for the hook — and later, possibly someone else's.
                 if let Ok(mut child) = app.state::<Server>().child.lock() {
                     if let Some(child) = child.take() {
-                        let _ = child.kill();
+                        drop(child);
                     }
                 }
+                // Long enough for that cleanup to land before we disappear. The
+                // closed pipe guarantees the exit either way; this only makes the
+                // common case tidy rather than eventually tidy.
+                std::thread::sleep(Duration::from_millis(300));
             }
         });
 }

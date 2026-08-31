@@ -338,11 +338,15 @@ is still 4400. Nothing in the web page hard-codes a port: it calls
 `get_server_port` under Tauri and uses relative URLs everywhere else, which is
 what keeps the same page working when Fastify serves it directly.
 
-**No orphaned processes.** Rust kills the child on `RunEvent::Exit`, and the
-sidecar additionally runs with `--exit-on-stdin-close`: Rust holds the stdin
-pipe, so if the app dies without getting to kill anything, the pipe closes and
-the server exits. Verified by SIGKILLing the app, which skips the exit handler
-entirely — the sidecar still went away and released its port.
+**No orphaned processes, and no killing either.** On exit Rust *drops* the child
+rather than killing it. Dropping closes our end of the sidecar's stdin, which is
+the signal `--exit-on-stdin-close` already listens for, so the server runs its
+own shutdown and removes `.claude/codemap.port`. `CommandChild::kill` is SIGKILL,
+which skipped that and left the file naming a dead port — one the hook would keep
+posting to, and that something else could later occupy. Do not "fix" this back to
+a kill. The closed pipe is what guarantees the exit, which is why SIGKILLing the
+app has the same effect: verified, the sidecar still goes away and removes its
+port file.
 
 ## The view layer
 

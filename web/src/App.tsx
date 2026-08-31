@@ -71,10 +71,26 @@ export function App() {
     let attempt = 0;
     let disposed = false;
 
+    const scheduleRetry = (): void => {
+      if (disposed) return;
+      const delay = Math.min(500 * 2 ** attempt, 10_000);
+      attempt += 1;
+      retry = window.setTimeout(() => void connect(), delay);
+    };
+
     const connect = async (): Promise<void> => {
       if (disposed) return;
 
-      const url = await liveUrl();
+      let url: URL;
+      try {
+        url = await liveUrl();
+      } catch {
+        // Resolving the port can fail while the sidecar is still doing its boot
+        // scan. Giving up here would kill the reconnect loop before it ever had
+        // a socket to reconnect, leaving the page permanently dead.
+        scheduleRetry();
+        return;
+      }
       if (disposed) return;
 
       socket = new WebSocket(url);
@@ -90,12 +106,9 @@ export function App() {
 
       socket.onclose = () => {
         setLive(false);
-        if (disposed) return;
         // Restarting the server is routine in a dev loop; the page must come
         // back on its own rather than needing a reload.
-        const delay = Math.min(500 * 2 ** attempt, 10_000);
-        attempt += 1;
-        retry = window.setTimeout(() => void connect(), delay);
+        scheduleRetry();
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
