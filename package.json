@@ -1,0 +1,22 @@
+{
+  "name": "codemap",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "codemap": "./dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "codemap": "node dist/cli/index.js"
+  },
+  "dependencies": {
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}
