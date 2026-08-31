@@ -8,6 +8,9 @@ maintain a mental model of the codebase. This tool rebuilds that model continuou
 
 Runs entirely on localhost. Single user. No auth, no cloud, no multi-tenancy.
 
+Where the product is going is in [VISION.md](VISION.md). That file is the
+destination; this one is the current sprint. When they disagree, this one wins.
+
 ## Architecture — four layers
 
 ```
