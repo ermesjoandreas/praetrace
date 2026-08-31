@@ -7,11 +7,14 @@
     "codemap": "./dist/cli/index.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-public.mjs",
     "typecheck": "tsc --noEmit",
-    "codemap": "node dist/cli/index.js"
+    "codemap": "node dist/cli/index.js",
+    "serve": "node dist/server/main.js"
   },
   "dependencies": {
+    "fastify": "^5.12.1",
+    "mermaid": "^11.17.2",
     "tree-sitter": "^0.25.0",
     "tree-sitter-typescript": "^0.23.2"
   },

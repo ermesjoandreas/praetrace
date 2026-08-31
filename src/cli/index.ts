@@ -3,50 +3,40 @@ import path from 'node:path';
 import { createStore, setFiles } from '../graph/store.js';
 import type { Graph, GraphEdge, GraphNode } from '../graph/types.js';
 import { createParserPool } from '../parser/pool.js';
-import type { ParsedFile } from '../parser/types.js';
-import { findSourceFiles } from './walk.js';
+import { scanProject } from '../project/scan.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const asJson = args.includes('--json');
   const root = path.resolve(args.find((arg) => !arg.startsWith('--')) ?? '.');
 
-  const sourceFiles = await findSourceFiles(root);
-  if (sourceFiles.length === 0) {
+  const startedAt = performance.now();
+  const pool = createParserPool();
+  let scan;
+  try {
+    scan = await scanProject(pool, root);
+  } finally {
+    await pool.close();
+  }
+
+  if (scan.parsed.length === 0 && scan.failures.length === 0) {
     console.error(`codemap: no TypeScript files under ${root}`);
     process.exitCode = 1;
     return;
   }
 
-  const startedAt = performance.now();
-  const pool = createParserPool();
-  const parsed: ParsedFile[] = [];
-  const failures: string[] = [];
-
-  try {
-    const results = await Promise.allSettled(
-      sourceFiles.map((file) => pool.parse(file.filePath, file.absolutePath)),
-    );
-    for (const result of results) {
-      if (result.status === 'fulfilled') parsed.push(result.value);
-      else failures.push(String(result.reason instanceof Error ? result.reason.message : result.reason));
-    }
-  } finally {
-    await pool.close();
-  }
-
   const store = createStore();
-  setFiles(store, parsed);
+  setFiles(store, scan.parsed);
   const elapsedMs = Math.round(performance.now() - startedAt);
 
   if (asJson) {
     console.log(JSON.stringify({ nodes: [...store.graph.nodes.values()], edges: store.graph.edges }, null, 2));
   } else {
-    report(store.graph, root, parsed.length, elapsedMs);
+    report(store.graph, root, scan.parsed.length, elapsedMs);
   }
 
-  for (const failure of failures) console.error(`codemap: ${failure}`);
-  if (failures.length > 0) process.exitCode = 1;
+  for (const failure of scan.failures) console.error(`codemap: ${failure}`);
+  if (scan.failures.length > 0) process.exitCode = 1;
 }
 
 function countBy<T, K extends string>(items: Iterable<T>, key: (item: T) => K): string {

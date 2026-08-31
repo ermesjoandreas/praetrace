@@ -137,16 +137,22 @@ If a task seems to require one of these, stop and ask rather than building it.
 
 # Current state
 
-**MVP step 1 is done: parse a directory of TypeScript files into the graph, CLI
-output only.** Steps 2–4 (Mermaid page, watcher + websocket, hook endpoint) are not
-started.
+**MVP steps 1 and 2 are done.** Step 3 (file watcher + websocket) and step 4 (Claude
+Code hook endpoint) are not started.
+
+1. ✅ Parse a directory of TypeScript files into the graph. CLI output only.
+2. ✅ Render the graph as a static Mermaid class diagram in a browser page.
+3. ⬜ File watcher + websocket so the diagram updates on save.
+4. ⬜ Claude Code hook endpoint.
 
 ## Running it
 
 ```bash
 npm install          # .npmrc pins legacy-peer-deps, see "Dependency note"
-npm run build        # tsc -> dist/
-npm run codemap -- <dir>          # human-readable graph
+npm run build        # tsc -> dist/, then copies the static page
+npm run serve -- <dir>            # browser page on http://127.0.0.1:4400
+npm run serve -- <dir> --port=5000
+npm run codemap -- <dir>          # same graph as text
 npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck
 ```
@@ -164,9 +170,17 @@ src/
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
     worker.ts     worker_threads entry: reads a file, parses it, replies
     pool.ts       fixed pool of parser workers, one file at a time each
-  cli/
+  project/        the project on disk; used by both the CLI and the server
     walk.ts       boot scan of a directory
+    scan.ts       walk + parse everything through the pool
+  render/
+    mermaid.ts    Graph -> Mermaid class diagram source. Pure.
+  cli/
     index.ts      arg handling + text/JSON output
+  server/
+    app.ts        Fastify routes
+    main.ts       arg handling, boot scan, listen
+    public/       the static page (copied to dist by scripts/copy-public.mjs)
 ```
 
 ## Decisions taken while building step 1
@@ -181,12 +195,31 @@ src/
   added file can satisfy an import that failed to resolve earlier. Narrow it to
   indexed dependents only if a profile says to.
 - **Top-level declarations only.** Class methods are not separate nodes; calls made
-  inside a method attribute to the enclosing class. Keeps the step-2 class diagram
-  readable.
+  inside a method attribute to the enclosing class.
 - **Unresolvable references are dropped.** Bare specifiers (`react`, `node:fs`) and
   names that resolve to nothing produce no edge — the MVP graphs the project, not
   its dependencies. Name resolution is: own file first, then imported files.
 - **`.d.ts` files are skipped** — they restate types the accompanying source declares.
+
+## Decisions taken while building step 2
+
+- **One box per file, not per class.** The diagram lists a file's symbols inside its
+  box and lifts symbol-level `extends` / `implements` up to the owning files. A true
+  class-per-box diagram would be empty on codebases like this one, which are almost
+  all functions.
+- **`calls` edges are not drawn.** At file granularity a call into another file is
+  already implied by the import edge beside it; drawing both doubles the lines
+  without adding information. They are still in the graph, and the CLI prints them.
+- **No React or Vite yet.** The page is one hand-written HTML file served by Fastify,
+  because step 2's deliverable is a single static diagram. React + Vite arrive when
+  the UI actually needs component state. Step 3 hangs the websocket on this page.
+- **No `@fastify/static`.** Two files (the page and the Mermaid bundle) do not need a
+  plugin. The page is read per request, so it can be edited without a restart.
+- **Mermaid is served from `node_modules`, not a CDN**, via `import.meta.resolve`, so
+  the tool works offline. `dist/mermaid.min.js` is a single self-contained bundle
+  that sets `globalThis.mermaid` — no chunk loading to serve.
+- **The parser pool is closed after the boot scan.** Nothing re-parses yet. Step 3
+  must keep it open for the watcher.
 
 ## Dependency note
 
@@ -197,6 +230,8 @@ re-verify by parsing a file if either package is bumped.
 
 ## Verified
 
+Step 1:
+
 - Parses its own `src/` and a class/interface fixture: `extends`, `implements`,
   cross-file `calls`, `.js`→`.ts` specifier resolution, deduplicated import edges,
   self-edges dropped.
@@ -205,3 +240,25 @@ re-verify by parsing a file if either package is bumped.
   Deleting a file removes its nodes and every edge into it.
 - 360 parses through the pool block the main thread for 1.1 ms; the same work inline
   blocks it for 114 ms.
+
+Step 2:
+
+- Mermaid's own parser accepts the generated source for both this project and the
+  inheritance fixture, and renders it to SVG. Checked headlessly by driving
+  `mermaid.parse` / `mermaid.render` under jsdom — jsdom was installed *outside* the
+  repo so it is not a project dependency.
+- All three routes answer: `/` (html), `/api/diagram` (json), `/vendor/mermaid.min.js`
+  (3.5 MB bundle, resolved through `import.meta.resolve`).
+
+**Not verified:** how the diagram actually *looks*. jsdom has no text metrics, so
+`getBBox` had to be stubbed and the resulting SVG geometry is meaningless. Layout,
+spacing and legibility need a real browser.
+
+## Known limitations
+
+- A large project produces one enormous diagram. `maxTextSize` and `maxEdges` are
+  raised in the page config, but there is no filtering, focus or depth limit yet —
+  if this bites before step 3, that is the thing to add.
+- Two symbols sharing a name in one file are disambiguated by document order
+  (`path#name~2`), so their ids shift if their relative order changes. The only
+  known crack in id stability.
