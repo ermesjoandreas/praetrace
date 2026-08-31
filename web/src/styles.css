@@ -536,3 +536,128 @@ main { display: flex; flex: 1; min-height: 0; }
   text-overflow: ellipsis;
 }
 .feed-files button:hover { background: var(--line); color: var(--accent); }
+
+/* --- search palette --- */
+
+.search-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+}
+.search-open:hover { border-color: var(--accent); color: var(--text); }
+.search-open kbd {
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.calls-toggle {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+}
+.calls-toggle:hover { border-color: var(--accent); }
+.calls-on { border-color: var(--focus); color: var(--focus); }
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  padding-top: 14vh;
+  background: rgba(10, 11, 13, 0.55);
+}
+
+.palette {
+  width: min(640px, 92vw);
+  max-height: 66vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.palette input {
+  border: none;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+  padding: 14px 16px;
+}
+.palette input::placeholder { color: var(--line-strong); }
+
+.palette ul { margin: 0; padding: 6px; list-style: none; overflow-y: auto; }
+
+.hit {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font: inherit;
+  padding: 5px 10px;
+  text-align: left;
+}
+.hit-active { background: var(--line); }
+
+.hit-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--text);
+  flex: none;
+}
+.kind-class, .kind-interface { color: #bb9af7; }
+.kind-type { color: #7dcfff; }
+.kind-file { color: var(--accent); }
+
+.hit-path {
+  flex: 1;
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.hit-kind { flex: none; font-size: 10px; color: var(--line-strong); }
+
+.palette footer {
+  display: flex;
+  gap: 14px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--line-strong);
+}
+
+/* Calls replace the import between the same pair, so they read as the stronger
+   relationship rather than a second line on the same path. */
+.react-flow__edge.edge-calls .react-flow__edge-path { stroke: #9ece6a; stroke-width: 1.6; }

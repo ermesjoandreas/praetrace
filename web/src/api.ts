@@ -183,3 +183,17 @@ export async function fetchChanges(): Promise<ChangeEntry[]> {
   if (!response.ok) throw new Error(`changes failed: HTTP ${response.status}`);
   return ((await response.json()) as { changes: ChangeEntry[] }).changes;
 }
+
+export interface SearchHit {
+  kind: 'file' | 'class' | 'function' | 'interface' | 'type';
+  name: string;
+  path: string;
+  line: number;
+}
+
+export async function searchGraph(query: string): Promise<SearchHit[]> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}`);
+  if (!response.ok) throw new Error(`search failed: HTTP ${response.status}`);
+  return ((await response.json()) as { hits: SearchHit[] }).hits;
+}

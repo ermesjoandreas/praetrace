@@ -395,6 +395,20 @@ links: the back button works and a view is shareable.
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
   model has no business carrying. The graph stays the single source of truth.
 
+## Search and call edges
+
+**⌘K** (or ⌘P) opens a palette that searches the **whole graph**, not the slice
+on screen — reaching something you cannot see is the point of it. Matching is a
+subsequence, the way editors do it: `gst` finds `GraphStore`. Enter shows the
+hit in the graph, ⇧Enter opens it in the editor.
+
+**Call edges** are off by default and toggled with `?calls=1`. When on, a call
+edge *replaces* the import between the same pair rather than being drawn beside
+it: two edges take the same path on screen, and "calls twelve things in here"
+says more than "imported a type from here", which is all an import alone tells
+you. Every navigation carries the flag, or turning it on and then moving would
+lose it.
+
 ## The side panel
 
 The diagram can only show what a file *uses*. The graph has always known the

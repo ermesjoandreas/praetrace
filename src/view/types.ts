@@ -11,6 +11,11 @@ export interface ViewSpec {
   focus: string | null;
   /** Hops from the focus, following imports in both directions. */
   depth: number;
+  /**
+   * Draw who calls whom, not just who imports whom. Off by default: at file
+   * granularity most calls follow an import, so it is extra ink until asked for.
+   */
+  showCalls: boolean;
 }
 
 export interface ViewMember {

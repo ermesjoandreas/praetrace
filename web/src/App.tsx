@@ -1,9 +1,19 @@
 import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { fetchView, liveUrl, rememberProject, switchProject, type ViewGraph, type ViewResponse } from './api';
+import {
+  fetchView,
+  liveUrl,
+  openInEditor,
+  rememberProject,
+  switchProject,
+  type SearchHit,
+  type ViewGraph,
+  type ViewResponse,
+} from './api';
 import { HookBanner } from './HookBanner';
 import { ProjectMenu } from './ProjectMenu';
+import { SearchPalette } from './SearchPalette';
 import { Sidebar } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
@@ -34,6 +44,7 @@ export function App() {
   /** The box being inspected. Selecting is not navigating. */
   const [selected, setSelected] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
 
@@ -178,6 +189,7 @@ export function App() {
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
+  const showCalls = view?.spec.showCalls ?? false;
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
 
   // Tell the server which slice this client is looking at, so its updates are
@@ -270,9 +282,10 @@ export function App() {
         params.set('focus', target);
         if (depth !== 1) params.set('depth', String(depth));
       }
+      if (showCalls) params.set('calls', '1');
       navigate(params);
     },
-    [navigate, depth],
+    [navigate, depth, showCalls],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -284,9 +297,10 @@ export function App() {
     (scope: string) => {
       const params = new URLSearchParams();
       if (scope !== '') params.set('scope', scope);
+      if (showCalls) params.set('calls', '1');
       navigate(params);
     },
-    [navigate],
+    [navigate, showCalls],
   );
 
   const changeDepth = useCallback(
@@ -295,9 +309,10 @@ export function App() {
       const params = new URLSearchParams();
       params.set('focus', focus);
       if (next !== 1) params.set('depth', String(next));
+      if (showCalls) params.set('calls', '1');
       navigate(params);
     },
-    [focus, navigate],
+    [focus, navigate, showCalls],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -307,6 +322,41 @@ export function App() {
       (result) => void rememberProject(result.root).catch(() => undefined),
       (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
     );
+  }, []);
+
+  const toggleCalls = useCallback(() => {
+    // Built from the live URL so every other part of the view survives the flip.
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('calls') === '1') params.delete('calls');
+    else params.set('calls', '1');
+    navigate(params);
+  }, [navigate]);
+
+  const handlePick = useCallback(
+    (hit: SearchHit, inEditor: boolean) => {
+      setSearchOpen(false);
+      if (inEditor) {
+        if (data) void openInEditor(data.root, hit.path, hit.line);
+        return;
+      }
+      setSelected(hit.path);
+      setShowSidebar(true);
+      goTo(hit.path, 'file');
+    },
+    [data, goTo],
+  );
+
+  // Cmd-K is the primary; Cmd-P is the muscle memory, and the browser's print
+  // dialog has to be told no.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'p')) {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const goToMissed = useCallback(() => {
@@ -372,6 +422,24 @@ export function App() {
 
         <button
           type="button"
+          className="search-open"
+          onClick={() => setSearchOpen(true)}
+          title="Find a file or symbol (⌘K)"
+        >
+          Search <kbd>⌘K</kbd>
+        </button>
+
+        <button
+          type="button"
+          className={showCalls ? 'calls-toggle calls-on' : 'calls-toggle'}
+          onClick={toggleCalls}
+          title="Draw who calls whom, not only who imports whom"
+        >
+          calls
+        </button>
+
+        <button
+          type="button"
           className="panel-toggle"
           onClick={() => setShowSidebar((was) => !was)}
           title={showSidebar ? 'Hide panel' : 'Show panel'}
@@ -387,6 +455,8 @@ export function App() {
       </header>
 
       {data !== null && <HookBanner root={data.root} />}
+
+      {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
 
       <main>
         <div className="canvas">

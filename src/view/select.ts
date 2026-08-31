@@ -19,7 +19,7 @@ const GROUP_THRESHOLD = 40;
  */
 export function selectView(graph: Graph, spec: ViewSpec): ViewGraph {
   const files = collectFiles(graph);
-  const edges = liftEdgesToFiles(graph);
+  const edges = liftEdgesToFiles(graph, spec.showCalls);
 
   if (spec.focus !== null && files.has(spec.focus)) {
     return focusView(spec, files, edges);
@@ -54,14 +54,17 @@ function collectFiles(graph: Graph): Map<string, ViewMember[]> {
 /**
  * Collapse symbol-level edges onto the files that hold them.
  *
- * `contains` is structural and `calls` is dropped: at file granularity a call
- * into another file is already implied by the import edge beside it.
+ * `contains` is structural and never drawn. `calls` is drawn only when asked
+ * for, and then it *replaces* the import between the same pair: two edges would
+ * take the same path on screen, and "calls twelve things in here" says more
+ * than "imported a type from here", which is all an import on its own tells you.
  */
-function liftEdgesToFiles(graph: Graph): FileEdge[] {
+function liftEdgesToFiles(graph: Graph, showCalls: boolean): FileEdge[] {
   const byKey = new Map<string, FileEdge>();
 
   for (const edge of graph.edges) {
-    if (edge.kind === 'contains' || edge.kind === 'calls') continue;
+    if (edge.kind === 'contains') continue;
+    if (edge.kind === 'calls' && !showCalls) continue;
 
     const from = graph.nodes.get(edge.from)?.filePath;
     const to = graph.nodes.get(edge.to)?.filePath;
@@ -73,7 +76,15 @@ function liftEdgesToFiles(graph: Graph): FileEdge[] {
     else byKey.set(key, { from, to, kind: edge.kind, weight: 1 });
   }
 
-  return [...byKey.values()];
+  const lifted = [...byKey.values()];
+  if (!showCalls) return lifted;
+
+  const calling = new Set(
+    lifted.filter((edge) => edge.kind === 'calls').map((edge) => `${edge.from} ${edge.to}`),
+  );
+  return lifted.filter(
+    (edge) => edge.kind !== 'imports' || !calling.has(`${edge.from} ${edge.to}`),
+  );
 }
 
 function fileNode(filePath: string, members: ViewMember[], focused: boolean): ViewNode {
@@ -216,7 +227,7 @@ function scopeView(
   return {
     nodes: boxes,
     edges: [...aggregated.values()],
-    spec: { scope, focus: null, depth: spec.depth },
+    spec: { scope, focus: null, depth: spec.depth, showCalls: spec.showCalls },
     trail: trailFor(scope),
     totalFiles: inScope.length,
     // Whether grouping actually happened, not whether it was attempted. A flat

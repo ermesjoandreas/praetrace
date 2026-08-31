@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
 import { describe } from '../view/detail.js';
+import { search } from '../view/search.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
@@ -49,6 +50,12 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const detail = describe(host.current().store.graph, target);
     if (!detail) return reply.code(404).send({ error: `nothing known about ${target}` });
     return detail;
+  });
+
+  app.get('/api/search', async (request) => {
+    const query = request.query as Record<string, unknown>;
+    const term = typeof query['q'] === 'string' ? query['q'] : '';
+    return { hits: search(host.current().store.graph, term) };
   });
 
   app.get('/api/changes', async () => ({ changes: [...host.current().history()].reverse() }));
@@ -123,6 +130,7 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     scope: typeof raw['scope'] === 'string' ? raw['scope'] : '',
     focus,
     depth: readDepth(raw['depth']),
+    showCalls: raw['calls'] === '1' || raw['calls'] === true,
   };
 }
 

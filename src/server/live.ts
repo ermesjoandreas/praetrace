@@ -11,7 +11,7 @@ export interface LiveSocket {
 const OPEN = 1;
 
 /** What a client is shown when it connects, and after a project switch. */
-export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1 };
+export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, showCalls: false };
 
 export interface LiveHub {
   add(socket: LiveSocket, spec: ViewSpec): void;
