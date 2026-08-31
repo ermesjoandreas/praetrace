@@ -1,14 +1,15 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fastifyStatic from '@fastify/static';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { GraphStore } from '../graph/store.js';
-import { toClassDiagram } from '../render/mermaid.js';
+import { selectView } from '../view/select.js';
+import type { ViewSpec } from '../view/types.js';
 
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
-// Resolved through the package rather than a hard-coded node_modules path, so
-// the bundle is found the same way whether codemap is linked or installed.
-const MERMAID_BUNDLE = fileURLToPath(import.meta.resolve('mermaid/dist/mermaid.min.js'));
+// Vite builds the page into dist/web, beside this module's dist/server.
+const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
+
+const MAX_DEPTH = 4;
 
 export interface AppOptions {
   store: GraphStore;
@@ -18,29 +19,26 @@ export interface AppOptions {
 
 export function buildApp({ store, root }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
-  let mermaidBundle: Buffer | null = null;
 
-  app.get('/', async (_request, reply) => {
-    // Read per request: one local user, and it makes the page editable without
-    // a restart.
-    const html = await readFile(path.join(PUBLIC_DIR, 'index.html'), 'utf8');
-    return reply.type('text/html; charset=utf-8').send(html);
-  });
+  app.register(fastifyStatic, { root: WEB_DIR });
 
-  app.get('/api/diagram', async () => ({
-    root,
-    source: toClassDiagram(store.graph),
-    counts: {
-      files: [...store.graph.nodes.values()].filter((node) => node.kind === 'file').length,
-      nodes: store.graph.nodes.size,
-      edges: store.graph.edges.length,
-    },
-  }));
+  app.get('/api/view', async (request) => {
+    const query = request.query as Record<string, string | undefined>;
+    const spec: ViewSpec = {
+      scope: query.scope ?? '',
+      focus: query.focus ?? null,
+      depth: readDepth(query.depth),
+    };
 
-  app.get('/vendor/mermaid.min.js', async (_request, reply) => {
-    mermaidBundle ??= await readFile(MERMAID_BUNDLE);
-    return reply.type('application/javascript; charset=utf-8').send(mermaidBundle);
+    return { root, view: selectView(store.graph, spec) };
   });
 
   return app;
+}
+
+/** Depth is user input from the URL; anything unusable falls back to one hop. */
+function readDepth(raw: string | undefined): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return 1;
+  return Math.min(value, MAX_DEPTH);
 }

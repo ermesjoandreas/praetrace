@@ -29,7 +29,7 @@ leak into the server layer, or rendering concerns into the graph engine.
 - **Runtime:** Node.js
 - **Parsing:** `tree-sitter` with `tree-sitter-typescript` grammar
 - **Server:** Fastify (HTTP + websocket)
-- **Frontend:** React + Vite, Mermaid for diagram rendering
+- **Frontend:** React + Vite, React Flow for diagram rendering (was Mermaid; see Current state)
 - **Packaging:** Tauri — but NOT yet. See "Out of scope" below.
 
 ## Non-negotiable design decisions
@@ -137,11 +137,13 @@ If a task seems to require one of these, stop and ask rather than building it.
 
 # Current state
 
-**MVP steps 1 and 2 are done.** Step 3 (file watcher + websocket) and step 4 (Claude
-Code hook endpoint) are not started.
+**MVP steps 1 and 2 are done, and step 2 was then reworked to handle scale.**
+Step 3 (file watcher + websocket) and step 4 (Claude Code hook endpoint) are not
+started.
 
 1. ✅ Parse a directory of TypeScript files into the graph. CLI output only.
-2. ✅ Render the graph as a static Mermaid class diagram in a browser page.
+2. ✅ Render the graph in a browser page — now React Flow, with a view layer so
+   the page never draws the whole project at once.
 3. ⬜ File watcher + websocket so the diagram updates on save.
 4. ⬜ Claude Code hook endpoint.
 
@@ -149,12 +151,13 @@ Code hook endpoint) are not started.
 
 ```bash
 npm install          # .npmrc pins legacy-peer-deps, see "Dependency note"
-npm run build        # tsc -> dist/, then copies the static page
-npm run serve -- <dir>            # browser page on http://127.0.0.1:4400
+npm run build        # tsc -> dist/, then vite -> dist/web
+npm run serve -- <dir>            # http://127.0.0.1:4400
 npm run serve -- <dir> --port=5000
-npm run codemap -- <dir>          # same graph as text
+npm run dev:web                   # vite dev server, proxies /api to a running serve
+npm run codemap -- <dir>          # the same graph as text
 npm run codemap -- <dir> --json   # raw nodes + edges
-npm run typecheck
+npm run typecheck                 # checks src/ and web/
 ```
 
 ## Layout
@@ -173,15 +176,42 @@ src/
   project/        the project on disk; used by both the CLI and the server
     walk.ts       boot scan of a directory
     scan.ts       walk + parse everything through the pool
-  render/
-    mermaid.ts    Graph -> Mermaid class diagram source. Pure.
+  view/           which slice of the graph to draw — pure
+    types.ts      ViewSpec / ViewGraph
+    select.ts     selectView(graph, spec) -> ViewGraph
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    app.ts        Fastify routes
+    app.ts        Fastify: static web build + /api/view
     main.ts       arg handling, boot scan, listen
-    public/       the static page (copied to dist by scripts/copy-public.mjs)
+web/              the browser page (Vite, built into dist/web)
+  src/App.tsx     URL <-> view, breadcrumb, focus and depth controls
+  src/BoxNode.tsx one box: a file with its symbols, or a folder
+  src/layout.ts   dagre layout; React Flow does not place nodes itself
+  src/api.ts      fetch + the shared ViewGraph type, imported from src/view
 ```
+
+## The view layer
+
+The page never draws the whole project. `selectView(graph, spec) -> ViewGraph`
+reduces the graph to a slice, and the spec lives in the URL, so navigation is
+links: the back button works and a view is shareable.
+
+```
+/                            root, auto-descends past single-child directories
+/?scope=src/graph            the files in one directory
+/?focus=<file>&depth=1       a file and its neighbours, imports both ways
+/?focus=<file>&depth=2       wider
+```
+
+- Above 40 files in scope, boxes stand for directories instead of files, and
+  edges between them are aggregated with a weight.
+- Files outside the current scope collapse to their directory and are drawn
+  dimmed, so a scoped view still shows what it connects to.
+- `ViewGraph` is a separate type from `Graph` on purpose. A box standing for a
+  directory is not a `GraphNode`, and an aggregated edge needs a weight the core
+  model has no business carrying. The graph stays the single source of truth;
+  the view is derived from it.
 
 ## Decisions taken while building step 1
 
@@ -192,32 +222,29 @@ src/
   changed file is re-parsed (decision 2 holds — parsing is the expensive part), but
   `derive()` rebuilds all nodes and edges from the stored `ParsedFile`s on every
   mutation. It is pure in-memory work with no AST and no I/O, and it means a newly
-  added file can satisfy an import that failed to resolve earlier. Narrow it to
-  indexed dependents only if a profile says to.
+  added file can satisfy an import that failed to resolve earlier.
 - **Top-level declarations only.** Class methods are not separate nodes; calls made
   inside a method attribute to the enclosing class.
 - **Unresolvable references are dropped.** Bare specifiers (`react`, `node:fs`) and
-  names that resolve to nothing produce no edge — the MVP graphs the project, not
-  its dependencies. Name resolution is: own file first, then imported files.
+  names that resolve to nothing produce no edge. Name resolution is: own file
+  first, then imported files.
 - **`.d.ts` files are skipped** — they restate types the accompanying source declares.
 
 ## Decisions taken while building step 2
 
-- **One box per file, not per class.** The diagram lists a file's symbols inside its
-  box and lifts symbol-level `extends` / `implements` up to the owning files. A true
-  class-per-box diagram would be empty on codebases like this one, which are almost
-  all functions.
+- **One box per file, not per class.** A file's symbols are listed inside its box,
+  and symbol-level `extends` / `implements` are lifted to the owning files. A true
+  class-per-box diagram would be empty on codebases that are mostly functions.
 - **`calls` edges are not drawn.** At file granularity a call into another file is
-  already implied by the import edge beside it; drawing both doubles the lines
-  without adding information. They are still in the graph, and the CLI prints them.
-- **No React or Vite yet.** The page is one hand-written HTML file served by Fastify,
-  because step 2's deliverable is a single static diagram. React + Vite arrive when
-  the UI actually needs component state. Step 3 hangs the websocket on this page.
-- **No `@fastify/static`.** Two files (the page and the Mermaid bundle) do not need a
-  plugin. The page is read per request, so it can be edited without a restart.
-- **Mermaid is served from `node_modules`, not a CDN**, via `import.meta.resolve`, so
-  the tool works offline. `dist/mermaid.min.js` is a single self-contained bundle
-  that sets `globalThis.mermaid` — no chunk loading to serve.
+  already implied by the import edge beside it. They stay in the graph, and the
+  CLI prints them.
+- **React Flow, not Mermaid.** Mermaid rendered a static SVG and could not pan,
+  zoom or collapse. Removed along with its route and `render/mermaid.ts`; it is in
+  git history if a static export is ever wanted. Note the view layer is what makes
+  large projects legible — React Flow only makes drawing them cheap.
+- **dagre lays out, React Flow draws.** React Flow places nothing on its own.
+  Boxes are measured before layout, from member counts, because dagre needs
+  dimensions up front.
 - **The parser pool is closed after the boot scan.** Nothing re-parses yet. Step 3
   must keep it open for the watcher.
 
@@ -230,35 +257,34 @@ re-verify by parsing a file if either package is bumped.
 
 ## Verified
 
-Step 1:
-
-- Parses its own `src/` and a class/interface fixture: `extends`, `implements`,
+- Parses its own source and a class/interface fixture: `extends`, `implements`,
   cross-file `calls`, `.js`→`.ts` specifier resolution, deduplicated import edges,
   self-edges dropped.
 - Editing one file yields a delta touching only that file's nodes; ids in untouched
   files stay stable. Adding a file resolves a previously unresolvable import.
   Deleting a file removes its nodes and every edge into it.
-- 360 parses through the pool block the main thread for 1.1 ms; the same work inline
-  blocks it for 114 ms.
+- 360 parses through the pool block the main thread for 1.1 ms; the same work
+  inline blocks it for 114 ms.
+- View selection on a generated 120-file project: root collapses to 8 folder boxes
+  with weighted edges in 0.5 ms; drilling into one directory gives its files plus
+  dimmed external folders; focus depth 1 gives 19 boxes, depth 2 gives 64.
+- The real page bundle mounts in jsdom against the running server and renders 20
+  boxes with correct titles, member lists and distinct dagre positions. Test
+  tooling (jsdom, esbuild) lives outside the repo so it is not a dependency.
 
-Step 2:
-
-- Mermaid's own parser accepts the generated source for both this project and the
-  inheritance fixture, and renders it to SVG. Checked headlessly by driving
-  `mermaid.parse` / `mermaid.render` under jsdom — jsdom was installed *outside* the
-  repo so it is not a project dependency.
-- All three routes answer: `/` (html), `/api/diagram` (json), `/vendor/mermaid.min.js`
-  (3.5 MB bundle, resolved through `import.meta.resolve`).
-
-**Not verified:** how the diagram actually *looks*. jsdom has no text metrics, so
-`getBBox` had to be stubbed and the resulting SVG geometry is meaningless. Layout,
-spacing and legibility need a real browser.
+**Not verified:** how any of it *looks*, and **edge rendering**. In jsdom React
+Flow renders the nodes but leaves the edge container empty — the API returns the
+edges and the nodes are measured, so this is almost certainly jsdom's missing
+layout and zoom transform rather than a real fault, but it has not been confirmed
+in a real browser. Check that edges are drawn before trusting a screenshot-free
+change to the page.
 
 ## Known limitations
 
-- A large project produces one enormous diagram. `maxTextSize` and `maxEdges` are
-  raised in the page config, but there is no filtering, focus or depth limit yet —
-  if this bites before step 3, that is the thing to add.
+- Focus depth 2 on a densely coupled project explodes (64 boxes on the synthetic
+  test). There is no cap or warning yet.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes. The only
   known crack in id stability.
+- Grouping keys off the directory tree only. There is no filtering by name, kind
+  or path glob.
