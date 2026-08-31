@@ -211,13 +211,18 @@ function scopeView(
     node.files = [...(backing.get(node.id) ?? [])].sort();
   }
 
+  const boxes = [...nodes.values()].sort(byExternalThenId);
+
   return {
-    nodes: [...nodes.values()].sort(byExternalThenId),
+    nodes: boxes,
     edges: [...aggregated.values()],
     spec: { scope, focus: null, depth: spec.depth },
     trail: trailFor(scope),
     totalFiles: inScope.length,
-    grouped,
+    // Whether grouping actually happened, not whether it was attempted. A flat
+    // directory above the threshold has no subdirectories to group by, so every
+    // file stays its own box and calling that "grouped" would be a lie.
+    grouped: boxes.some((node) => node.kind === 'folder' && !node.external),
   };
 }
 

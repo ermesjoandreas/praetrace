@@ -20,12 +20,16 @@ export function App() {
   const [data, setData] = useState<ViewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  /** Bumped to refetch the current view without changing the URL. */
+  const [reloadToken, setReloadToken] = useState(0);
   /** Files touched by the most recent batch, for the pulse. */
   const [pulsing, setPulsing] = useState<string[]>([]);
   /** Changes that landed outside the current view and have not been looked at. */
   const [missed, setMissed] = useState<string[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
+  /** Files the view covered before the update now being processed. */
+  const coveredRef = useRef(new Set<string>());
 
   // The view lives in the URL, so the back button is the navigation history.
   useEffect(() => {
@@ -40,6 +44,7 @@ export function App() {
     fetchView(search).then(
       (result) => {
         if (cancelled) return;
+        coveredRef.current = new Set(result.view.nodes.flatMap((node) => node.files));
         setData(result);
         setError(null);
       },
@@ -51,41 +56,73 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [search]);
+  }, [search, reloadToken]);
 
   useEffect(() => {
-    const url = new URL('/live', window.location.href);
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-    const socket = new WebSocket(url);
-    socketRef.current = socket;
+    let socket: WebSocket | null = null;
+    let retry: number | null = null;
+    let attempt = 0;
+    let disposed = false;
 
-    socket.onopen = () => setLive(true);
-    socket.onclose = () => setLive(false);
-    socket.onmessage = (event: MessageEvent<string>) => {
-      const message = JSON.parse(event.data) as LiveUpdate;
-      if (message.type !== 'update') return;
+    const connect = (): void => {
+      if (disposed) return;
 
-      // Everything is derived from the message itself, so this handler never
-      // reads stale state from its closure.
-      const covered = new Set(message.view.nodes.flatMap((node) => node.files));
-      const outside = message.changedFiles.filter((file) => !covered.has(file));
+      const url = new URL('/live', window.location.href);
+      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(url);
+      socketRef.current = socket;
 
-      setData((current) => (current ? { ...current, view: message.view } : current));
-      setPulsing(message.changedFiles);
-      if (outside.length > 0) {
-        setMissed((previous) => [...new Set([...previous, ...outside])]);
-      }
+      socket.onopen = () => {
+        // Anything that changed while the socket was down was never pushed, so
+        // a reconnect has to refetch rather than trust the graph on screen.
+        if (attempt > 0) setReloadToken((token) => token + 1);
+        attempt = 0;
+        setLive(true);
+      };
+
+      socket.onclose = () => {
+        setLive(false);
+        if (disposed) return;
+        // Restarting the server is routine in a dev loop; the page must come
+        // back on its own rather than needing a reload.
+        const delay = Math.min(500 * 2 ** attempt, 10_000);
+        attempt += 1;
+        retry = window.setTimeout(connect, delay);
+      };
+
+      socket.onmessage = (event: MessageEvent<string>) => {
+        const message = JSON.parse(event.data) as LiveUpdate;
+        if (message.type !== 'update') return;
+
+        const after = new Set(message.view.nodes.flatMap((node) => node.files));
+        // A file the view held a moment ago counts as in-view even when the
+        // update removed it, or every deletion would report itself as elsewhere.
+        const before = coveredRef.current;
+        const outside = message.changedFiles.filter((file) => !after.has(file) && !before.has(file));
+        coveredRef.current = after;
+
+        setData((current) => (current ? { ...current, view: message.view } : current));
+        setPulsing(message.changedFiles);
+        if (outside.length > 0) {
+          setMissed((previous) => [...new Set([...previous, ...outside])]);
+        }
+      };
     };
 
+    connect();
+
     return () => {
+      disposed = true;
+      if (retry !== null) window.clearTimeout(retry);
       socketRef.current = null;
-      socket.close();
+      socket?.close();
     };
   }, []);
 
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
+  const viewKey = view ? JSON.stringify(view.spec) : 'loading';
 
   // Tell the server which slice this client is looking at, so its updates are
   // computed for this view rather than broadcast as one shared one.
@@ -268,9 +305,11 @@ export function App() {
           <div className="empty">Nothing to show here.</div>
         )}
         <ReactFlow<BoxNodeType, Edge>
-          // Remounting on navigation is what re-runs fitView for the new slice.
-          // A live update deliberately does not remount, so the camera holds.
-          key={search}
+          // Keyed on the LOADED view, not on the URL. Keying on the URL remounts
+          // the instant a link is clicked, while `nodes` still holds the previous
+          // slice, so fitView fits the old graph and the new one arrives with no
+          // refit at all. A live update keeps the same spec, so the camera holds.
+          key={viewKey}
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}

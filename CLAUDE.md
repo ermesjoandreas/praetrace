@@ -342,11 +342,12 @@ re-verify by parsing a file if either package is bumped.
   the view produces a badge that focuses that file when clicked. Test tooling
   (jsdom, esbuild) lives outside the repo so it is not a dependency.
 
-**Not verified:** how any of it *looks*, and **edge rendering**. In jsdom React
-Flow renders the nodes but leaves the edge container empty — the API returns the
-edges and the nodes are measured, so this is almost certainly jsdom's missing
-layout and zoom transform rather than a real fault, but it has not been confirmed
-in a real browser. Also unconfirmed: whether Claude Code picks up a newly added
+**Confirmed in a real browser** (headless Chrome via playwright-core, installed
+outside the repo): edges render with correct geometry at root, scope and focus
+views, and weight labels appear on aggregated edges. The empty edge container in
+jsdom was jsdom's missing layout engine, not a fault.
+
+**Still not verified:** whether Claude Code picks up a newly added
 `.claude/settings.json` without a restart. The watcher covers the same edits
 either way, so the hook failing silently costs latency, not correctness.
 
@@ -360,4 +361,20 @@ either way, so the hook failing silently costs latency, not correctness.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
 - Grouping keys off the directory tree only. There is no filtering by name, kind
-  or path glob.
+  or path glob, and a flat directory above the threshold cannot be grouped at all
+  (it now reports `grouped: false` honestly rather than claiming otherwise).
+- A focus view at depth 4 on a well-connected file blocks the browser main thread
+  for about 2 s: client-side dagre plus the React Flow mount for ~288 boxes. The
+  server answers in 3 ms; the cost is entirely in the page.
+- Edges have no obstacle avoidance, so they route through unrelated boxes — 26% of
+  edges in a 10-box root view.
+- A file with a syntax error silently loses symbols. tree-sitter is error-tolerant
+  and `parseSource` never checks `tree.rootNode.hasError`, so a malformed file
+  is indistinguishable from an empty one.
+- `/api/hook` can still answer 413/400/415: Fastify's 1 MiB body limit and its
+  content-type parser reject before the route handler's deliberate 200.
+- A failed view fetch leaves the previous graph rendered under the error banner,
+  and re-navigating to the same URL is a no-op because only `search` drives the
+  refetch.
+- Deleting and recreating the focused file drops the page out of focus mode while
+  the URL still says `?focus=`.
