@@ -7,6 +7,10 @@ export const MAX_MEMBERS = 8;
 const HEADER_HEIGHT = 38;
 const ROW_HEIGHT = 17;
 const DEFAULT_HEIGHT = 80;
+const LABEL_HEIGHT = 18;
+
+/** Two frames sharing more than this much of the smaller one read as one mess. */
+const MAX_OVERLAP = 0.25;
 
 /**
  * Boxes are measured before layout rather than after render, because dagre
@@ -23,6 +27,32 @@ export function boxHeight(memberCount: number, isFolder: boolean): number {
 export interface ClusterInput {
   id: string;
   files: string[];
+  /** Used to decide which frame survives when two would overlap. */
+  cohesion: number;
+}
+
+/**
+ * Frames that overlap badly say less than one frame would. The tighter, more
+ * cohesive group keeps its frame; the other is dropped from the drawing — it is
+ * still listed in the panel, so nothing is lost, only untangled.
+ */
+function withoutOverlaps(
+  candidates: (ClusterBounds & { cohesion: number; area: number })[],
+): ClusterBounds[] {
+  const ranked = [...candidates].sort((a, b) => b.cohesion - a.cohesion || a.area - b.area);
+  const kept: (ClusterBounds & { area: number })[] = [];
+
+  for (const candidate of ranked) {
+    const clashes = kept.some((other) => {
+      const width = Math.min(candidate.x + candidate.width, other.x + other.width) - Math.max(candidate.x, other.x);
+      const height = Math.min(candidate.y + candidate.height, other.y + other.height) - Math.max(candidate.y, other.y);
+      if (width <= 0 || height <= 0) return false;
+      return (width * height) / Math.min(candidate.area, other.area) > MAX_OVERLAP;
+    });
+    if (!clashes) kept.push(candidate);
+  }
+
+  return kept.map(({ id, x, y, width, height }) => ({ id, x, y, width, height }));
 }
 
 export interface ClusterBounds {
@@ -57,7 +87,7 @@ export function layoutNodes<T extends Node>(
   }
 
   const present = new Set(nodes.map((node) => node.id));
-  const drawn: string[] = [];
+  const drawn: { id: string; files: string[]; cohesion: number }[] = [];
 
   for (const cluster of clusters) {
     // Only the members actually on screen; a frame around one box says nothing.
@@ -67,7 +97,7 @@ export function layoutNodes<T extends Node>(
     const key = CLUSTER_PREFIX + cluster.id;
     graph.setNode(key, {});
     for (const member of members) graph.setParent(member, key);
-    drawn.push(cluster.id);
+    drawn.push({ id: cluster.id, files: members, cohesion: cluster.cohesion });
   }
 
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
@@ -87,23 +117,38 @@ export function layoutNodes<T extends Node>(
     };
   });
 
-  const bounds: ClusterBounds[] = [];
-  for (const id of drawn) {
-    const box = graph.node(CLUSTER_PREFIX + id) as
-      | { x: number; y: number; width: number; height: number }
-      | undefined;
-    if (!box || !Number.isFinite(box.x)) continue;
+  // dagre's own parent box spans every rank its children touch, including the
+  // space other clusters occupy in between. A box drawn tight around where the
+  // members actually landed is far smaller and overlaps far less.
+  const byId = new Map(placed.map((node) => [node.id, node]));
+  const candidates: (ClusterBounds & { cohesion: number; area: number })[] = [];
 
-    // Room for the label above the boxes it encloses.
+  for (const cluster of drawn) {
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+
+    for (const file of cluster.files) {
+      const node = byId.get(file);
+      if (!node) continue;
+      left = Math.min(left, node.position.x);
+      top = Math.min(top, node.position.y);
+      right = Math.max(right, node.position.x + (node.width ?? NODE_WIDTH));
+      bottom = Math.max(bottom, node.position.y + (node.height ?? DEFAULT_HEIGHT));
+    }
+    if (!Number.isFinite(left)) continue;
+
     const padding = 14;
-    bounds.push({
-      id,
-      x: box.x - box.width / 2 - padding,
-      y: box.y - box.height / 2 - padding - 18,
-      width: box.width + padding * 2,
-      height: box.height + padding * 2 + 18,
-    });
+    const box = {
+      id: cluster.id,
+      x: left - padding,
+      y: top - padding - LABEL_HEIGHT,
+      width: right - left + padding * 2,
+      height: bottom - top + padding * 2 + LABEL_HEIGHT,
+    };
+    candidates.push({ ...box, cohesion: cluster.cohesion, area: box.width * box.height });
   }
 
-  return { nodes: placed, clusters: bounds };
+  return { nodes: placed, clusters: withoutOverlaps(candidates) };
 }

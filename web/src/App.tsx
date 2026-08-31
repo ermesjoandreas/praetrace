@@ -594,6 +594,8 @@ export function App() {
             revision={revision}
             onSelect={setSelected}
             onFocus={goTo}
+            groups={clusters}
+            onDecide={decide}
           />
         )}
       </main>

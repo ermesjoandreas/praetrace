@@ -5,6 +5,7 @@ import {
   openInEditor,
   type ChangeEntry,
   type Detail,
+  type GroupSuggestion,
 } from './api';
 
 interface SidebarProps {
@@ -16,6 +17,8 @@ interface SidebarProps {
   onSelect: (target: string) => void;
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
+  groups: GroupSuggestion[];
+  onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {
@@ -24,7 +27,7 @@ const clock = new Intl.DateTimeFormat(undefined, {
   second: '2-digit',
 });
 
-export function Sidebar({ root, selected, revision, onSelect, onFocus }: SidebarProps) {
+export function Sidebar({ root, selected, revision, onSelect, onFocus, groups, onDecide }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [changes, setChanges] = useState<ChangeEntry[]>([]);
 
@@ -71,6 +74,8 @@ export function Sidebar({ root, selected, revision, onSelect, onFocus }: Sidebar
           <FolderView detail={detail} onSelect={onSelect} onFocus={onFocus} />
         )}
       </section>
+
+      <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} />
 
       <section className="feed">
         <h2>Changes</h2>
@@ -207,5 +212,81 @@ function PathList({
         </li>
       ))}
     </PanelList>
+  );
+}
+
+/**
+ * Every group the graph found, including the ones whose frames were dropped for
+ * overlapping. A group that cannot be drawn can still be named.
+ */
+function GroupList({
+  groups,
+  onDecide,
+  onSelect,
+}: {
+  groups: GroupSuggestion[];
+  onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
+  onSelect: (target: string) => void;
+}) {
+  const [naming, setNaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+
+  const live = groups.filter((group) => group.state !== 'rejected');
+  if (live.length === 0) return null;
+
+  return (
+    <section className="groups">
+      <h2>Groups</h2>
+      <ul>
+        {live.map((group) => (
+          <li key={group.id}>
+            {naming === group.id ? (
+              <input
+                autoFocus
+                value={draft}
+                placeholder="Name this group"
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && draft.trim() !== '') {
+                    onDecide(group, draft.trim(), 'accepted');
+                    setNaming(null);
+                  } else if (event.key === 'Escape') setNaming(null);
+                }}
+                onBlur={() => setNaming(null)}
+              />
+            ) : (
+              <div className="group-row">
+                <button
+                  type="button"
+                  className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
+                  onClick={() => {
+                    setDraft(group.name ?? '');
+                    setNaming(group.id);
+                  }}
+                >
+                  {group.name ?? `${group.files.length} files`}
+                </button>
+                <span className="group-cohesion">{Math.round(group.cohesion * 100)}%</span>
+                <button
+                  type="button"
+                  className="group-drop"
+                  title="Not a group"
+                  onClick={() => onDecide(group, group.name ?? '', 'rejected')}
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+            <div className="group-files">
+              {group.files.map((file) => (
+                <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
+                  {file}
+                </button>
+              ))}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

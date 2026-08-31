@@ -732,3 +732,77 @@ main { display: flex; flex: 1; min-height: 0; }
    clicks through to the boxes it encloses, and only its own label catch them. */
 .react-flow__node-frame { pointer-events: none !important; }
 .group-label { pointer-events: auto; }
+
+/* --- group list in the panel --- */
+
+.groups {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
+  padding: 12px 16px;
+}
+.groups h2 {
+  margin: 0 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.groups ul { margin: 0; padding: 0; list-style: none; }
+.groups li { margin-bottom: 10px; }
+
+.group-row { display: flex; align-items: center; gap: 6px; }
+.group-title {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 5px;
+}
+.group-title.named { color: var(--accent); }
+.group-title:hover { background: var(--line); color: var(--text); }
+.group-cohesion { color: var(--line-strong); font-size: 10px; margin-left: auto; }
+.group-drop {
+  background: transparent;
+  border: none;
+  color: var(--line-strong);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 3px;
+}
+.group-drop:hover { color: #f2a2a2; }
+
+.group-files { display: flex; flex-direction: column; margin-top: 2px; }
+.group-files button {
+  background: transparent;
+  border: none;
+  color: var(--line-strong);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 5px;
+  text-align: left;
+  direction: rtl;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-files button:hover { color: var(--accent); background: var(--line); }
+
+.groups input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+  padding: 2px 6px;
+  width: 100%;
+}
