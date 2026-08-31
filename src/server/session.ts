@@ -6,6 +6,20 @@ import { scanProject } from '../project/scan.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
 
+/** One batch of files that changed together, newest last. */
+export interface ChangeEntry {
+  at: number;
+  files: string[];
+}
+
+/**
+ * Deliberately in memory and deliberately short. This answers "what has the
+ * agent been doing while I was away", which is the whole premise; it is not
+ * session history. That is VISION.md phase 1, and it gets a schema designed for
+ * it rather than a ring buffer promoted into one.
+ */
+const MAX_HISTORY = 200;
+
 /**
  * Everything scoped to one project root: the graph, the workers that build it,
  * and the watcher feeding it.
@@ -20,6 +34,8 @@ export interface Session {
   readonly store: GraphStore;
   /** Queue a change from any source. The hook endpoint uses this. */
   queue(change: FileChange): void;
+  /** What has changed since this project was opened, newest last. */
+  history(): readonly ChangeEntry[];
   close(): Promise<void>;
 }
 
@@ -36,10 +52,18 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   applyBatch(store, scan.parsed, []);
   for (const failure of scan.failures) handlers.onError(failure);
 
+  const history: ChangeEntry[] = [];
+
   const updater = createUpdater({
     store,
     pool,
-    onApplied: handlers.onApplied,
+    onApplied: (changedFiles) => {
+      // Recorded before anything is published, so a client that reloads mid
+      // burst still sees the change it just missed.
+      history.push({ at: Date.now(), files: changedFiles });
+      if (history.length > MAX_HISTORY) history.shift();
+      handlers.onApplied(changedFiles);
+    },
     onError: handlers.onError,
   });
   const watcher = watchProject({ root, onChange: (change) => updater.queue(change) });
@@ -48,6 +72,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     root,
     store,
     queue: (change) => updater.queue(change),
+    history: () => history,
     async close() {
       updater.close();
       await Promise.allSettled([watcher.close(), pool.close()]);

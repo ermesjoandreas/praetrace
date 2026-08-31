@@ -395,6 +395,25 @@ links: the back button works and a view is shareable.
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
   model has no business carrying. The graph stays the single source of truth.
 
+## The side panel
+
+The diagram can only show what a file *uses*. The graph has always known the
+other direction too — the edges run both ways — but nothing asked, so the page
+could never answer "what depends on this". `view/detail.ts` asks, and the panel
+shows it.
+
+- **Click inspects, double-click navigates.** A single click used to teleport the
+  view, which made every glance at a box a navigation you then had to undo.
+- `zoomOnDoubleClick` is off, and must stay off. d3-zoom handles a double click
+  on the pane and stops it bubbling before React sees it, so `onNodeDoubleClick`
+  never fires and the view silently zooms instead of navigating.
+- The panel lists **every** symbol, where the box has room for eight.
+- **The change feed** is the session's own history: `Session` keeps the last 200
+  batches in memory, and a project switch discards them with the session. It
+  answers "what did the agent do while I was away". It is *not* session
+  history — that is `VISION.md` phase 1, and it gets a schema designed for it
+  rather than a ring buffer promoted into one.
+
 ## Live updates
 
 Every connected client is sent a view **computed for its own spec** — a client

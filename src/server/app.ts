@@ -5,6 +5,7 @@ import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
+import { describe } from '../view/detail.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
@@ -41,6 +42,16 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
+
+  app.get('/api/detail', async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const target = typeof query['path'] === 'string' ? query['path'] : '';
+    const detail = describe(host.current().store.graph, target);
+    if (!detail) return reply.code(404).send({ error: `nothing known about ${target}` });
+    return detail;
+  });
+
+  app.get('/api/changes', async () => ({ changes: [...host.current().history()].reverse() }));
 
   app.post('/api/project', async (request, reply) => {
     const body = (request.body ?? {}) as { root?: unknown };

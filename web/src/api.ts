@@ -145,3 +145,41 @@ export async function openInEditor(root: string, filePath: string, line: number)
   // A browser hands a custom scheme to the OS itself, usually after a prompt.
   window.open(url, '_self');
 }
+
+export interface SymbolDetail {
+  name: string;
+  kind: 'class' | 'function' | 'interface' | 'type';
+  line: number;
+  endLine: number;
+}
+
+export type Detail =
+  | {
+      kind: 'file';
+      path: string;
+      lineCount: number;
+      symbols: SymbolDetail[];
+      imports: string[];
+      importedBy: string[];
+    }
+  | { kind: 'folder'; path: string; files: string[]; imports: string[]; importedBy: string[] };
+
+export async function fetchDetail(target: string): Promise<Detail | null> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/detail?path=${encodeURIComponent(target)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`detail failed: HTTP ${response.status}`);
+  return (await response.json()) as Detail;
+}
+
+export interface ChangeEntry {
+  at: number;
+  files: string[];
+}
+
+export async function fetchChanges(): Promise<ChangeEntry[]> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/changes`);
+  if (!response.ok) throw new Error(`changes failed: HTTP ${response.status}`);
+  return ((await response.json()) as { changes: ChangeEntry[] }).changes;
+}

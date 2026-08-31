@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { fetchView, liveUrl, rememberProject, switchProject, type ViewGraph, type ViewResponse } from './api';
 import { HookBanner } from './HookBanner';
 import { ProjectMenu } from './ProjectMenu';
+import { Sidebar } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
 
@@ -30,6 +31,11 @@ export function App() {
   const [pulsing, setPulsing] = useState<string[]>([]);
   /** Changes that landed outside the current view and have not been looked at. */
   const [missed, setMissed] = useState<string[]>([]);
+  /** The box being inspected. Selecting is not navigating. */
+  const [selected, setSelected] = useState<string | null>(null);
+  const [showSidebar, setShowSidebar] = useState(true);
+  /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
+  const [revision, setRevision] = useState(0);
 
   const socketRef = useRef<WebSocket | null>(null);
   /** Files the view covered before the update now being processed. */
@@ -54,6 +60,7 @@ export function App() {
         specRef.current = JSON.stringify(result.view.spec);
         setData(result);
         setError(null);
+        setRevision((n) => n + 1);
       },
       (cause: unknown) => {
         if (cancelled) return;
@@ -124,6 +131,9 @@ export function App() {
           specRef.current = JSON.stringify(message.view.spec);
           setData({ root: message.root, view: message.view });
           setError(null);
+          // A path from the previous project means nothing here.
+          setSelected(null);
+          setRevision((n) => n + 1);
           return;
         }
 
@@ -148,6 +158,7 @@ export function App() {
 
         setData((current) => (current ? { ...current, view: message.view } : current));
         setPulsing(message.changedFiles);
+        setRevision((n) => n + 1);
         if (outside.length > 0) {
           setMissed((previous) => [...new Set([...previous, ...outside])]);
         }
@@ -243,18 +254,30 @@ export function App() {
     setSearch(next);
   }, []);
 
-  const handleNodeClick = useCallback(
-    (_event: MouseEvent, node: BoxNodeType) => {
+  // Click inspects, double-click moves. A single click used to teleport the
+  // view, which made every glance at a box a navigation you had to undo.
+  const handleNodeClick = useCallback((_event: MouseEvent, node: BoxNodeType) => {
+    setSelected(node.id);
+    setShowSidebar(true);
+  }, []);
+
+  const goTo = useCallback(
+    (target: string, kind: 'file' | 'folder') => {
       const params = new URLSearchParams();
-      if (node.data.kind === 'folder') {
-        params.set('scope', node.id);
+      if (kind === 'folder') {
+        params.set('scope', target);
       } else {
-        params.set('focus', node.id);
+        params.set('focus', target);
         if (depth !== 1) params.set('depth', String(depth));
       }
       navigate(params);
     },
     [navigate, depth],
+  );
+
+  const handleNodeDoubleClick = useCallback(
+    (_event: MouseEvent, node: BoxNodeType) => goTo(node.id, node.data.kind),
+    [goTo],
   );
 
   const goToScope = useCallback(
@@ -347,6 +370,15 @@ export function App() {
           </button>
         )}
 
+        <button
+          type="button"
+          className="panel-toggle"
+          onClick={() => setShowSidebar((was) => !was)}
+          title={showSidebar ? 'Hide panel' : 'Show panel'}
+        >
+          {showSidebar ? '⇥' : '⇤'}
+        </button>
+
         <span className="counts">
           {view
             ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
@@ -357,6 +389,7 @@ export function App() {
       {data !== null && <HookBanner root={data.root} />}
 
       <main>
+        <div className="canvas">
         {error !== null && <div className="error">{error}</div>}
         {error === null && view?.nodes.length === 0 && (
           <div className="empty">Nothing to show here.</div>
@@ -371,8 +404,13 @@ export function App() {
           edges={edges}
           nodeTypes={nodeTypes}
           onNodeClick={handleNodeClick}
+          onNodeDoubleClick={handleNodeDoubleClick}
           nodesDraggable={false}
           nodesConnectable={false}
+          // Off, or d3-zoom handles the double click on the pane and stops it
+          // bubbling before React sees it — onNodeDoubleClick then never fires
+          // and the view silently zooms instead of navigating.
+          zoomOnDoubleClick={false}
           fitView
           fitViewOptions={{ padding: 0.15 }}
           minZoom={0.05}
@@ -382,6 +420,17 @@ export function App() {
           <Controls showInteractive={false} />
           <MiniMap pannable zoomable />
         </ReactFlow>
+        </div>
+
+        {showSidebar && data !== null && (
+          <Sidebar
+            root={data.root}
+            selected={selected}
+            revision={revision}
+            onSelect={setSelected}
+            onFocus={goTo}
+          />
+        )}
       </main>
     </div>
   );
