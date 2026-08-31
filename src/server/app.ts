@@ -6,6 +6,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { GraphStore } from '../graph/store.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
+import { changeFromHook, type HookPayload } from '../project/hook.js';
+import type { ProjectUpdater } from '../project/updater.js';
 import type { LiveHub } from './live.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
@@ -18,9 +20,10 @@ export interface AppOptions {
   /** Absolute path of the scanned project, shown in the page header. */
   root: string;
   hub: LiveHub;
+  updater: ProjectUpdater;
 }
 
-export function buildApp({ store, root, hub }: AppOptions): FastifyInstance {
+export function buildApp({ store, root, hub, updater }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.register(fastifyStatic, { root: WEB_DIR });
@@ -30,6 +33,14 @@ export function buildApp({ store, root, hub }: AppOptions): FastifyInstance {
     root,
     view: selectView(store.graph, toSpec(request.query as Record<string, unknown>)),
   }));
+
+  app.post('/api/hook', async (request, reply) => {
+    const change = await changeFromHook((request.body ?? {}) as HookPayload, root);
+    if (change) updater.queue(change);
+    // A hook must never fail the agent's tool call, so a payload we cannot use
+    // is still a success.
+    return reply.code(200).send({ accepted: change !== null });
+  });
 
   app.register(async (scoped) => {
     scoped.get('/live', { websocket: true }, (socket) => {

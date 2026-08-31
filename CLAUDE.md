@@ -140,15 +140,16 @@ If a task seems to require one of these, stop and ask rather than building it.
 
 # Current state
 
-**MVP steps 1–3 are done.** Step 4 (the Claude Code hook endpoint) is the last
-one left.
+**The MVP is complete. All four steps are done.**
 
 1. ✅ Parse a directory of TypeScript files into the graph. CLI output only.
 2. ✅ Render the graph in a browser page — React Flow, with a view layer so the
    page never draws the whole project at once.
 3. ✅ File watcher + websocket: the page updates as files change.
-4. ⬜ Claude Code hook endpoint, so events come from the agent rather than the
-   filesystem.
+4. ✅ Claude Code hook endpoint, so events come from the agent itself.
+
+Per the scope above, this is where the MVP stops. Anything further is a phase in
+[VISION.md](VISION.md) and should be picked deliberately, not drifted into.
 
 ## Running it
 
@@ -176,25 +177,53 @@ src/
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
     worker.ts     worker_threads entry: reads a file, parses it, replies
     pool.ts       fixed pool of parser workers, one file at a time each
-  project/        the project on disk; used by the CLI and the server
-    walk.ts       boot scan + the ignore/source predicates the watcher shares
+  project/        the project on disk, and everything that changes it
+    walk.ts       boot scan + the ignore/source predicates everything shares
     scan.ts       walk + parse everything through the pool
-    watch.ts      chokidar, debounced into batches
+    watch.ts      chokidar; emits raw changes, does not batch
+    hook.ts       a Claude Code PostToolUse payload -> the same FileChange
+    updater.ts    the one pipeline: coalesce, parse, patch, publish
   view/           which slice of the graph to draw — pure
     types.ts      ViewSpec / ViewGraph
     select.ts     selectView(graph, spec) -> ViewGraph
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    app.ts        Fastify: static web build, /api/view, /live websocket
+    app.ts        Fastify: static web build, /api/view, /api/hook, /live
     live.ts       connected clients and their view specs; pushes per client
-    main.ts       boot scan, watcher wiring, listen
+    main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus and depth
   src/BoxNode.tsx one box: a file with its symbols, or a folder
   src/layout.ts   dagre layout; React Flow does not place nodes itself
   src/api.ts      fetch + the shared ViewGraph type, imported from src/view
+.claude/
+  settings.json   the PostToolUse hook, committed so the repo dogfoods itself
 ```
+
+## Event sources
+
+Two sources, one pipeline. Both build the same `FileChange` and queue it into
+`createUpdater`, which coalesces, re-parses and publishes. Nothing downstream can
+tell them apart, which is the point.
+
+```
+Claude Code PostToolUse hook  ──► POST /api/hook ──┐
+                                                   ├──► updater ──► graph ──► clients
+chokidar watcher ──────────────────────────────────┘
+```
+
+- **The hook is primary.** The agent says what it changed, at the moment it
+  changes it.
+- **The watcher is the fallback**, for hand edits and other agents. It emits raw
+  events and does no batching of its own — coalescing belongs to the updater, or
+  the two sources would debounce independently and the same edit would land
+  twice.
+- `.claude/settings.json` posts the hook payload with `curl ... || true` and a
+  2 second timeout. **A hook must never fail the agent's tool call**, so every
+  response is 200, including for payloads the endpoint cannot use.
+- The hook's URL hard-codes port 4400. Running the server on another port means
+  the hook silently misses and only the watcher feeds the graph.
 
 ## The view layer
 
@@ -213,23 +242,22 @@ links: the back button works and a view is shareable.
 - Files outside the current scope collapse to their directory and are drawn
   dimmed, so a scoped view still shows what it connects to.
 - Every `ViewNode` carries the `files` it stands for. That is what lets the page
-  tell an in-view change from one it needs to report as happening elsewhere.
+  tell an in-view change from one it must report as happening elsewhere.
 - `ViewGraph` is a separate type from `Graph` on purpose. A box standing for a
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
   model has no business carrying. The graph stays the single source of truth.
 
 ## Live updates
 
-The watcher batches changes, the graph is patched, and every connected client is
-sent a view **computed for its own spec** — a client looking at one directory is
-never handed another's slice.
+Every connected client is sent a view **computed for its own spec** — a client
+looking at one directory is never handed another's slice.
 
 The behaviour is *mark, do not move*, chosen deliberately:
 
 - A touched box pulses and holds a warm tint. The camera does not move.
 - Box positions are preserved across an update. They are only re-laid-out when
-  the set of boxes actually changes, and `fitView` runs on navigation only, never
-  on a live update. A box must not jump because the agent saved a file.
+  the set of boxes actually changes, and `fitView` runs on navigation only. A box
+  must not jump because the agent saved a file.
 - A change landing outside the current view is not drawn; it increments a
   "N changes outside" badge that focuses the most recent one when clicked.
 
@@ -243,13 +271,12 @@ impossible to study one part of the graph while the agent works elsewhere.
 - **Nodes are patched incrementally, edges are re-derived wholesale.** Only a
   changed file is re-parsed (decision 2 holds — parsing is the expensive part), but
   `derive()` rebuilds all nodes and edges from the stored `ParsedFile`s on every
-  mutation. It is pure in-memory work with no AST and no I/O, and it means a newly
-  added file can satisfy an import that failed to resolve earlier.
+  mutation. It is pure in-memory work, and it means a newly added file can satisfy
+  an import that failed to resolve earlier.
 - **Top-level declarations only.** Class methods are not separate nodes; calls made
   inside a method attribute to the enclosing class.
-- **Unresolvable references are dropped.** Bare specifiers (`react`, `node:fs`) and
-  names that resolve to nothing produce no edge. Name resolution is: own file
-  first, then imported files.
+- **Unresolvable references are dropped.** Bare specifiers and names that resolve
+  to nothing produce no edge. Resolution is: own file first, then imported files.
 - **`.d.ts` files are skipped** — they restate types the accompanying source declares.
 
 ## Decisions taken while building step 2
@@ -265,25 +292,24 @@ impossible to study one part of the graph while the agent works elsewhere.
 - **dagre lays out, React Flow draws.** Boxes are measured before layout, from
   member counts, because dagre needs dimensions up front.
 
-## Decisions taken while building step 3
+## Decisions taken while building steps 3 and 4
 
 - **One batch entry point on the store.** `applyBatch(store, updated, removed)`
   replaced `setFile` / `setFiles` / `removeFile`. A re-derivation is whole-graph
-  work, so an agent touching five files should cost one, not five. The boot scan
-  is just a batch of every file.
-- **The watcher shares the boot scan's predicates.** `isIgnoredDirectoryName` and
-  `isSourceFileName` are exported from `walk.ts` rather than restated, so the
-  watcher and the scan can never disagree about what the project contains.
-- **80 ms debounce.** An agent writes several files in a row and editors save
-  through temp files; without coalescing the same file is parsed repeatedly.
+  work, so an agent touching five files should cost one, not five.
+- **Every filtering rule has one definition.** `isIgnoredDirectoryName` and
+  `isSourceFileName` live in `walk.ts` and are used by the scan, the watcher and
+  the hook endpoint, so none of them can disagree about what the project contains.
+- **Coalescing lives in the updater, not in either source.** This is what makes
+  the two sources one pipeline: a hook and a watcher event for the same edit,
+  80 ms apart, become a single graph update and a single pulse.
 - **The server pushes views, not deltas.** A `GraphDelta` does not map onto a view
-  slice — a change can be entirely outside what a client is looking at. The client
-  sends its spec on connect and on navigation; the server answers with a view.
+  slice — a change can be entirely outside what a client is looking at.
 - **Updates are published even when the graph did not change.** A comment-only
   edit still tells you where the agent is working.
-- **Deltas are not stored.** `applyBatch` returns one, and nothing reads it yet.
-  Session diff (`VISION.md`, phase 1) is where that changes; the seam is there,
-  the storage is not, because unused storage is not worth carrying.
+- **Deltas are not stored.** `applyBatch` returns one and nothing reads it. Session
+  diff (`VISION.md`, phase 1) is where that changes; the seam is there, the
+  storage is not, because unused storage is not worth carrying.
 
 ## Dependency note
 
@@ -303,28 +329,34 @@ re-verify by parsing a file if either package is bumped.
   inline blocks it for 114 ms.
 - View selection on a generated 120-file project: root collapses to 8 folder boxes
   with weighted edges in 0.5 ms; focus depth 1 gives 19 boxes, depth 2 gives 64.
-- End to end over a real websocket against a fixture project: an edit adds the new
-  symbol to its box, a new file appears with its edge, a delete removes the box,
-  and three simultaneous writes arrive as **one** coalesced message.
+- End to end over a real websocket: an edit adds the new symbol to its box, a new
+  file appears with its edge, a delete removes the box, and three simultaneous
+  writes arrive as one coalesced message.
+- The hook endpoint accepts source files and relative paths; rejects `.md`,
+  `node_modules`, paths outside the root, and payloads with no `file_path` —
+  always with HTTP 200. A hook for a file that no longer exists removes it.
+- **A hook and a watcher event for the same edit produce exactly one websocket
+  message.** The two sources really are one pipeline.
 - The real page bundle, mounted in jsdom against a running server: the touched box
-  pulses, the new symbol appears, **positions are unchanged** (no jump), and a
-  change to a file the view does not contain produces a "1 change outside" badge
-  that focuses that file when clicked. Test tooling (jsdom, esbuild) lives outside
-  the repo so it is not a dependency.
+  pulses, the new symbol appears, positions are unchanged, and a change outside
+  the view produces a badge that focuses that file when clicked. Test tooling
+  (jsdom, esbuild) lives outside the repo so it is not a dependency.
 
 **Not verified:** how any of it *looks*, and **edge rendering**. In jsdom React
 Flow renders the nodes but leaves the edge container empty — the API returns the
 edges and the nodes are measured, so this is almost certainly jsdom's missing
 layout and zoom transform rather than a real fault, but it has not been confirmed
-in a real browser. Confirm edges are drawn before trusting a screenshot-free
-change to the page.
+in a real browser. Also unconfirmed: whether Claude Code picks up a newly added
+`.claude/settings.json` without a restart. The watcher covers the same edits
+either way, so the hook failing silently costs latency, not correctness.
 
 ## Known limitations
 
+- The hook's port is hard-coded to 4400 in `.claude/settings.json`.
 - Focus depth 2 on a densely coupled project explodes (64 boxes on the synthetic
   test). There is no cap or warning yet.
-- The watcher re-parses a file on every save; there is no content hash, so a save
-  that changes nothing still costs a parse and a publish.
+- Every save re-parses; there is no content hash, so a save that changes nothing
+  still costs a parse and a publish.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
 - Grouping keys off the directory tree only. There is no filtering by name, kind

@@ -11,36 +11,26 @@ export interface FileChange {
 
 export interface WatchOptions {
   root: string;
-  /**
-   * An agent writes several files in quick succession, and editors save through
-   * a temp file. Coalescing turns that burst into one graph update.
-   */
-  debounceMs?: number;
-  onBatch: (changes: FileChange[]) => void;
+  /** One raw event per change. Coalescing is the updater's job, not the watcher's. */
+  onChange: (change: FileChange) => void;
 }
 
 export interface ProjectWatcher {
   close(): Promise<void>;
 }
 
-export function watchProject({ root, debounceMs = 80, onBatch }: WatchOptions): ProjectWatcher {
-  const pending = new Map<string, FileChange>();
-  let timer: NodeJS.Timeout | null = null;
-
-  const flush = (): void => {
-    timer = null;
-    if (pending.size === 0) return;
-    const batch = [...pending.values()];
-    pending.clear();
-    onBatch(batch);
-  };
-
-  const queue = (absolutePath: string, kind: FileChange['kind']): void => {
-    const filePath = path.relative(root, absolutePath).split(path.sep).join('/');
-    // A later event for the same file wins: removed-then-added is an add.
-    pending.set(filePath, { filePath, absolutePath, kind });
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(flush, debounceMs);
+/**
+ * The fallback event source: it catches hand edits and agents other than Claude
+ * Code. It feeds the same updater as the hook endpoint rather than running a
+ * pipeline of its own.
+ */
+export function watchProject({ root, onChange }: WatchOptions): ProjectWatcher {
+  const emit = (absolutePath: string, kind: FileChange['kind']): void => {
+    onChange({
+      filePath: path.relative(root, absolutePath).split(path.sep).join('/'),
+      absolutePath,
+      kind,
+    });
   };
 
   const watcher = chokidar.watch(root, {
@@ -48,13 +38,12 @@ export function watchProject({ root, debounceMs = 80, onBatch }: WatchOptions): 
     ignored: (candidate) => shouldIgnore(root, candidate),
   });
 
-  watcher.on('add', (absolutePath) => queue(absolutePath, 'changed'));
-  watcher.on('change', (absolutePath) => queue(absolutePath, 'changed'));
-  watcher.on('unlink', (absolutePath) => queue(absolutePath, 'removed'));
+  watcher.on('add', (absolutePath) => emit(absolutePath, 'changed'));
+  watcher.on('change', (absolutePath) => emit(absolutePath, 'changed'));
+  watcher.on('unlink', (absolutePath) => emit(absolutePath, 'removed'));
 
   return {
     async close() {
-      if (timer) clearTimeout(timer);
       await watcher.close();
     },
   };

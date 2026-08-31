@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 5,
+            "command": "curl -s -m 2 -X POST http://127.0.0.1:4400/api/hook -H 'content-type: application/json' --data-binary @- >/dev/null 2>&1 || true"
+          }
+        ]
+      }
+    ]
+  }
+}

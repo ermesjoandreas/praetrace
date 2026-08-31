@@ -2,9 +2,9 @@
 import path from 'node:path';
 import { applyBatch, createStore } from '../graph/store.js';
 import { createParserPool } from '../parser/pool.js';
-import type { ParsedFile } from '../parser/types.js';
 import { scanProject } from '../project/scan.js';
-import { watchProject, type FileChange } from '../project/watch.js';
+import { createUpdater } from '../project/updater.js';
+import { watchProject } from '../project/watch.js';
 import { buildApp } from './app.js';
 import { createLiveHub } from './live.js';
 
@@ -15,7 +15,7 @@ async function main(): Promise<void> {
   const root = path.resolve(args.find((arg) => !arg.startsWith('--')) ?? '.');
   const port = readPort(args);
 
-  // The pool now outlives the boot scan: the watcher re-parses through it.
+  // The pool outlives the boot scan: every later change re-parses through it.
   const pool = createParserPool();
   const store = createStore();
 
@@ -25,40 +25,20 @@ async function main(): Promise<void> {
 
   const hub = createLiveHub(store);
 
-  const watcher = watchProject({
-    root,
-    onBatch: (changes) => {
-      void handleChanges(changes).catch((error: unknown) => {
-        console.error(`codemap: ${error instanceof Error ? error.message : String(error)}`);
-      });
-    },
+  // Both event sources queue here. There is no second pipeline.
+  const updater = createUpdater({
+    store,
+    pool,
+    onApplied: (changedFiles) => hub.publish(changedFiles),
+    onError: (message) => console.error(`codemap: ${message}`),
   });
 
-  async function handleChanges(changes: readonly FileChange[]): Promise<void> {
-    const removed = changes.filter((change) => change.kind === 'removed').map((c) => c.filePath);
-    const edited = changes.filter((change) => change.kind === 'changed');
-
-    const results = await Promise.allSettled(
-      edited.map((change) => pool.parse(change.filePath, change.absolutePath)),
-    );
-
-    const updated: ParsedFile[] = [];
-    for (const result of results) {
-      if (result.status === 'fulfilled') updated.push(result.value);
-      else console.error(`codemap: ${String(result.reason)}`);
-    }
-
-    applyBatch(store, updated, removed);
-
-    // Published even when the graph is unchanged: a touched file is worth
-    // showing, and a comment-only edit still tells you where the agent is.
-    hub.publish(changes.map((change) => change.filePath));
-  }
-
-  const app = buildApp({ store, root, hub });
+  const watcher = watchProject({ root, onChange: (change) => updater.queue(change) });
+  const app = buildApp({ store, root, hub, updater });
   const address = await app.listen({ port, host: '127.0.0.1' });
 
   process.on('SIGINT', () => {
+    updater.close();
     void Promise.allSettled([watcher.close(), pool.close(), app.close()]).then(() => {
       process.exit(0);
     });
@@ -67,7 +47,7 @@ async function main(): Promise<void> {
   console.log(`codemap  ${root}`);
   console.log(`${scan.parsed.length} files · ${store.graph.nodes.size} nodes · ${store.graph.edges.length} edges`);
   console.log(`\n  ${address}\n`);
-  console.log('watching for changes…\n');
+  console.log(`watching for changes · hook endpoint at ${address}/api/hook\n`);
 }
 
 function readPort(args: readonly string[]): number {
