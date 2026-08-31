@@ -11,7 +11,8 @@
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "codemap": "node dist/cli/index.js",
-    "serve": "node dist/server/main.js"
+    "serve": "node dist/server/main.js",
+    "tauri": "tauri"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.1",
@@ -26,6 +27,7 @@
     "tree-sitter-typescript": "^0.23.2"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",

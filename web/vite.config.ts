@@ -13,7 +13,16 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    // Pinned because the Tauri shell points devUrl at this exact address;
+    // letting Vite pick a fallback port would silently break `tauri dev`.
+    port: 5173,
+    strictPort: true,
     // `npm run dev:web` talks to a `npm run serve` on the default port.
-    proxy: { '/api': 'http://127.0.0.1:4400' },
+    // /live must be proxied too, with ws:true, or dev mode renders a graph that
+    // never updates.
+    proxy: {
+      '/api': 'http://127.0.0.1:4400',
+      '/live': { target: 'ws://127.0.0.1:4400', ws: true },
+    },
   },
 });
