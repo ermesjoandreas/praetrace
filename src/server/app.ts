@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
+import { applyDecision, mergeGroups, readGroups, writeGroups } from '../project/groups.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
 import { describe } from '../view/detail.js';
 import {
@@ -11,6 +12,7 @@ import {
   parseDuration,
   type ViewFilter,
 } from '../view/filter.js';
+import { clusterFiles } from '../view/cluster.js';
 import { search } from '../view/search.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -63,6 +65,29 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const query = request.query as Record<string, unknown>;
     const term = typeof query['q'] === 'string' ? query['q'] : '';
     return { hits: search(host.current().store.graph, term) };
+  });
+
+  app.get('/api/clusters', async () => {
+    const session = host.current();
+    // The graph decides membership; the stored file only supplies names.
+    const clusters = clusterFiles(session.store.graph);
+    return { clusters: mergeGroups(clusters, await readGroups(session.root)) };
+  });
+
+  app.post('/api/clusters', async (request, reply) => {
+    const body = (request.body ?? {}) as { files?: unknown; name?: unknown; state?: unknown };
+    const files = Array.isArray(body.files) ? body.files.filter((f) => typeof f === 'string') : [];
+    const state = body.state === 'rejected' ? 'rejected' : 'accepted';
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+
+    if (files.length === 0) return reply.code(400).send({ error: 'files must be a non-empty array' });
+    if (state === 'accepted' && name === '') {
+      return reply.code(400).send({ error: 'an accepted group needs a name' });
+    }
+
+    const root = host.current().root;
+    await writeGroups(root, applyDecision(await readGroups(root), files, { name, state }));
+    return { ok: true };
   });
 
   app.get('/api/changes', async () => ({ changes: [...host.current().history()].reverse() }));

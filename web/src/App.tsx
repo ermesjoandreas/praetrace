@@ -2,11 +2,14 @@ import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/rea
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import {
+  decideCluster,
+  fetchClusters,
   fetchView,
   liveUrl,
   openInEditor,
   rememberProject,
   switchProject,
+  type GroupSuggestion,
   type SearchHit,
   type ViewGraph,
   type ViewResponse,
@@ -16,9 +19,12 @@ import { ProjectMenu } from './ProjectMenu';
 import { SearchPalette } from './SearchPalette';
 import { Sidebar } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
-import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
+import { GroupNode, type GroupNodeType } from './GroupNode';
+import { NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
 
-const nodeTypes = { box: BoxNode };
+const nodeTypes = { box: BoxNode, frame: GroupNode };
+
+type FlowNode = BoxNodeType | GroupNodeType;
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 /** The default edge kinds plus calls; the button is a shortcut for this set. */
@@ -49,6 +55,7 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
+  const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
   /** Files the view covered before the update now being processed. */
@@ -188,6 +195,29 @@ export function App() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetchClusters().then(
+      (found) => {
+        if (!cancelled) setClusters(found);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root]);
+
+  const decide = useCallback(
+    (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => {
+      decideCluster(group.files, name, state).then(
+        () => setRevision((n) => n + 1),
+        (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+      );
+    },
+    [],
+  );
+
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
@@ -218,10 +248,15 @@ export function App() {
   }, [view, pulsing]);
 
   // Positions survive live updates: a box must not jump because the agent saved.
-  const positionsRef = useRef(new Map<string, { x: number; y: number }>());
+  const layoutRef = useRef<{
+    positions: Map<string, { x: number; y: number }>;
+    clusters: ClusterBounds[];
+    /** Which groups the cached layout was computed for. */
+    clusterKey: string;
+  }>({ positions: new Map(), clusters: [], clusterKey: '' });
 
   const { nodes, edges } = useMemo(() => {
-    if (!view) return { nodes: [] as BoxNodeType[], edges: [] as Edge[] };
+    if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
 
     const builtEdges: Edge[] = view.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
@@ -250,17 +285,64 @@ export function App() {
       },
     }));
 
-    const previous = positionsRef.current;
-    const sameShape = boxes.length === previous.size && boxes.every((box) => previous.has(box.id));
+    const shown = clusters.filter((group) => group.state !== 'rejected');
+    const clusterKey = shown.map((group) => group.id).join('|');
+    const previous = layoutRef.current;
 
-    // Only the contents changed, so keep every box exactly where it was.
-    const placed = sameShape
-      ? boxes.map((box) => ({ ...box, position: previous.get(box.id) ?? box.position }))
-      : layoutNodes(boxes, builtEdges);
+    // The groups arrive from their own request, after the first layout. Without
+    // comparing them too, that first cluster-less layout would be reused for
+    // ever and no frame would ever appear.
+    const sameShape =
+      clusterKey === previous.clusterKey &&
+      boxes.length === previous.positions.size &&
+      boxes.every((box) => previous.positions.has(box.id));
 
-    positionsRef.current = new Map(placed.map((box) => [box.id, box.position]));
-    return { nodes: placed, edges: builtEdges };
-  }, [view, changedBoxIds, data?.root]);
+    // Only the contents changed, so keep every box and frame exactly where it was.
+    const laid = sameShape
+      ? {
+          nodes: boxes.map((box) => ({
+            ...box,
+            position: previous.positions.get(box.id) ?? box.position,
+          })),
+          clusters: previous.clusters,
+        }
+      : layoutNodes(boxes, builtEdges, shown);
+
+    layoutRef.current = {
+      positions: new Map(laid.nodes.map((box) => [box.id, box.position])),
+      clusters: laid.clusters,
+      clusterKey,
+    };
+
+    const byId = new Map(shown.map((group) => [group.id, group]));
+    // Frames first, so they render behind the boxes they enclose.
+    const frames: GroupNodeType[] = laid.clusters.flatMap((bounds) => {
+      const group = byId.get(bounds.id);
+      if (!group) return [];
+      return [
+        {
+          id: `group:${bounds.id}`,
+          type: 'frame' as const,
+          position: { x: bounds.x, y: bounds.y },
+          width: bounds.width,
+          height: bounds.height,
+          zIndex: -1,
+          selectable: false,
+          draggable: false,
+          data: {
+            name: group.name,
+            fileCount: group.files.length,
+            cohesion: group.cohesion,
+            accepted: group.state === 'accepted',
+            onAccept: (name: string) => decide(group, name, 'accepted'),
+            onReject: () => decide(group, group.name ?? '', 'rejected'),
+          },
+        },
+      ];
+    });
+
+    return { nodes: [...frames, ...laid.nodes] as FlowNode[], edges: builtEdges };
+  }, [view, changedBoxIds, data?.root, clusters, decide]);
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();
@@ -271,7 +353,8 @@ export function App() {
 
   // Click inspects, double-click moves. A single click used to teleport the
   // view, which made every glance at a box a navigation you had to undo.
-  const handleNodeClick = useCallback((_event: MouseEvent, node: BoxNodeType) => {
+  const handleNodeClick = useCallback((_event: MouseEvent, node: FlowNode) => {
+    if (node.type !== 'box') return;
     setSelected(node.id);
     setShowSidebar(true);
   }, []);
@@ -292,7 +375,10 @@ export function App() {
   );
 
   const handleNodeDoubleClick = useCallback(
-    (_event: MouseEvent, node: BoxNodeType) => goTo(node.id, node.data.kind),
+    (_event: MouseEvent, node: FlowNode) => {
+      if (node.type !== 'box') return;
+      goTo(node.id, node.data.kind);
+    },
     [goTo],
   );
 
@@ -467,7 +553,7 @@ export function App() {
         {error === null && view?.nodes.length === 0 && (
           <div className="empty">Nothing to show here.</div>
         )}
-        <ReactFlow<BoxNodeType, Edge>
+        <ReactFlow<FlowNode, Edge>
           // Keyed on the LOADED view, not on the URL. Keying on the URL remounts
           // the instant a link is clicked, while `nodes` still holds the previous
           // slice, so fitView fits the old graph and the new one arrives with no
@@ -491,7 +577,13 @@ export function App() {
         >
           <Background gap={22} size={1} />
           <Controls showInteractive={false} />
-          <MiniMap pannable zoomable />
+          <MiniMap
+            pannable
+            zoomable
+            // A frame is the size of everything it encloses, so in the minimap it
+            // would be a solid block over the boxes it is meant to sit behind.
+            nodeColor={(node) => (node.type === 'frame' ? 'transparent' : '#3a414d')}
+          />
         </ReactFlow>
         </div>
 

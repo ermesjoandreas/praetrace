@@ -9,3 +9,4 @@ src-tauri/gen/
 src-tauri/binaries/
 .claude/codemap.port
 dist-app/
+.codemap/

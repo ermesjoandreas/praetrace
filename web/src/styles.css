@@ -661,3 +661,74 @@ main { display: flex; flex: 1; min-height: 0; }
 /* Calls replace the import between the same pair, so they read as the stronger
    relationship rather than a second line on the same path. */
 .react-flow__edge.edge-calls .react-flow__edge-path { stroke: #9ece6a; stroke-width: 1.6; }
+
+/* --- suggested groups --- */
+
+.group {
+  width: 100%;
+  height: 100%;
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  background: rgba(122, 162, 247, 0.035);
+  /* The frame must never swallow a click meant for a box behind it. */
+  pointer-events: none;
+}
+
+.group-accepted {
+  border-style: solid;
+  border-color: #4a5a7a;
+  background: rgba(122, 162, 247, 0.06);
+}
+
+.group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin: 5px 0 0 10px;
+  pointer-events: all;
+}
+
+.group-name {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 1px 5px;
+}
+.group-accepted .group-name { color: var(--accent); }
+.group-name:hover { background: var(--line); color: var(--text); }
+
+.group-meta { color: var(--line-strong); font-size: 10px; }
+
+.group-reject {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--line-strong);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.group-reject:hover { color: #f2a2a2; background: var(--line); }
+
+.group-label input {
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  outline: none;
+  padding: 2px 6px;
+  width: 190px;
+}
+
+/* React Flow sets pointer-events on the node wrapper inline; a frame must let
+   clicks through to the boxes it encloses, and only its own label catch them. */
+.react-flow__node-frame { pointer-events: none !important; }
+.group-label { pointer-events: auto; }

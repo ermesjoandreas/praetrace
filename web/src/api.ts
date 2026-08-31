@@ -197,3 +197,35 @@ export async function searchGraph(query: string): Promise<SearchHit[]> {
   if (!response.ok) throw new Error(`search failed: HTTP ${response.status}`);
   return ((await response.json()) as { hits: SearchHit[] }).hits;
 }
+
+export interface GroupSuggestion {
+  id: string;
+  files: string[];
+  cohesion: number;
+  name: string | null;
+  state: 'suggested' | 'accepted' | 'rejected';
+}
+
+export async function fetchClusters(): Promise<GroupSuggestion[]> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/clusters`);
+  if (!response.ok) throw new Error(`clusters failed: HTTP ${response.status}`);
+  return ((await response.json()) as { clusters: GroupSuggestion[] }).clusters;
+}
+
+export async function decideCluster(
+  files: string[],
+  name: string,
+  state: 'accepted' | 'rejected',
+): Promise<void> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/clusters`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ files, name, state }),
+  });
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${response.status}`);
+  }
+}
