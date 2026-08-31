@@ -16,6 +16,8 @@ export interface ViewSpec {
 export interface ViewMember {
   name: string;
   kind: NodeKind;
+  /** Where the symbol starts, so the page can open an editor on it. */
+  line: number;
 }
 
 export interface ViewNode {

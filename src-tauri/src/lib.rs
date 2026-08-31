@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -102,6 +103,20 @@ fn remember_project(app: AppHandle, path: String) -> Vec<String> {
         }
     }
     recents
+}
+
+/// Editor deep links. The scheme is allowlisted rather than trusted: the
+/// webview hands this a string, and "open whatever you are given" is how a page
+/// turns into a way to launch things.
+#[tauri::command]
+fn open_in_editor(app: AppHandle, url: String) -> Result<(), String> {
+    const ALLOWED: [&str; 2] = ["vscode://", "cursor://"];
+    if !ALLOWED.iter().any(|scheme| url.starts_with(scheme)) {
+        return Err(format!("refusing to open {url}"));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| error.to_string())
 }
 
 // --- sidecar -------------------------------------------------------------
@@ -211,12 +226,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(Server::default())
         .invoke_handler(tauri::generate_handler![
             get_server_port,
             pick_project,
             recent_projects,
-            remember_project
+            remember_project,
+            open_in_editor
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

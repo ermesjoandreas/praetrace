@@ -45,7 +45,7 @@ function collectFiles(graph: Graph): Map<string, ViewMember[]> {
   }
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file') continue;
-    files.get(node.filePath)?.push({ name: node.name, kind: node.kind });
+    files.get(node.filePath)?.push({ name: node.name, kind: node.kind, line: node.range.startLine });
   }
 
   return files;

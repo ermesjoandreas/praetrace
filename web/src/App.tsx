@@ -193,6 +193,7 @@ export function App() {
         external: node.external,
         focused: node.focused,
         changed: changedBoxIds.has(node.id),
+        root: data?.root ?? '',
       },
     }));
 
@@ -206,7 +207,7 @@ export function App() {
 
     positionsRef.current = new Map(placed.map((box) => [box.id, box.position]));
     return { nodes: placed, edges: builtEdges };
-  }, [view, changedBoxIds]);
+  }, [view, changedBoxIds, data?.root]);
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();

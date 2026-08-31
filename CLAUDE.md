@@ -246,10 +246,10 @@ chokidar watcher ─────────────────────
 
 ## Desktop shell (phase D, in progress)
 
-Items 1-4 are done: the Tauri shell exists, it owns a Node sidecar on an
-OS-assigned port, the project is chosen at runtime, and the app installs the
-Claude Code hook itself. Items 5-6 (editor deep links, local persistence) are
-not started.
+Items 1-5 are done: the Tauri shell exists, it owns a Node sidecar on an
+OS-assigned port, the project is chosen at runtime, the app installs the Claude
+Code hook itself, and boxes deep-link into the editor. Item 6 (local
+persistence) is not started.
 
 ```
 Tauri shell (Rust — process lifecycle, nothing else)
@@ -292,6 +292,18 @@ around the session history that phase 1 of VISION.md will need. A list of paths
 is not a reason to improvise that schema early. On launch the app opens the most
 recent directory that still exists; with none, an empty placeholder directory —
 never $HOME, which would set a parser pool loose on the whole filesystem.
+
+**Editor deep links.** A click on a box already navigates the graph, so opening
+an editor uses a different target: clicking a **symbol** opens its file at that
+symbol's own line, and a button in the box header opens the file at line 1. The
+line numbers were already in the graph; `ViewMember` now carries one.
+
+The URL is `vscode://file/<absolute path>:<line>`, built with `encodeURI` so a
+path with a space survives. Under Tauri it goes through an `open_in_editor`
+command that allowlists the scheme — the webview hands Rust a string, and
+"open whatever you are given" is how a page becomes a way to launch things. In a
+browser the OS handles the scheme itself, usually after a prompt. The scheme is
+fixed for now; item 6's per-project settings are where it would become a choice.
 
 **The port contract.** `--port=0` asks the OS to assign one; the server prints
 `codemap-port=<n>` as its first stdout line and Rust parses that. The CLI default

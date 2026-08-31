@@ -104,15 +104,39 @@ main { position: relative; flex: 1; min-height: 0; }
 .box:hover { border-color: var(--accent); }
 
 .box-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 7px 10px;
   font-size: 12px;
   border-bottom: 1px solid var(--line);
+}
+
+/* rtl puts the ellipsis at the front, so a long path keeps its filename. */
+.box-title-text {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
 }
+
+.box-open {
+  flex: none;
+  opacity: 0;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.box:hover .box-open { opacity: 1; }
+.box-open:hover { color: var(--accent); background: var(--line); }
 
 .box-folder .box-title { color: var(--folder); }
 .box-folder { border-color: #6b5730; }
@@ -126,14 +150,29 @@ main { position: relative; flex: 1; min-height: 0; }
 
 .box-members { margin: 0; padding: 4px 0; list-style: none; }
 .member {
-  padding: 0 10px;
   font-size: 11px;
   line-height: 17px;
   color: var(--muted);
+}
+
+.member button {
+  display: block;
+  width: 100%;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 17px;
+  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.member button:hover { background: var(--line); color: var(--accent); }
+
+.member-more { padding: 0 10px; }
 .member-class, .member-interface { color: #bb9af7; }
 .member-type { color: #7dcfff; }
 .member-more { color: var(--line-strong); font-style: italic; }

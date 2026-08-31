@@ -93,3 +93,19 @@ export async function installHook(): Promise<HookStatus> {
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
   return body;
 }
+
+/**
+ * Deep-links into the editor. The line comes from the graph, so a symbol opens
+ * on its own declaration rather than at the top of the file.
+ */
+export async function openInEditor(root: string, filePath: string, line: number): Promise<void> {
+  // encodeURI keeps the separators and escapes spaces, which paths do contain.
+  const url = `vscode://file${encodeURI(`${root}/${filePath}`)}:${line}`;
+
+  if (isDesktop) {
+    await invoke('open_in_editor', { url });
+    return;
+  }
+  // A browser hands a custom scheme to the OS itself, usually after a prompt.
+  window.open(url, '_self');
+}
