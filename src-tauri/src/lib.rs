@@ -3,6 +3,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager, RunEvent, State};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
@@ -12,6 +13,9 @@ const PORT_LINE_PREFIX: &str = "codemap-port=";
 
 /// How long the webview will wait for the sidecar to finish its boot scan.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Enough to be useful in a menu, short enough to stay a menu.
+const MAX_RECENTS: usize = 10;
 
 #[derive(Default)]
 struct Server {
@@ -36,6 +40,72 @@ async fn get_server_port(server: State<'_, Server>) -> Result<u16, String> {
     }
 }
 
+/// A native folder picker. Returns null when the user cancels.
+#[tauri::command]
+async fn pick_project(app: AppHandle) -> Option<String> {
+    let (send, receive) = tokio::sync::oneshot::channel();
+
+    app.dialog()
+        .file()
+        .set_title("Open project")
+        .pick_folder(move |picked| {
+            let path = picked
+                .and_then(|file| file.into_path().ok())
+                .map(|path| path.to_string_lossy().to_string());
+            let _ = send.send(path);
+        });
+
+    receive.await.ok().flatten()
+}
+
+// --- recent projects -----------------------------------------------------
+//
+// A plain JSON file, deliberately. Item 6 introduces SQLite for window state and
+// per-project settings, designed around session history; a list of paths is not
+// a reason to improvise that schema early.
+
+fn recents_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("recent-projects.json"))
+}
+
+fn read_recents(app: &AppHandle) -> Vec<String> {
+    let Ok(path) = recents_path(app) else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str::<Vec<String>>(&raw).unwrap_or_default()
+}
+
+#[tauri::command]
+fn recent_projects(app: AppHandle) -> Vec<String> {
+    // Directories that have since been deleted or moved are not offered.
+    read_recents(&app)
+        .into_iter()
+        .filter(|path| PathBuf::from(path).is_dir())
+        .collect()
+}
+
+#[tauri::command]
+fn remember_project(app: AppHandle, path: String) -> Vec<String> {
+    let mut recents = read_recents(&app);
+    recents.retain(|existing| existing != &path);
+    recents.insert(0, path);
+    recents.truncate(MAX_RECENTS);
+
+    if let Ok(file) = recents_path(&app) {
+        if let Ok(encoded) = serde_json::to_string_pretty(&recents) {
+            let _ = std::fs::write(file, encoded);
+        }
+    }
+    recents
+}
+
+// --- sidecar -------------------------------------------------------------
+
 /// Where the server's JavaScript lives.
 ///
 /// Development runs the repository's own build so `npm run build` is picked up
@@ -51,21 +121,33 @@ fn server_entry(app: &AppHandle) -> Result<PathBuf, String> {
     }
 }
 
-/// Temporary. Item 3 replaces this with a native folder picker and a
-/// recent-projects list; until then development graphs the repository itself.
-fn initial_project_root() -> PathBuf {
+/// The project to open on launch. The picker replaces it from then on.
+fn initial_project_root(app: &AppHandle) -> PathBuf {
     if let Ok(explicit) = std::env::var("CODEMAP_PROJECT") {
         return PathBuf::from(explicit);
+    }
+    if let Some(recent) = read_recents(app).into_iter().find(|p| PathBuf::from(p).is_dir()) {
+        return PathBuf::from(recent);
     }
     if cfg!(debug_assertions) {
         return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+
+    // Nothing opened yet. An empty directory keeps the server on one code path
+    // and lets the window offer the picker — pointing it at $HOME would set a
+    // parser pool loose on the entire filesystem.
+    let placeholder = app
+        .path()
+        .app_config_dir()
+        .map(|dir| dir.join("no-project"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("codemap-no-project"));
+    let _ = std::fs::create_dir_all(&placeholder);
+    placeholder
 }
 
 fn spawn_server(app: &AppHandle) -> Result<(), String> {
     let entry = server_entry(app)?;
-    let root = initial_project_root();
+    let root = initial_project_root(app);
 
     let (mut events, child) = app
         .shell()
@@ -92,8 +174,8 @@ fn spawn_server(app: &AppHandle) -> Result<(), String> {
         while let Some(event) = events.recv().await {
             match event {
                 CommandEvent::Stdout(bytes) => {
-                    let line = String::from_utf8_lossy(&bytes);
-                    for line in line.lines() {
+                    let text = String::from_utf8_lossy(&bytes);
+                    for line in text.lines() {
                         if let Some(port) = line.trim().strip_prefix(PORT_LINE_PREFIX) {
                             match port.parse::<u16>() {
                                 Ok(port) => {
@@ -128,8 +210,14 @@ fn spawn_server(app: &AppHandle) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(Server::default())
-        .invoke_handler(tauri::generate_handler![get_server_port])
+        .invoke_handler(tauri::generate_handler![
+            get_server_port,
+            pick_project,
+            recent_projects,
+            remember_project
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(

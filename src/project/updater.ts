@@ -74,6 +74,11 @@ export function createUpdater({
       else onError?.(result.reason instanceof Error ? result.reason.message : String(result.reason));
     }
 
+    // Re-checked after the await: closing happens while a batch is in flight
+    // when a project is switched, and a parse from the abandoned project must
+    // not write to anything or announce itself.
+    if (closed) return;
+
     applyBatch(store, updated, removed);
 
     // Reported even when the graph is unchanged: a touched file is worth

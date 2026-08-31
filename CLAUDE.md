@@ -193,12 +193,14 @@ src/
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    app.ts        Fastify: static web build, /api/view, /api/hook, /live
+    session.ts    one project: store, pool, watcher, updater. Swapped whole
+    app.ts        Fastify: static web build, /api/view, /api/project, /api/hook, /live
     live.ts       connected clients and their view specs; pushes per client
     main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus and depth
   src/BoxNode.tsx one box: a file with its symbols, or a folder
+  src/ProjectMenu.tsx  folder picker and recents; desktop only
   src/layout.ts   dagre layout; React Flow does not place nodes itself
   src/api.ts      fetch + the shared ViewGraph type, imported from src/view
 .claude/
@@ -231,9 +233,9 @@ chokidar watcher ─────────────────────
 
 ## Desktop shell (phase D, in progress)
 
-Items 1 and 2 are done: the Tauri shell exists, and it owns a Node sidecar on an
-OS-assigned port. Items 3-6 (project picker, hook installation, editor deep
-links, local persistence) are not started.
+Items 1-3 are done: the Tauri shell exists, it owns a Node sidecar on an
+OS-assigned port, and the project is chosen at runtime. Items 4-6 (hook
+installation, editor deep links, local persistence) are not started.
 
 ```
 Tauri shell (Rust — process lifecycle, nothing else)
@@ -257,6 +259,25 @@ running the script — thinned with `lipo` and ad-hoc signed, or macOS SIGKILLs 
 constraints stop being constraints: worker_threads loads a real sibling file, and
 the addons are found exactly as in development. The binary is 111 MB, generated
 rather than committed, and gitignored.
+
+**Switching projects opens a new session, it does not reset the old one.**
+`server/session.ts` owns everything root-scoped — the store, the parser pool, the
+watcher, the updater. A switch builds the next session, swaps it in, then closes
+the previous one, so nothing is shared and nothing can leak. The alternative was
+a `reset()` on each of six modules, every one an opportunity to forget something.
+
+Switches are serialised, and the new session is built before the old one is torn
+down: a root that turns out not to exist leaves the current project serving.
+Clients are told through a `project` message rather than an `update`, because
+every spec they hold names a path in the project just left; the page clears its
+URL when it arrives.
+
+**Recent projects are a JSON file** in the app config directory, written by Rust.
+Item 6 introduces SQLite for window state and per-project settings, designed
+around the session history that phase 1 of VISION.md will need. A list of paths
+is not a reason to improvise that schema early. On launch the app opens the most
+recent directory that still exists; with none, an empty placeholder directory —
+never $HOME, which would set a parser pool loose on the whole filesystem.
 
 **The port contract.** `--port=0` asks the OS to assign one; the server prints
 `codemap-port=<n>` as its first stdout line and Rust parses that. The CLI default

@@ -10,6 +10,9 @@ export interface LiveSocket {
 
 const OPEN = 1;
 
+/** What a client is shown when it connects, and after a project switch. */
+export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1 };
+
 export interface LiveHub {
   add(socket: LiveSocket, spec: ViewSpec): void;
   setSpec(socket: LiveSocket, spec: ViewSpec): void;
@@ -19,18 +22,31 @@ export interface LiveHub {
    * at one directory should not be handed another's.
    */
   publish(changedFiles: readonly string[]): void;
+  /**
+   * Announce a new project. Every stored spec names paths in the previous one,
+   * so they are reset rather than carried over into a graph where they mean
+   * nothing.
+   */
+  projectChanged(): void;
   clientCount(): number;
 }
 
-export function createLiveHub(store: GraphStore): LiveHub {
+export function createLiveHub(getSession: () => { root: string; store: GraphStore }): LiveHub {
   const clients = new Map<LiveSocket, ViewSpec>();
 
-  const push = (socket: LiveSocket, spec: ViewSpec, changedFiles: readonly string[]): void => {
+  const push = (
+    socket: LiveSocket,
+    spec: ViewSpec,
+    changedFiles: readonly string[],
+    type: 'update' | 'project',
+  ): void => {
     if (socket.readyState !== OPEN) return;
+    const session = getSession();
     socket.send(
       JSON.stringify({
-        type: 'update',
-        view: selectView(store.graph, spec),
+        type,
+        root: session.root,
+        view: selectView(session.store.graph, spec),
         changedFiles,
       }),
     );
@@ -51,7 +67,12 @@ export function createLiveHub(store: GraphStore): LiveHub {
     },
 
     publish(changedFiles) {
-      for (const [socket, spec] of clients) push(socket, spec, changedFiles);
+      for (const [socket, spec] of clients) push(socket, spec, changedFiles, 'update');
+    },
+
+    projectChanged() {
+      for (const socket of [...clients.keys()]) clients.set(socket, ROOT_SPEC);
+      for (const [socket, spec] of clients) push(socket, spec, [], 'project');
     },
 
     clientCount() {

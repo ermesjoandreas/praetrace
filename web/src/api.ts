@@ -42,3 +42,30 @@ export async function liveUrl(): Promise<URL> {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url;
 }
+
+/** The desktop shell adds a folder picker; a browser tab has no equivalent. */
+export const isDesktop = isTauri();
+
+export async function switchProject(root: string): Promise<{ root: string }> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/project`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ root }),
+  });
+  const body = (await response.json()) as { root?: string; error?: string };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return { root: body.root ?? root };
+}
+
+export function pickProject(): Promise<string | null> {
+  return invoke<string | null>('pick_project');
+}
+
+export function recentProjects(): Promise<string[]> {
+  return invoke<string[]>('recent_projects');
+}
+
+export function rememberProject(path: string): Promise<string[]> {
+  return invoke<string[]>('remember_project', { path });
+}

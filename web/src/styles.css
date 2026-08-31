@@ -208,3 +208,64 @@ main { position: relative; flex: 1; min-height: 0; }
 
 .react-flow__attribution { background: transparent; }
 .react-flow__attribution a { color: var(--line-strong); }
+
+/* --- project picker (desktop only) --- */
+
+.project { position: relative; }
+
+.project-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 3px 8px;
+}
+.project-button:hover { border-color: var(--line-strong); }
+.chevron { color: var(--muted); font-size: 9px; }
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  min-width: 240px;
+  max-width: 420px;
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+.project-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-menu button:hover { background: var(--line); }
+
+.project-sep {
+  padding: 8px 9px 4px;
+  border-top: 1px solid var(--line);
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}

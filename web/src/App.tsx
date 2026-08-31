@@ -1,7 +1,8 @@
 import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import { fetchView, liveUrl, type ViewGraph, type ViewResponse } from './api';
+import { fetchView, liveUrl, rememberProject, switchProject, type ViewGraph, type ViewResponse } from './api';
+import { ProjectMenu } from './ProjectMenu';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
 
@@ -9,8 +10,10 @@ const nodeTypes = { box: BoxNode };
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 
-interface LiveUpdate {
-  type: 'update';
+interface LiveMessage {
+  /** `project` means the server switched roots; every path on screen is stale. */
+  type: 'update' | 'project';
+  root: string;
   view: ViewGraph;
   changedFiles: string[];
 }
@@ -92,7 +95,20 @@ export function App() {
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
-        const message = JSON.parse(event.data) as LiveUpdate;
+        const message = JSON.parse(event.data) as LiveMessage;
+
+        if (message.type === 'project') {
+          // The URL names a scope or a file in the project we just left.
+          window.history.replaceState(null, '', window.location.pathname);
+          setSearch('');
+          setMissed([]);
+          setPulsing([]);
+          coveredRef.current = new Set(message.view.nodes.flatMap((node) => node.files));
+          setData({ root: message.root, view: message.view });
+          setError(null);
+          return;
+        }
+
         if (message.type !== 'update') return;
 
         const after = new Set(message.view.nodes.flatMap((node) => node.files));
@@ -232,6 +248,15 @@ export function App() {
     [focus, navigate],
   );
 
+  const handleSwitchProject = useCallback((root: string) => {
+    // The server pushes a 'project' message on success, which is what clears the
+    // URL and swaps the graph; this only has to start it and record the choice.
+    switchProject(root).then(
+      (result) => void rememberProject(result.root).catch(() => undefined),
+      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, []);
+
   const goToMissed = useCallback(() => {
     const latest = missed.at(-1);
     if (latest === undefined) return;
@@ -245,7 +270,7 @@ export function App() {
       <header>
         <span className="brand">codemap</span>
         <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
-        <span className="root">{data?.root ?? '…'}</span>
+        <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
 
         {focus === null ? (
           <nav className="trail">
