@@ -1,0 +1,34 @@
+{
+  "groups": [
+    {
+      "name": "Parsing",
+      "files": [
+        "src/cli/index.ts",
+        "src/graph/resolve.ts",
+        "src/graph/store.ts",
+        "src/parser/pool.ts",
+        "src/parser/types.ts",
+        "src/project/scan.ts",
+        "src/project/updater.ts",
+        "src/server/session.ts"
+      ],
+      "state": "accepted"
+    },
+    {
+      "name": "Frontend",
+      "files": [
+        "web/src/App.tsx",
+        "web/src/BoxNode.tsx",
+        "web/src/GroupNode.tsx",
+        "web/src/HookBanner.tsx",
+        "web/src/ProjectMenu.tsx",
+        "web/src/SearchPalette.tsx",
+        "web/src/Sidebar.tsx",
+        "web/src/api.ts",
+        "web/src/layout.ts",
+        "web/src/main.tsx"
+      ],
+      "state": "accepted"
+    }
+  ]
+}

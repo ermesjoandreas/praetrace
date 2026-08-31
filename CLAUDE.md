@@ -395,6 +395,46 @@ links: the back button works and a view is shareable.
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
   model has no business carrying. The graph stays the single source of truth.
 
+## Architectural groups
+
+The graph finds groups of files that lean on each other more than on anything
+else — label propagation over the import graph, deterministic, no model
+involved. A person, or an agent, gives them names.
+
+That split is the whole design. **Membership comes from the graph and only from
+the graph.** A tidy grouping that does not match the imports is worse than none,
+because it is wrong in a way that looks authoritative. A model may suggest a
+name; it may never decide who belongs.
+
+Frames are drawn tight around where members actually landed, not around dagre's
+parent box, which spans every rank its children touch. Where two still overlap
+badly the more cohesive one keeps its frame — and the panel lists every group
+regardless, so a frame that cannot be drawn is still nameable.
+
+Accepted names live in `.codemap/groups.json` **in the project, committed**: a
+name for a piece of architecture belongs beside the code and is worth sharing.
+The file is written only when a decision is made. Names are matched back to
+freshly computed clusters by member overlap, so they survive membership drifting.
+
+## The MCP server
+
+`scripts/mcp.mjs` exposes codemap to whichever agent is working in the project.
+`.mcp.json` wires it up; it needs no configuration beyond that.
+
+The direction is the point, and it is the same argument as the hook's. An MCP
+server is called **by** an agent and can never call one, so the app cannot ask a
+model to name a group. Instead it offers the unnamed groups to the agent already
+running — no API key, no cost, nothing leaving the machine.
+
+  list_groups     the clusters, named and unnamed
+  name_group      accept one with a name
+  describe_file   declares / used by / uses
+  search_symbols  subsequence search over the whole project
+
+It holds no graph of its own; it talks to a running codemap over HTTP and finds
+it through the same `.claude/codemap.port` file the hook reads. With nothing
+running it says so, and says how to start it.
+
 ## Search and call edges
 
 **⌘K** (or ⌘P) opens a palette that searches the **whole graph**, not the slice
