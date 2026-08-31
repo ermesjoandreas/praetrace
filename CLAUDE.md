@@ -165,7 +165,7 @@ npm run typecheck                 # checks src/ and web/
 
 node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
 npm run tauri dev                 # the desktop app
-npm run tauri build               # bundled app
+CI=true npm run tauri build       # .app + .dmg — see "Packaging"
 ```
 
 ## Layout
@@ -347,6 +347,31 @@ posting to, and that something else could later occupy. Do not "fix" this back t
 a kill. The closed pipe is what guarantees the exit, which is why SIGKILLing the
 app has the same effect: verified, the sidecar still goes away and removes its
 port file.
+
+## Packaging
+
+`CI=true npm run tauri build` produces `codemap.app` (153 MB) and
+`codemap_0.1.0_aarch64.dmg` (45 MB) under `src-tauri/target/release/bundle/`.
+
+**`CI=true` is not optional.** `bundle_dmg.sh` drives Finder through AppleScript
+to arrange the disk image window, which needs macOS automation permission; without
+it the build fails at the very last step with only "error running bundle_dmg.sh".
+`CI` makes Tauri pass `--skip-jenkins`, which skips the cosmetics. If a build does
+fail there, it leaves a mounted `rw.*.dmg` behind that blocks the next attempt —
+`hdiutil detach` it first.
+
+`scripts/prepare-resources.mjs` stages what ships. The repository's
+`node_modules` is 160 MB of build tooling; the server loads six packages, and the
+frontend's dependencies are already inside `dist/web`. Staging installs only those
+six and prunes the native prebuilds to this platform: 28 MB.
+
+Prune carefully. `bindings` is tree-sitter-typescript's own `main` and `common`
+holds shared grammar code — deleting either makes the addon unloadable, and
+because a worker that fails at module load is indistinguishable from one that
+crashed, the symptom is a hang rather than an error.
+
+**The app is not signed or notarised.** macOS will refuse it on first launch;
+right-click and Open. Signing is out of scope for phase D.
 
 ## The view layer
 

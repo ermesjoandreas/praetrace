@@ -7,7 +7,7 @@
     "frontendDist": "../dist/web",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev:web",
-    "beforeBuildCommand": "npm run build"
+    "beforeBuildCommand": "npm run build && node scripts/prepare-sidecar.mjs && node scripts/prepare-resources.mjs"
   },
   "app": {
     "windows": [
@@ -43,9 +43,9 @@
       "binaries/node"
     ],
     "resources": {
-      "../dist": "app/dist",
-      "../package.json": "app/package.json",
-      "../node_modules": "app/node_modules"
+      "../dist-app/dist": "app/dist",
+      "../dist-app/node_modules": "app/node_modules",
+      "../dist-app/package.json": "app/package.json"
     }
   }
 }

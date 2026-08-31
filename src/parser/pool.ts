@@ -17,6 +17,12 @@ export interface ParserPool {
   close(): Promise<void>;
 }
 
+/**
+ * A worker that dies before parsing anything is a broken install, not bad luck.
+ * Replacing it forever turns that into a hang; this turns it into an error.
+ */
+const MAX_CONSECUTIVE_WORKER_FAILURES = 5;
+
 function defaultSize(): number {
   // Parsing is CPU-bound; leave a core for the main thread, which must stay
   // responsive to incoming events while a burst of edits is being parsed.
@@ -36,6 +42,7 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
   const queue: Job[] = [];
   let nextId = 1;
   let closed = false;
+  let consecutiveFailures = 0;
 
   function settle(worker: Worker, outcome: (job: Job) => void): void {
     const job = inFlight.get(worker);
@@ -48,6 +55,8 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
     const worker = new Worker(WORKER_URL);
 
     worker.on('message', (response: ParseResponse) => {
+      // Reaching here at all means the worker loaded and ran.
+      consecutiveFailures = 0;
       settle(worker, (job) => {
         if (response.ok) job.resolve(response.parsed);
         else job.reject(new Error(`${job.request.filePath}: ${response.error}`));
@@ -58,10 +67,20 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
 
     worker.on('error', (error: Error) => {
       settle(worker, (job) => job.reject(error));
-      if (!closed) {
-        idle.push(spawn());
-        pump();
+      if (closed) return;
+
+      consecutiveFailures += 1;
+      if (consecutiveFailures > MAX_CONSECUTIVE_WORKER_FAILURES) {
+        // Every replacement has died the same way, so replacing again would
+        // spin forever. Fail loudly instead of hanging.
+        const reason = new Error(`parser workers keep failing to start: ${error.message}`);
+        closed = true;
+        while (queue.length > 0) queue.shift()?.reject(reason);
+        return;
       }
+
+      idle.push(spawn());
+      pump();
     });
 
     worker.on('exit', () => {
