@@ -2,6 +2,7 @@ import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/rea
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { fetchView, liveUrl, rememberProject, switchProject, type ViewGraph, type ViewResponse } from './api';
+import { HookBanner } from './HookBanner';
 import { ProjectMenu } from './ProjectMenu';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
@@ -324,6 +325,8 @@ export function App() {
             : ''}
         </span>
       </header>
+
+      {data !== null && <HookBanner root={data.root} />}
 
       <main>
         {error !== null && <div className="error">{error}</div>}

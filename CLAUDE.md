@@ -186,6 +186,8 @@ src/
     scan.ts       walk + parse everything through the pool
     watch.ts      chokidar; emits raw changes, does not batch
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
+    hook-install.ts  detect, preview and merge the hook into settings.json
+    port-file.ts  leaves the port where the hook can read it
     updater.ts    the one pipeline: coalesce, parse, patch, publish
   view/           which slice of the graph to draw — pure
     types.ts      ViewSpec / ViewGraph
@@ -201,6 +203,7 @@ web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus and depth
   src/BoxNode.tsx one box: a file with its symbols, or a folder
   src/ProjectMenu.tsx  folder picker and recents; desktop only
+  src/HookBanner.tsx   offers to install the hook, showing the file first
   src/layout.ts   dagre layout; React Flow does not place nodes itself
   src/api.ts      fetch + the shared ViewGraph type, imported from src/view
 .claude/
@@ -228,14 +231,25 @@ chokidar watcher ─────────────────────
 - `.claude/settings.json` posts the hook payload with `curl ... || true` and a
   2 second timeout. **A hook must never fail the agent's tool call**, so every
   response is 200, including for payloads the endpoint cannot use.
-- The hook's URL hard-codes port 4400. Running the server on another port means
-  the hook silently misses and only the watcher feeds the graph.
+- **The hook contains no port.** It reads the one the server leaves in
+  `.claude/codemap.port`, so one hook definition survives a port the OS
+  reassigns on every launch, and follows a switch between projects because each
+  project has its own file. The file is written only when `.claude/` already
+  exists — the server does not create Claude Code's directory uninvited — and is
+  removed on shutdown.
+- **The app writes the hook for you.** `GET /api/hook-status` reports whether a
+  working one is present, `POST /api/hook-install` merges ours into whatever is
+  already there, and the page shows the exact file contents before anything is
+  written. A hook that names a port rather than reading the file counts as *not*
+  installed, so an old one is offered the upgrade instead of being mistaken for
+  a working one — and replaced rather than duplicated.
 
 ## Desktop shell (phase D, in progress)
 
-Items 1-3 are done: the Tauri shell exists, it owns a Node sidecar on an
-OS-assigned port, and the project is chosen at runtime. Items 4-6 (hook
-installation, editor deep links, local persistence) are not started.
+Items 1-4 are done: the Tauri shell exists, it owns a Node sidecar on an
+OS-assigned port, the project is chosen at runtime, and the app installs the
+Claude Code hook itself. Items 5-6 (editor deep links, local persistence) are
+not started.
 
 ```
 Tauri shell (Rust — process lifecycle, nothing else)

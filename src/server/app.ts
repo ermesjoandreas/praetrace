@@ -4,6 +4,7 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
+import { installHook, readHookStatus } from '../project/hook-install.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
@@ -18,9 +19,14 @@ export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
   host: SessionHost;
   hub: LiveHub;
+  /**
+   * Called whenever the project changes, or gains a .claude directory, so the
+   * port file can follow it. The hook reads that file to find this server.
+   */
+  onProjectChanged: (root: string) => Promise<void>;
 }
 
-export function buildApp({ host, hub }: AppOptions): FastifyInstance {
+export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.register(fastifyStatic, { root: WEB_DIR });
@@ -44,9 +50,25 @@ export function buildApp({ host, hub }: AppOptions): FastifyInstance {
 
     try {
       const session = await host.switchTo(body.root);
+      await onProjectChanged(session.root);
       // Clients are holding specs that name paths in the old project.
       hub.projectChanged();
       return { root: session.root };
+    } catch (error) {
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/api/hook-status', async () => readHookStatus(host.current().root));
+
+  app.post('/api/hook-install', async (_request, reply) => {
+    const root = host.current().root;
+    try {
+      const status = await installHook(root);
+      // Installing creates .claude/ when it was missing, which is the condition
+      // the port file waits for.
+      await onProjectChanged(root);
+      return status;
     } catch (error) {
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { AddressInfo } from 'node:net';
+import { createPortFile } from '../project/port-file.js';
 import { buildApp } from './app.js';
 import { createLiveHub, type LiveHub } from './live.js';
 import { startSessionHost, type SessionHost } from './session.js';
@@ -31,18 +32,31 @@ async function main(): Promise<void> {
     onError: (message) => console.error(`codemap: ${message}`),
   });
 
-  const app = buildApp({ host, hub });
+  // The port is only known after listen, so the file follows the project
+  // through this holder rather than being captured at construction.
+  let ports: ReturnType<typeof createPortFile> | null = null;
+
+  const app = buildApp({
+    host,
+    hub,
+    onProjectChanged: async (changedRoot) => {
+      await ports?.pointAt(changedRoot);
+    },
+  });
   await app.listen({ port, host: '127.0.0.1' });
 
   const bound = app.server.address() as AddressInfo | null;
   const actualPort = bound?.port ?? port;
   const address = `http://127.0.0.1:${actualPort}`;
 
+  ports = createPortFile(actualPort);
+  await ports.pointAt(host.current().root);
+
   let shuttingDown = false;
   const shutdown = (): void => {
     if (shuttingDown) return;
     shuttingDown = true;
-    void Promise.allSettled([host?.close(), app.close()]).then(() => {
+    void Promise.allSettled([ports?.clear(), host?.close(), app.close()]).then(() => {
       process.exit(0);
     });
   };

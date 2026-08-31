@@ -69,3 +69,27 @@ export function recentProjects(): Promise<string[]> {
 export function rememberProject(path: string): Promise<string[]> {
   return invoke<string[]>('remember_project', { path });
 }
+
+export interface HookStatus {
+  settingsPath: string;
+  installed: boolean;
+  /** A settings file exists but cannot be parsed, so merging is refused. */
+  unreadable: boolean;
+  /** Exactly what would be written, shown before anything is. */
+  preview: string;
+}
+
+export async function fetchHookStatus(): Promise<HookStatus> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/hook-status`);
+  if (!response.ok) throw new Error(`hook status failed: HTTP ${response.status}`);
+  return (await response.json()) as HookStatus;
+}
+
+export async function installHook(): Promise<HookStatus> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/hook-install`, { method: 'POST' });
+  const body = (await response.json()) as HookStatus & { error?: string };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return body;
+}
