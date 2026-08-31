@@ -6,7 +6,8 @@ export type BoxData = {
   label: string;
   kind: 'file' | 'folder';
   members: ViewMember[];
-  fileCount: number;
+  files: string[];
+  changed: boolean;
   external: boolean;
   focused: boolean;
 };
@@ -19,6 +20,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
 
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
+  if (data.changed) classes.push('box-changed');
   if (data.focused) classes.push('box-focused');
 
   return (
@@ -27,7 +29,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       <div className="box-title" title={data.label}>{data.label}</div>
 
       {data.kind === 'folder' ? (
-        <div className="box-meta">{data.fileCount} {data.fileCount === 1 ? 'file' : 'files'}</div>
+        <div className="box-meta">{data.files.length} {data.files.length === 1 ? 'file' : 'files'}</div>
       ) : (
         <ul className="box-members">
           {shown.map((member, index) => (

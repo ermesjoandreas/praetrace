@@ -25,8 +25,8 @@ export interface ViewNode {
   label: string;
   /** Symbols the file declares; empty for folders. */
   members: ViewMember[];
-  /** How many files this box stands for; 1 for a file. */
-  fileCount: number;
+  /** The files this box stands for; just itself for a file node. */
+  files: string[];
   /** Outside the current scope, kept only to show what the scope connects to. */
   external: boolean;
   focused: boolean;

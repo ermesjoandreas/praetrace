@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
-import { createStore, setFiles } from '../graph/store.js';
+import { applyBatch, createStore } from '../graph/store.js';
 import type { Graph, GraphEdge, GraphNode } from '../graph/types.js';
 import { createParserPool } from '../parser/pool.js';
 import { scanProject } from '../project/scan.js';
@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   }
 
   const store = createStore();
-  setFiles(store, scan.parsed);
+  applyBatch(store, scan.parsed, []);
   const elapsedMs = Math.round(performance.now() - startedAt);
 
   if (asJson) {

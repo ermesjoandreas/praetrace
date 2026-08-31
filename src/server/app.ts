@@ -1,10 +1,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
+import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { GraphStore } from '../graph/store.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
+import type { LiveHub } from './live.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -15,29 +17,53 @@ export interface AppOptions {
   store: GraphStore;
   /** Absolute path of the scanned project, shown in the page header. */
   root: string;
+  hub: LiveHub;
 }
 
-export function buildApp({ store, root }: AppOptions): FastifyInstance {
+export function buildApp({ store, root, hub }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
   app.register(fastifyStatic, { root: WEB_DIR });
+  app.register(websocket);
 
-  app.get('/api/view', async (request) => {
-    const query = request.query as Record<string, string | undefined>;
-    const spec: ViewSpec = {
-      scope: query.scope ?? '',
-      focus: query.focus ?? null,
-      depth: readDepth(query.depth),
-    };
+  app.get('/api/view', async (request) => ({
+    root,
+    view: selectView(store.graph, toSpec(request.query as Record<string, unknown>)),
+  }));
 
-    return { root, view: selectView(store.graph, spec) };
+  app.register(async (scoped) => {
+    scoped.get('/live', { websocket: true }, (socket) => {
+      hub.add(socket, toSpec({}));
+
+      socket.on('message', (raw: Buffer) => {
+        // The client tells us which slice it is looking at, so an update can be
+        // computed per client rather than broadcast as one shared view.
+        try {
+          const message = JSON.parse(String(raw)) as { spec?: Record<string, unknown> };
+          if (message.spec) hub.setSpec(socket, toSpec(message.spec));
+        } catch {
+          // A malformed frame is not worth dropping the connection over.
+        }
+      });
+
+      socket.on('close', () => hub.remove(socket));
+    });
   });
 
   return app;
 }
 
-/** Depth is user input from the URL; anything unusable falls back to one hop. */
-function readDepth(raw: string | undefined): number {
+/** Everything here is user input, from a query string or a socket frame. */
+function toSpec(raw: Record<string, unknown>): ViewSpec {
+  const focus = typeof raw['focus'] === 'string' && raw['focus'] !== '' ? raw['focus'] : null;
+  return {
+    scope: typeof raw['scope'] === 'string' ? raw['scope'] : '',
+    focus,
+    depth: readDepth(raw['depth']),
+  };
+}
+
+function readDepth(raw: unknown): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) return 1;
   return Math.min(value, MAX_DEPTH);

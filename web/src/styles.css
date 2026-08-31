@@ -155,3 +155,43 @@ main { position: relative; flex: 1; min-height: 0; }
 }
 .react-flow__controls-button:hover { background: var(--line); }
 .react-flow__minimap { background: var(--panel); }
+
+/* --- live updates --- */
+
+.live {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: none;
+}
+.live-on { background: var(--focus); box-shadow: 0 0 6px var(--focus); }
+
+.missed {
+  border: 1px solid #6b5730;
+  background: #241f14;
+  color: var(--folder);
+  border-radius: 5px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 9px;
+}
+.missed:hover { border-color: var(--folder); }
+
+/* A touched box pulses, then holds a warm tint long enough to be noticed. */
+@keyframes box-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(224, 175, 104, 0.55); }
+  70%  { box-shadow: 0 0 0 10px rgba(224, 175, 104, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(224, 175, 104, 0); }
+}
+
+.box-changed {
+  border-color: var(--folder);
+  animation: box-pulse 1.1s ease-out 2;
+}
+.box-changed .box-title { color: var(--folder); }
+
+@media (prefers-reduced-motion: reduce) {
+  .box-changed { animation: none; }
+}

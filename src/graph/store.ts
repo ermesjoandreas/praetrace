@@ -22,18 +22,6 @@ export function createStore(): GraphStore {
   return { files: new Map(), graph: { nodes: new Map(), edges: [] } };
 }
 
-export function setFile(store: GraphStore, parsed: ParsedFile): GraphDelta {
-  store.files.set(parsed.filePath, parsed);
-  return commit(store);
-}
-
-export function removeFile(store: GraphStore, filePath: string): GraphDelta {
-  if (!store.files.delete(filePath)) {
-    return { upsertedNodes: [], removedNodeIds: [], addedEdges: [], removedEdges: [] };
-  }
-  return commit(store);
-}
-
 function commit(store: GraphStore): GraphDelta {
   const before = store.graph;
   store.graph = derive(store.files);
@@ -184,11 +172,31 @@ function diff(before: Graph, after: Graph): GraphDelta {
   };
 }
 
+
 /**
- * Insert many files and derive once. Used by the boot scan, where per-file
- * commits would re-derive the whole graph for every file.
+ * Apply one batch of file changes and derive once.
+ *
+ * A batch rather than a call per file because a re-derivation is whole-graph
+ * work: an agent touching five files should cost one, not five. Used for the
+ * boot scan too, which is just a batch of every file.
  */
-export function setFiles(store: GraphStore, parsed: readonly ParsedFile[]): GraphDelta {
-  for (const file of parsed) store.files.set(file.filePath, file);
+export function applyBatch(
+  store: GraphStore,
+  updated: readonly ParsedFile[],
+  removed: readonly string[],
+): GraphDelta {
+  let touched = false;
+
+  for (const file of updated) {
+    store.files.set(file.filePath, file);
+    touched = true;
+  }
+  for (const filePath of removed) {
+    if (store.files.delete(filePath)) touched = true;
+  }
+
+  if (!touched) {
+    return { upsertedNodes: [], removedNodeIds: [], addedEdges: [], removedEdges: [] };
+  }
   return commit(store);
 }

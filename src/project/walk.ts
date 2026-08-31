@@ -3,6 +3,11 @@ import path from 'node:path';
 
 const IGNORED_DIRECTORIES = new Set(['node_modules', 'dist', 'build', 'coverage']);
 
+/** Shared with the watcher, so both see the same project. */
+export function isIgnoredDirectoryName(name: string): boolean {
+  return name.startsWith('.') || IGNORED_DIRECTORIES.has(name);
+}
+
 export interface SourceFile {
   /** POSIX path relative to the root; becomes the graph node id. */
   filePath: string;
@@ -24,12 +29,12 @@ async function visit(root: string, directory: string, found: SourceFile[]): Prom
     const absolutePath = path.join(directory, entry.name);
 
     if (entry.isDirectory()) {
-      if (entry.name.startsWith('.') || IGNORED_DIRECTORIES.has(entry.name)) continue;
+      if (isIgnoredDirectoryName(entry.name)) continue;
       await visit(root, absolutePath, found);
       continue;
     }
 
-    if (entry.isFile() && isSourceFile(entry.name)) {
+    if (entry.isFile() && isSourceFileName(entry.name)) {
       found.push({
         absolutePath,
         filePath: path.relative(root, absolutePath).split(path.sep).join('/'),
@@ -38,7 +43,7 @@ async function visit(root: string, directory: string, found: SourceFile[]): Prom
   }
 }
 
-function isSourceFile(name: string): boolean {
+export function isSourceFileName(name: string): boolean {
   // .d.ts files only restate types that the accompanying source already declares.
   if (name.endsWith('.d.ts')) return false;
   return name.endsWith('.ts') || name.endsWith('.tsx');

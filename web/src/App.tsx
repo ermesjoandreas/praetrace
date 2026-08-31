@@ -1,17 +1,31 @@
 import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
-import { fetchView, type ViewResponse } from './api';
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { fetchView, type ViewGraph, type ViewResponse } from './api';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { NODE_WIDTH, boxHeight, layoutNodes } from './layout';
 
 const nodeTypes = { box: BoxNode };
 const MAX_DEPTH = 4;
+const PULSE_MS = 2500;
+
+interface LiveUpdate {
+  type: 'update';
+  view: ViewGraph;
+  changedFiles: string[];
+}
 
 export function App() {
   const [search, setSearch] = useState(() => window.location.search);
   const [data, setData] = useState<ViewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
+  /** Files touched by the most recent batch, for the pulse. */
+  const [pulsing, setPulsing] = useState<string[]>([]);
+  /** Changes that landed outside the current view and have not been looked at. */
+  const [missed, setMissed] = useState<string[]>([]);
+
+  const socketRef = useRef<WebSocket | null>(null);
 
   // The view lives in the URL, so the back button is the navigation history.
   useEffect(() => {
@@ -22,6 +36,7 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    setMissed([]);
     fetchView(search).then(
       (result) => {
         if (cancelled) return;
@@ -38,21 +53,69 @@ export function App() {
     };
   }, [search]);
 
-  const navigate = useCallback((params: URLSearchParams) => {
-    const query = params.toString();
-    const next = query ? `?${query}` : '';
-    window.history.pushState(null, '', next || window.location.pathname);
-    setSearch(next);
+  useEffect(() => {
+    const url = new URL('/live', window.location.href);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(url);
+    socketRef.current = socket;
+
+    socket.onopen = () => setLive(true);
+    socket.onclose = () => setLive(false);
+    socket.onmessage = (event: MessageEvent<string>) => {
+      const message = JSON.parse(event.data) as LiveUpdate;
+      if (message.type !== 'update') return;
+
+      // Everything is derived from the message itself, so this handler never
+      // reads stale state from its closure.
+      const covered = new Set(message.view.nodes.flatMap((node) => node.files));
+      const outside = message.changedFiles.filter((file) => !covered.has(file));
+
+      setData((current) => (current ? { ...current, view: message.view } : current));
+      setPulsing(message.changedFiles);
+      if (outside.length > 0) {
+        setMissed((previous) => [...new Set([...previous, ...outside])]);
+      }
+    };
+
+    return () => {
+      socketRef.current = null;
+      socket.close();
+    };
   }, []);
 
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
 
+  // Tell the server which slice this client is looking at, so its updates are
+  // computed for this view rather than broadcast as one shared one.
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket || !view || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(JSON.stringify({ spec: view.spec }));
+  }, [view?.spec.scope, view?.spec.focus, view?.spec.depth, live]);
+
+  useEffect(() => {
+    if (pulsing.length === 0) return;
+    const timer = window.setTimeout(() => setPulsing([]), PULSE_MS);
+    return () => window.clearTimeout(timer);
+  }, [pulsing]);
+
+  const changedBoxIds = useMemo(() => {
+    if (!view || pulsing.length === 0) return new Set<string>();
+    const touched = new Set(pulsing);
+    return new Set(
+      view.nodes.filter((node) => node.files.some((file) => touched.has(file))).map((n) => n.id),
+    );
+  }, [view, pulsing]);
+
+  // Positions survive live updates: a box must not jump because the agent saved.
+  const positionsRef = useRef(new Map<string, { x: number; y: number }>());
+
   const { nodes, edges } = useMemo(() => {
     if (!view) return { nodes: [] as BoxNodeType[], edges: [] as Edge[] };
 
-    const laidOutEdges: Edge[] = view.edges.map((edge) => ({
+    const builtEdges: Edge[] = view.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
       source: edge.from,
       target: edge.to,
@@ -71,14 +134,31 @@ export function App() {
         label: node.label,
         kind: node.kind,
         members: node.members,
-        fileCount: node.fileCount,
+        files: node.files,
         external: node.external,
         focused: node.focused,
+        changed: changedBoxIds.has(node.id),
       },
     }));
 
-    return { nodes: layoutNodes(boxes, laidOutEdges), edges: laidOutEdges };
-  }, [view]);
+    const previous = positionsRef.current;
+    const sameShape = boxes.length === previous.size && boxes.every((box) => previous.has(box.id));
+
+    // Only the contents changed, so keep every box exactly where it was.
+    const placed = sameShape
+      ? boxes.map((box) => ({ ...box, position: previous.get(box.id) ?? box.position }))
+      : layoutNodes(boxes, builtEdges);
+
+    positionsRef.current = new Map(placed.map((box) => [box.id, box.position]));
+    return { nodes: placed, edges: builtEdges };
+  }, [view, changedBoxIds]);
+
+  const navigate = useCallback((params: URLSearchParams) => {
+    const query = params.toString();
+    const next = query ? `?${query}` : '';
+    window.history.pushState(null, '', next || window.location.pathname);
+    setSearch(next);
+  }, []);
 
   const handleNodeClick = useCallback(
     (_event: MouseEvent, node: BoxNodeType) => {
@@ -114,10 +194,19 @@ export function App() {
     [focus, navigate],
   );
 
+  const goToMissed = useCallback(() => {
+    const latest = missed.at(-1);
+    if (latest === undefined) return;
+    const params = new URLSearchParams();
+    params.set('focus', latest);
+    navigate(params);
+  }, [missed, navigate]);
+
   return (
     <div className="app">
       <header>
         <span className="brand">codemap</span>
+        <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
         <span className="root">{data?.root ?? '…'}</span>
 
         {focus === null ? (
@@ -143,7 +232,9 @@ export function App() {
               <button type="button" onClick={() => changeDepth(depth - 1)} disabled={depth <= 1}>
                 −
               </button>
-              <span>{depth} hop{depth === 1 ? '' : 's'}</span>
+              <span>
+                {depth} hop{depth === 1 ? '' : 's'}
+              </span>
               <button
                 type="button"
                 onClick={() => changeDepth(depth + 1)}
@@ -156,6 +247,12 @@ export function App() {
               clear
             </button>
           </nav>
+        )}
+
+        {missed.length > 0 && (
+          <button type="button" className="missed" onClick={goToMissed}>
+            {missed.length} change{missed.length === 1 ? '' : 's'} outside
+          </button>
         )}
 
         <span className="counts">
@@ -172,6 +269,7 @@ export function App() {
         )}
         <ReactFlow<BoxNodeType, Edge>
           // Remounting on navigation is what re-runs fitView for the new slice.
+          // A live update deliberately does not remount, so the camera holds.
           key={search}
           nodes={nodes}
           edges={edges}

@@ -82,7 +82,7 @@ function fileNode(filePath: string, members: ViewMember[], focused: boolean): Vi
     kind: 'file',
     label: filePath,
     members,
-    fileCount: 1,
+    files: [filePath],
     external: false,
     focused,
   };
@@ -183,7 +183,7 @@ function scopeView(
       kind: target.kind,
       label: target.id === '' ? '.' : labelFor(target.id, prefix, inside),
       members: target.kind === 'file' ? (files.get(filePath) ?? []) : [],
-      fileCount: 0,
+      files: [],
       external: !inside,
       focused: false,
     };
@@ -208,7 +208,7 @@ function scopeView(
   }
 
   for (const node of nodes.values()) {
-    node.fileCount = backing.get(node.id)?.size ?? 1;
+    node.files = [...(backing.get(node.id) ?? [])].sort();
   }
 
   return {
