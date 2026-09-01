@@ -58,7 +58,6 @@ const clamp = (value: number): number =>
  * a derived one would claim an authority the graph never gave it.
  */
 export function GroupNode({ data }: NodeProps<GroupNodeType>) {
-  const [naming, setNaming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.name ?? '');
 
@@ -138,53 +137,32 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
       style={preview}
     >
       <div className="group-label" onMouseDown={stop} onClick={stop}>
-        {naming ? (
-          <input
-            autoFocus
-            value={draft}
-            placeholder="Name this group"
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && draft.trim() !== '') {
-                commit(draft.trim());
-                setNaming(false);
-              } else if (event.key === 'Escape') {
-                setNaming(false);
-              }
-            }}
-            onBlur={() => setNaming(false)}
-          />
-        ) : (
-          <>
-            <button type="button" className="group-name" onClick={() => setNaming(true)}>
-              {data.name ?? `${data.fileCount} files together`}
-            </button>
-            {/* A hand-drawn group carries a cohesion of 0, and printing that as
-                0% would read as a terrible group rather than as one the import
-                graph was never asked to find. */}
-            <span className="group-meta">
-              {manual ? 'by hand' : `${Math.round(data.cohesion * 100)}%`}
-            </span>
-            {/* Only a group that has been decided has an entry in
-                groups.json to carry a colour or a size. A suggestion is
-                accepted by naming it, and can be dressed after that. */}
-            {(data.accepted || manual) && (
-              <button
-                type="button"
-                className="group-edit"
-                title={editing ? 'Done' : 'Colour and size'}
-                aria-pressed={editing}
-                onClick={() => setEditing(!editing)}
-              >
-                ◍
-              </button>
-            )}
-            {!data.accepted && (
-              <button type="button" className="group-reject" title="Not a group" onClick={data.onReject}>
-                ✕
-              </button>
-            )}
-          </>
+        {/* The label is the handle for the whole group. It used to take two
+            gestures — click the name to rename, find a separate ◍ to reach the
+            colours — which meant the obvious thing to click did the least. The
+            frame itself cannot be the target: it is drawn behind the boxes it
+            encloses and would swallow every click meant for them. */}
+        <button
+          type="button"
+          className={editing ? 'group-name group-name-open' : 'group-name'}
+          aria-expanded={editing}
+          title={editing ? 'Done' : 'Edit this group'}
+          onClick={() => setEditing(!editing)}
+        >
+          {data.name ?? `${data.fileCount} files together`}
+        </button>
+
+        {/* A hand-drawn group carries a cohesion of 0, and printing that as 0%
+            would read as a terrible group rather than as one the import graph
+            was never asked to find. */}
+        <span className="group-meta">
+          {manual ? 'by hand' : `${Math.round(data.cohesion * 100)}%`}
+        </span>
+
+        {!data.accepted && !manual && (
+          <button type="button" className="group-reject" title="Not a group" onClick={data.onReject}>
+            ✕
+          </button>
         )}
 
         {/* Beside the label rather than dropping below it: a frame renders
@@ -193,22 +171,58 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
             construction — it is the padding the frame already reserves. */}
         {editing && (
           <div className="group-editor">
-            <div className="group-swatches">
-              {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  data-color={color}
-                  className={`group-swatch${data.color === color ? ' group-swatch-active' : ''}`}
-                  title={COLOR_LABELS[color]}
-                  onClick={() => data.onColor(color)}
-                />
-              ))}
-            </div>
-            {manual && (
-              <button type="button" className="group-delete" title="Delete this group" onClick={data.onDelete}>
-                Delete
-              </button>
+            <input
+              autoFocus
+              className="group-editor-name"
+              value={draft}
+              placeholder="Name this group"
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && draft.trim() !== '') {
+                  commit(draft.trim());
+                  setEditing(false);
+                } else if (event.key === 'Escape') {
+                  setEditing(false);
+                }
+              }}
+            />
+
+            {/* Only a decided group has an entry in groups.json to carry a
+                colour or a size, so a suggestion is offered the one act that
+                creates one. */}
+            {data.accepted || manual ? (
+              <>
+                <div className="group-swatches">
+                  {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      data-color={color}
+                      className={`group-swatch${data.color === color ? ' group-swatch-active' : ''}`}
+                      title={COLOR_LABELS[color]}
+                      onClick={() => data.onColor(color)}
+                    />
+                  ))}
+                </div>
+
+                <div className="group-editor-foot">
+                  <span className="group-editor-hint">
+                    {data.fileCount} files · drag the corner to resize
+                  </span>
+                  {manual && (
+                    <button
+                      type="button"
+                      className="group-delete"
+                      title="Delete this group"
+                      onClick={data.onDelete}
+                    >
+                      Delete
+                    </button>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="group-editor-hint">Naming it is what accepts it.</div>
             )}
           </div>
         )}

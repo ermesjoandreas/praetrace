@@ -1,10 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-  fetchChanges,
   fetchDetail,
   openInEditor,
-  type ChangeEntry,
-  type AgentCall,
   type Detail,
   type GroupColor,
   type GroupSuggestion,
@@ -56,8 +53,6 @@ interface SidebarProps {
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
   groups: GroupSuggestion[];
-  /** What the agent asked, newest first. Interleaved with the changes below. */
-  agentCalls: AgentCall[];
   onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
   groupEditor: GroupEditor;
 }
@@ -77,10 +72,8 @@ export function Sidebar({
   groups,
   onDecide,
   groupEditor,
-  agentCalls,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
-  const [changes, setChanges] = useState<ChangeEntry[]>([]);
 
   useEffect(() => {
     if (selected === null) {
@@ -101,19 +94,6 @@ export function Sidebar({
     };
   }, [selected, revision, root]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchChanges().then(
-      (result) => {
-        if (!cancelled) setChanges(result);
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [revision, root]);
-
   return (
     <aside className="sidebar">
       <section className="panel">
@@ -127,8 +107,6 @@ export function Sidebar({
       </section>
 
       <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} editor={groupEditor} />
-
-      <Timeline changes={changes} agentCalls={agentCalls} onSelect={onSelect} />
     </aside>
   );
 }
@@ -441,77 +419,6 @@ function GroupList({
           );
         })}
       </ul>
-    </section>
-  );
-}
-
-/**
- * The agent's questions and its edits in one column, newest first.
- *
- * Two separate lists would hide the thing worth seeing: an agent looks a file
- * up and then rewrites it, and the lookup is what explains the edit.
- */
-function Timeline({
-  changes,
-  agentCalls,
-  onSelect,
-}: {
-  changes: ChangeEntry[];
-  agentCalls: AgentCall[];
-  onSelect: (target: string) => void;
-}) {
-  const rows = [
-    ...changes.map((entry) => ({ at: entry.at, kind: 'change' as const, entry })),
-    ...agentCalls.map((call) => ({ at: call.at, kind: 'agent' as const, call })),
-  ].sort((a, b) => b.at - a.at);
-
-  return (
-    <section className="feed">
-      <h2>Agent &amp; changes</h2>
-      {rows.length === 0 ? (
-        <p className="panel-empty">
-          Nothing yet. Edits show here, and so does anything an agent asks codemap through MCP.
-        </p>
-      ) : (
-        <ol>
-          {rows.map((row, index) => (
-            <li key={`${row.at}-${index}`} className={row.kind === 'agent' ? 'feed-agent' : undefined}>
-              <time>{clock.format(new Date(row.at))}</time>
-              {row.kind === 'change' ? (
-                <span className="feed-files">
-                  <span className="feed-mark" title="changed on disk">
-                    ✎
-                  </span>
-                  {row.entry.files.map((file) => (
-                    <button type="button" key={file} onClick={() => onSelect(file)} title={file}>
-                      {file}
-                    </button>
-                  ))}
-                </span>
-              ) : (
-                <span className="feed-files">
-                  <span className="feed-mark" title="the agent asked codemap">
-                    ?
-                  </span>
-                  <span className="feed-tool">
-                    {row.call.tool}
-                    {row.call.target !== null && (
-                      <button
-                        type="button"
-                        className="feed-target"
-                        onClick={() => row.call.target && onSelect(row.call.target)}
-                        title={row.call.target}
-                      >
-                        {row.call.target}
-                      </button>
-                    )}
-                  </span>
-                </span>
-              )}
-            </li>
-          ))}
-        </ol>
-      )}
     </section>
   );
 }

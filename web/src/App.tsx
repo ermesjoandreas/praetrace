@@ -19,6 +19,7 @@ import {
 } from 'react';
 import {
   decideCluster,
+  fetchChanges,
   fetchClusters,
   fetchAgentCalls,
   fetchHookStatus,
@@ -34,6 +35,7 @@ import {
   switchProject,
   type AgentCall,
   type GroupColor,
+  type ChangeEntry,
   type GroupSuggestion,
   type SearchHit,
   type ViewGraph,
@@ -48,6 +50,7 @@ import { SearchPalette } from './SearchPalette';
 import { Sidebar, type GroupEditor } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
+import { Activity } from './Activity';
 import { NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
@@ -76,6 +79,22 @@ const GIT_BASES = [
  * picked is the one of them the user is holding themselves.
  */
 const PICKED_STYLE: CSSProperties = { boxShadow: '0 0 0 2px var(--accent)', borderRadius: '7px' };
+
+/**
+ * GitHub's own git-branch glyph. Drawn rather than written because every tool a
+ * developer already uses draws this one, and a control that says "git" without
+ * it reads as a text field rather than as the thing they know.
+ */
+function BranchIcon() {
+  return (
+    <svg className="git-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+      <path
+        fill="currentColor"
+        d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"
+      />
+    </svg>
+  );
+}
 
 interface AgentMessage {
   type: 'agent';
@@ -113,6 +132,13 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [baseOpen, setBaseOpen] = useState(false);
+  /**
+   * Lifted out of the panel that used to own it: two panels read this now, and
+   * the left one is the reason the data exists.
+   */
+  const [changes, setChanges] = useState<ChangeEntry[]>([]);
+  const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
   const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
@@ -377,6 +403,35 @@ export function App() {
   // 'branch', which says nothing to anybody, so it stays in the tooltip.
   const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.chip ?? git?.base ?? '';
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
+
+  useEffect(() => {
+    if (!baseOpen) return;
+    const away = (event: globalThis.MouseEvent) => {
+      if (!baseMenu.current?.contains(event.target as Node)) setBaseOpen(false);
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') setBaseOpen(false);
+    };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [baseOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchChanges().then(
+      (result) => {
+        if (!cancelled) setChanges(result);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root]);
 
   // Tell the server which slice this client is looking at, so its updates are
   // computed for this view rather than broadcast as one shared one.
@@ -990,10 +1045,27 @@ export function App() {
         )}
 
         {git !== null && (
-          <>
+          // One control, two segments: what the tree is compared against, and
+          // how much differs. The shape is VS Code's status bar and GitHub's
+          // branch button, because a developer can already read it — and the
+          // dropdown is this app's own menu, so one gesture does not get two
+          // visual languages.
+          <div className="git" ref={baseMenu}>
             <button
               type="button"
-              className="git-chip"
+              className={baseOpen ? 'git-base git-base-open' : 'git-base'}
+              aria-expanded={baseOpen}
+              onClick={() => setBaseOpen((was) => !was)}
+              title={`Comparing against ${git.base}${git.branch === null ? '' : ` on ${git.branch}`}`}
+            >
+              <BranchIcon />
+              <span className="git-base-name">{git.branch ?? baseLabel}</span>
+              <span className="git-caret" aria-hidden="true">▾</span>
+            </button>
+
+            <button
+              type="button"
+              className="git-count"
               aria-pressed={onlyChanged}
               onClick={toggleChanged}
               // The count is git's, not the diagram's: it includes deleted files
@@ -1003,29 +1075,38 @@ export function App() {
                   ? `Showing only what differs from ${git.base} — click to show every file`
                   : `${git.changed === 1 ? '1 path differs' : `${git.changed} paths differ`} from ${
                       git.base
-                    }${git.branch === null ? '' : ` on ${git.branch}`} — click to show only those`
+                    } — click to show only those`
               }
             >
-              <strong>{git.changed}</strong> changed vs {baseLabel}
+              <span className="git-count-n">{git.changed}</span>
+              <span className="git-count-word">changed vs {baseLabel}</span>
             </button>
 
             {/* The base is a session setting, not a view. One server watches one
                 project and runs git against one base, so a base carried in the
                 URL would promise a per-tab comparison nothing can honour — the
                 same reason the project root is not in the URL either. */}
-            <select
-              className="git-base-select"
-              value={git.requested}
-              onChange={(event) => changeBase(event.target.value)}
-              title="What the working tree is compared against"
-            >
-              {GIT_BASES.map((base) => (
-                <option key={base.value} value={base.value}>
-                  {base.option}
-                </option>
-              ))}
-            </select>
-          </>
+            {baseOpen && (
+              <div className="menu-drop git-drop">
+                <div className="git-drop-head">Compare against</div>
+                {GIT_BASES.map((base) => (
+                  <button
+                    key={base.value}
+                    type="button"
+                    className="menu-item"
+                    onClick={() => {
+                      setBaseOpen(false);
+                      changeBase(base.value);
+                    }}
+                  >
+                    <span className="menu-check">{git.requested === base.value ? '✓' : ''}</span>
+                    <span className="menu-label">{base.option}</span>
+                    <kbd>{base.chip}</kbd>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {isFiltered && (
@@ -1080,6 +1161,13 @@ export function App() {
       )}
 
       <main>
+        {/* Left is time, right is structure: what the agent is doing, beside
+            what you are looking at. They were one panel, which meant watching
+            the agent cost you the detail of the thing it was touching. */}
+        {data !== null && (
+          <Activity changes={changes} agentCalls={agentCalls} onSelect={setSelected} onFocus={goTo} />
+        )}
+
         <div className="canvas">
         {error !== null && <div className="error">{error}</div>}
         {error === null && view?.nodes.length === 0 && (
@@ -1136,7 +1224,6 @@ export function App() {
             groups={clusters}
             onDecide={decide}
             groupEditor={groupEditor}
-            agentCalls={agentCalls}
           />
         )}
       </main>

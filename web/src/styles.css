@@ -414,6 +414,117 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 .panel-toggle:hover { color: var(--text); border-color: var(--accent); }
 
+/* --- the activity table (left) ------------------------------------------
+
+   Left is time, right is structure. The two used to share the right-hand panel,
+   which meant watching what the agent was doing cost you the detail of the very
+   thing it was touching. */
+
+.activity {
+  display: flex;
+  flex-direction: column;
+  width: 272px;
+  flex: none;
+  border-right: 1px solid var(--line);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.activity-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: none;
+  padding: 12px 14px 8px;
+}
+.activity-head h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+/* A dot would say "connected", which is not worth a widget. This says whether
+   anything has happened in the last few seconds, which is the question. */
+.activity-live {
+  color: var(--line-strong);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+.activity-live-on { color: var(--focus); }
+.activity-live-on::before {
+  content: '●';
+  margin-right: 4px;
+  font-size: 8px;
+  vertical-align: 1px;
+}
+
+.activity-empty {
+  margin: 0;
+  padding: 4px 14px 14px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.activity-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
+
+.activity-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+
+.activity-table tr { cursor: default; }
+.activity-write { cursor: pointer; }
+.activity-table tr:hover { background: var(--line); }
+
+.activity-table td {
+  padding: 3px 4px;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+.activity-table td:first-child { padding-left: 14px; }
+.activity-table td:last-child { padding-right: 14px; }
+
+.activity-when {
+  width: 38px;
+  color: var(--line-strong);
+  font-variant-numeric: tabular-nums;
+}
+.activity-mark { width: 12px; color: var(--muted); }
+/* A question the agent asked is not an edit, and the column that says which is
+   the one thing this table cannot afford to blur. */
+.activity-ask .activity-mark { color: var(--accent); }
+.activity-ask .activity-what { color: var(--accent); }
+
+.activity-what {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Where it happened. Dimmer than the name, because you scan the names and only
+   fall back to the directory when two of them look alike. */
+.activity-where {
+  color: var(--muted);
+  direction: rtl;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  max-width: 92px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.activity-more {
+  margin: 6px 0 0;
+  padding: 0 14px;
+  color: var(--line-strong);
+  font-size: 10px;
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -1138,38 +1249,70 @@ main { display: flex; flex: 1; min-height: 0; }
 .box-git-renamed   { --git-color: 187, 154, 247; }
 .box-git-count     { --git-color: 122, 162, 247; }
 
-.git-chip {
+/* --- the git control ---------------------------------------------------
+
+   One segmented control rather than two loose ones: a branch button and a
+   count, joined, the way VS Code's status bar and GitHub's branch picker put
+   them. The parts belong together — the count is meaningless without knowing
+   what it counted against — and separating them said otherwise. */
+
+.git {
+  position: relative;
   display: inline-flex;
-  align-items: baseline;
+  align-items: stretch;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  /* So the segments clip to the radius instead of squaring off the corners. */
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.git-base,
+.git-count {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
   background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: default;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 9px;
-}
-button.git-chip { cursor: pointer; }
-button.git-chip:hover { border-color: var(--accent); color: var(--text); }
-.git-chip strong { color: var(--text); font-weight: 600; }
-
-.git-base-select {
-  appearance: none;
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 5px;
+  border: none;
   color: var(--muted);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
-  padding: 2px 7px;
+  padding: 4px 9px;
 }
-.git-base-select:hover { border-color: var(--line-strong); color: var(--text); }
-/* The dropdown itself is drawn by the OS, which would otherwise pick a light
-   list against this page's dark chrome. */
-.git-base-select option { background: var(--panel); color: var(--text); }
+
+.git-base:hover, .git-count:hover { background: var(--line); color: var(--text); }
+
+.git-base-open { background: var(--line); color: var(--text); }
+.git-base-name { color: var(--text); font-weight: 500; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-icon { flex: none; opacity: 0.75; }
+.git-base:hover .git-icon, .git-base-open .git-icon { opacity: 1; }
+.git-caret { font-size: 8px; opacity: 0.6; }
+
+/* The divider that makes two buttons read as one control. */
+.git-count { border-left: 1px solid var(--line-strong); }
+.git-count-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Filtering to the changed files is a mode, not a click, so it holds a filled
+   state — the same one the menus use for a highlighted row, rather than a
+   fourth colour nobody has learned yet. */
+.git-count[aria-pressed='true'] { background: var(--accent); color: #101216; }
+.git-count[aria-pressed='true'] .git-count-n { color: #101216; }
+.git-count[aria-pressed='true']:hover { background: #8fb3ff; }
+
+.git-drop { min-width: 210px; }
+.git-drop-head {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  padding: 5px 8px 6px;
+  text-transform: uppercase;
+}
+.git-drop .menu-item kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  opacity: 0.7;
+}
 
 /* --- naming, colouring and sizing a group --- */
 
@@ -1212,31 +1355,48 @@ button.git-chip:hover { border-color: var(--accent); color: var(--text); }
 /* The handle is positioned against the frame's own corner. */
 .group { position: relative; }
 
-.group-edit {
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: var(--line-strong);
-  cursor: pointer;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 4px;
-}
-.group-edit:hover, .group-edit[aria-pressed="true"] { color: var(--accent); background: var(--line); }
+/* The label is the control, so it has to look like one. */
+.group-name-open { background: var(--line); color: var(--text); }
 
+/* A small panel, not a strip of controls: the name, the palette and what can be
+   done to the group read as one thing to work through, the way an editor's
+   properties popover does. */
 .group-editor {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  margin-left: 6px;
-  padding: 3px 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-left: 8px;
+  min-width: 208px;
+  padding: 8px;
   border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  border-radius: 7px;
   background: var(--panel);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
 }
 
-.group-swatches { display: inline-flex; gap: 4px; }
+.group-editor-name {
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  outline: none;
+  padding: 4px 7px;
+  width: 100%;
+}
+.group-editor-name:focus { border-color: var(--accent); }
+
+.group-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.group-editor-hint { color: var(--muted); font-size: 10px; line-height: 1.4; }
+
+.group-swatches { display: flex; gap: 5px; }
 
 .group-swatch {
   width: 13px;
