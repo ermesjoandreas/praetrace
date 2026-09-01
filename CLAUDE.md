@@ -8,8 +8,66 @@ maintain a mental model of the codebase. This tool rebuilds that model continuou
 
 Runs entirely on localhost. Single user. No auth, no cloud, no multi-tenancy.
 
-Where the product is going is in [VISION.md](VISION.md). That file is the
-destination; this one is the current sprint. When they disagree, this one wins.
+Three files carry the project, and they answer different questions:
+
+| | |
+|---|---|
+| **CLAUDE.md** (this file) | What to know before touching the code, and what to build next |
+| [VISION.md](VISION.md) | Where the product is going, and why anyone would want it |
+| [DECISIONS.md](DECISIONS.md) | Why things are the way they are, and what has been proven |
+
+When this file and VISION.md disagree, this one wins. VISION.md is the destination;
+this one is the road.
+
+---
+
+## Where the project is now
+
+The MVP shipped, and four capabilities were built on top of it. The sequencing in
+VISION.md was **not** followed — the desktop shell was pulled forward from phase 6,
+and the MCP server from phase 4 — so read that table as a menu, not a schedule.
+
+**Built and working:**
+
+- The graph engine, incremental, parsed off the main thread
+- The browser page: React Flow, a view layer, live updates from hook and watcher
+- The Claude Code hook, and a Tauri desktop app that packages the whole thing
+- Architectural groups, named by a person or an agent, committed to the project
+- An MCP server, so the agent working in the project can query the graph
+- Search, call edges, a side panel, a menu bar, a welcome screen
+- Git status against a chosen base, and a group editor
+
+**What to build next, in this order.** Each is small, and each is here because
+something in the last round of work argued for it:
+
+1. **Close the loose ends from the git and group work.** The git badges reuse the
+   two colours reserved for the live signals (amber "just changed", blue "the agent
+   asked") — they should move to git-conventional hues, which are free. `/api/git`,
+   `fetchGit()` and `Session.gitBase()` have no callers; either use them or delete
+   them. And `list_groups` in the MCP server prints a hand-drawn group exactly like
+   a derived one, with "0% cohesion", which is the one promise the group feature
+   makes and the one consumer most likely to be misled by breaking it.
+
+2. **Tests for the pure modules.** See *Conventions*. This is the highest-value
+   item on the list and the reason is in the last round: a bug that made colour and
+   size edits fail on any group whose membership had drifted lived entirely inside
+   two pure functions, survived three review agents' worth of reading, and would
+   have been caught by a single test case.
+
+3. **Structural session diff** — VISION.md phase 1, and the natural next step now
+   that the git work landed. Today the tool knows which *files* differ from a base.
+   Phase 1 is which *symbols and edges* differ, which means reading the base version
+   of a changed file with `git show <base>:<path>`, parsing it through the pool that
+   already exists, and diffing two graphs. That is also the only way to draw a
+   deleted file as a ghost — a file that is not on disk is not in the graph, so the
+   current feature honestly cannot show one.
+
+**Not started, and not to be drifted into.** Architecture drift detection
+(VISION.md capability 1), blast radius (capability 3), LLM dataflow inference, any
+language other than TypeScript, and anything hosted or multi-user. If a task seems
+to need one of these, say so and ask rather than building it.
+
+---
 
 ## Architecture — four layers
 
@@ -28,20 +86,20 @@ leak into the server layer, or rendering concerns into the graph engine.
 
 ## Stack
 
-- **Language:** TypeScript everywhere. No Python, no Go, no Rust in application code.
+- **Language:** TypeScript everywhere. No Python, no Go, no Rust in application code
+  — the Tauri shell is the one exception, and it does process lifecycle only.
 - **Runtime:** Node.js
 - **Parsing:** `tree-sitter` with `tree-sitter-typescript` grammar
 - **Server:** Fastify (HTTP + websocket)
-- **Frontend:** React + Vite, React Flow for diagram rendering (was Mermaid; see Current state)
-- **Packaging:** Tauri — but NOT yet. See "Out of scope" below.
+- **Frontend:** React + Vite, React Flow for diagram rendering
+- **Desktop:** Tauri, with a Node sidecar. SQLite for local state.
 
 ## Non-negotiable design decisions
 
 These were decided deliberately. Do not change them without asking.
 
 1. **Parsing runs in `worker_threads`, never on the main thread.**
-   Set this up from the first commit even though it feels premature. The main
-   process must never block while parsing, because the agent fires rapid
+   The main process must never block while parsing, because the agent fires rapid
    consecutive edits.
 
 2. **Parsing is incremental.** When a file changes, re-parse only that file and
@@ -53,11 +111,17 @@ These were decided deliberately. Do not change them without asking.
 
 4. **Static analysis first, LLM second.** Class structure, imports, and call edges
    come from the AST — deterministic and fast. LLM inference is reserved for
-   cross-file semantic dataflow, and is not part of the MVP at all.
+   cross-file semantic dataflow, and is not built.
+
+5. **Group membership is graph-derived by default, and a hand-drawn group says so.**
+   A tidy grouping that does not match the imports is worse than none, because it is
+   wrong in a way that looks authoritative. A person may draw a group — they may know
+   something the imports do not — but it is stored with `origin: 'manual'` and marked
+   wherever it is shown. A model may suggest a name; it may never decide who belongs.
 
 ## Graph model
 
-Keep the node/edge shape stable and explicit. Roughly:
+Keep the node/edge shape stable and explicit:
 
 ```ts
 type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type';
@@ -69,6 +133,7 @@ interface GraphNode {
   name: string;
   filePath: string;
   range: { startLine: number; endLine: number };
+  modifiedAt?: number; // file nodes only
 }
 
 interface GraphEdge {
@@ -81,75 +146,13 @@ interface GraphEdge {
 Node IDs must be **stable across re-parses** so the frontend can diff and animate
 rather than redraw everything.
 
-## Event sources
-
-Two, both feeding the same collector:
-
-1. **Claude Code hooks** — configured in `.claude/settings.json`, matcher
-   `Write|Edit|MultiEdit` on `PostToolUse`, POSTing the hook JSON to the local
-   server. This is the primary source and the whole point of the tool.
-
-2. **File watcher** (chokidar) — fallback so the tool also works when the developer
-   edits by hand, or when using an agent other than Claude Code.
-
-Both must converge on one internal event type. Do not build two parallel pipelines.
-
-## MVP scope
-
-Build exactly this, in this order:
-
-1. Parse a directory of TypeScript files into the graph. CLI output only, no UI.
-2. Render the graph as a static Mermaid class diagram in a browser page.
-3. Add the file watcher + websocket so the diagram updates on save.
-4. Add the Claude Code hook endpoint so events come from the agent.
-
-Stop there. That is the MVP.
-
-## Out of scope for MVP
-
-Do not build these, do not scaffold for them, do not add dependencies for them:
-
-- Tauri packaging or any desktop shell (comes after the engine works)
-- Database / ER diagrams (Prisma, SQLAlchemy schema parsing)
-- Infrastructure diagrams (docker-compose, Terraform, k8s)
-- LLM-based dataflow inference
-- Any language other than TypeScript
-- Authentication, user accounts, hosted backend, multi-user anything
-- Persistence — the graph is in-memory and rebuilt on boot
-
-If a task seems to require one of these, stop and ask rather than building it.
-
-## Conventions
-
-- Strict TypeScript. No `any` without a comment explaining why.
-- Small modules with one responsibility. The parser does not know about websockets.
-- Prefer plain functions over classes unless there is real state to hold.
-- No test framework ceremony in the MVP, but the graph engine must be pure enough
-  to test later — keep I/O at the edges.
-- Comments explain *why*, not *what*.
-
-## Working style
-
-- Make one coherent change at a time. Do not refactor unrelated code while
-  implementing a feature.
-- When a design decision is ambiguous, ask instead of guessing — this codebase is
-  small enough that a wrong assumption is cheap to prevent and expensive to unwind.
-- Explain what changed and why after each step.
+**A cluster id is not a stable identity.** It embeds the member count
+(`src/cli/index.ts~8`), so it changes the moment a file joins or leaves the group,
+while the group itself survives — re-matched by member overlap under the id it was
+recorded with. Anything that edits a stored group addresses it by `storedId`, never
+by the id of the cluster it currently describes.
 
 ---
-
-# Current state
-
-**The MVP is complete. All four steps are done.**
-
-1. ✅ Parse a directory of TypeScript files into the graph. CLI output only.
-2. ✅ Render the graph in a browser page — React Flow, with a view layer so the
-   page never draws the whole project at once.
-3. ✅ File watcher + websocket: the page updates as files change.
-4. ✅ Claude Code hook endpoint, so events come from the agent itself.
-
-Per the scope above, this is where the MVP stops. Anything further is a phase in
-[VISION.md](VISION.md) and should be picked deliberately, not drifted into.
 
 ## Running it
 
@@ -168,6 +171,9 @@ npm run tauri dev                 # the desktop app
 CI=true npm run tauri build       # .app + .dmg — see "Packaging"
 ```
 
+`npm run serve` loads `dist/`, so a source change is invisible until `npm run build`.
+A server left running from an earlier session will happily serve code from before it.
+
 ## Layout
 
 ```
@@ -176,6 +182,9 @@ src/
     types.ts      GraphNode / GraphEdge / Graph / GraphDelta
     resolve.ts    module specifier -> file, given the set of known files
     store.ts      holds parse results, derives the graph, emits deltas
+  git/
+    types.ts      GitFileStatus / GitStatus — pure, so the view can name a
+                  status without importing the module that shells out
   parser/         everything that knows about ASTs
     types.ts      ParsedFile / ParsedSymbol + worker message shapes
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
@@ -185,30 +194,67 @@ src/
     walk.ts       boot scan + the ignore/source predicates everything shares
     scan.ts       walk + parse everything through the pool
     watch.ts      chokidar; emits raw changes, does not batch
+    git.ts        git status against a base -> GitStatus. Never throws
+    groups.ts     named groups, their colours and sizes, .codemap/groups.json
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
     hook-install.ts  detect, preview and merge the hook into settings.json
     port-file.ts  leaves the port where the hook can read it
     updater.ts    the one pipeline: coalesce, parse, patch, publish
   view/           which slice of the graph to draw — pure
     types.ts      ViewSpec / ViewGraph
-    select.ts     selectView(graph, spec) -> ViewGraph
+    filter.ts     what to leave out; filtering is not navigating
+    select.ts     selectView(graph, spec, now, git) -> ViewGraph
+    cluster.ts    label propagation over the import graph
+    detail.ts     one node's dependents and dependencies, for the panel
+    search.ts     subsequence search over the whole graph
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    session.ts    one project: store, pool, watcher, updater. Swapped whole
-    app.ts        Fastify: static web build, /api/view, /api/project, /api/hook, /live
+    session.ts    one project: store, pool, watcher, updater, git. Swapped whole
+    app.ts        Fastify: static web build, and the API below
     live.ts       connected clients and their view specs; pushes per client
     main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
-  src/App.tsx     URL <-> view, live updates, breadcrumb, focus and depth
+  src/App.tsx     URL <-> view, live updates, breadcrumb, focus, depth, selection
   src/BoxNode.tsx one box: a file with its symbols, or a folder
+  src/GroupNode.tsx a group frame: name, colour, size, membership
+  src/Sidebar.tsx the side panel: detail, change feed, group list and editor
   src/ProjectMenu.tsx  folder picker and recents; desktop only
   src/HookBanner.tsx   offers to install the hook, showing the file first
+  src/Welcome.tsx      shown when there is nothing to draw, and from Help
+  src/MenuBar.tsx      the menus
+  src/SearchPalette.tsx  ⌘K
+  src/AgentStatus.tsx  what the agent is doing, and how long ago
   src/layout.ts   dagre layout; React Flow does not place nodes itself
-  src/api.ts      fetch + the shared ViewGraph type, imported from src/view
+  src/api.ts      fetch + the shared types, imported from src/
 .claude/
   settings.json   the PostToolUse hook, committed so the repo dogfoods itself
+.codemap/
+  groups.json     accepted group names, committed on purpose
 ```
+
+**The API surface**, all served by `server/app.ts`:
+
+```
+GET  /api/view          the slice for a ViewSpec, given as a query string
+GET  /api/project       the current root
+POST /api/project       switch to another root
+GET  /api/detail        one node's dependents and dependencies
+GET  /api/changes       this session's change feed
+GET  /api/search        subsequence search over the whole graph
+GET  /api/agent         what the agent has asked, and when
+GET  /api/clusters      the groups, named and unnamed
+POST /api/clusters      accept or reject one, by membership
+POST /api/groups        create, update or delete one, by storedId
+GET  /api/git           the current git status
+POST /api/git-base      change the base the working tree is compared against
+GET  /api/hook-status   is a working hook installed
+POST /api/hook-install  merge ours into whatever is there
+POST /api/hook          the PostToolUse payload. Always 200
+     /live              the websocket
+```
+
+---
 
 ## Event sources
 
@@ -226,361 +272,214 @@ chokidar watcher ─────────────────────
   changes it.
 - **The watcher is the fallback**, for hand edits and other agents. It emits raw
   events and does no batching of its own — coalescing belongs to the updater, or
-  the two sources would debounce independently and the same edit would land
-  twice.
-- `.claude/settings.json` posts the hook payload with `curl ... || true` and a
-  2 second timeout. **A hook must never fail the agent's tool call**, so every
-  response is 200, including for payloads the endpoint cannot use.
+  the two sources would debounce independently and the same edit would land twice.
+- **A hook must never fail the agent's tool call**, so every response is 200,
+  including for payloads the endpoint cannot use.
 - **The hook contains no port.** It reads the one the server leaves in
-  `.claude/codemap.port`, so one hook definition survives a port the OS
-  reassigns on every launch, and follows a switch between projects because each
-  project has its own file. The file is written only when `.claude/` already
-  exists — the server does not create Claude Code's directory uninvited — and is
-  removed on shutdown.
-- **The app writes the hook for you.** `GET /api/hook-status` reports whether a
-  working one is present, `POST /api/hook-install` merges ours into whatever is
-  already there, and the page shows the exact file contents before anything is
-  written. A hook that names a port rather than reading the file counts as *not*
-  installed, so an old one is offered the upgrade instead of being mistaken for
-  a working one — and replaced rather than duplicated.
-
-## Desktop shell (phase D, in progress)
-
-All six items are done. The app launches, picks a project through a native
-dialog, starts its sidecar on an OS-assigned port, renders the graph, updates
-live from both the hook and the watcher, opens files in the editor on click,
-remembers what it should between launches, and exits without leaving a stray
-Node process.
-
-```
-Tauri shell (Rust — process lifecycle, nothing else)
-  ├── spawns the Node sidecar, reads its port from stdout
-  ├── exposes get_server_port() to the webview
-  └── webview → the same React page the browser serves
-                  ↓ HTTP + websocket on the OS-assigned port
-      Node sidecar — dist/server/main.js, unchanged in substance
-```
-
-**The server is not bundled into a single executable.** Node SEA on Node 24 runs
-CommonJS only and this app is ESM throughout; it also cannot spawn a worker from
-its own blob, which is exactly what `parser/pool.ts` does, and it cannot see
-tree-sitter's native addon because node-gyp-build resolves it with a runtime
-filesystem scan. A working SEA was built during research, but only by rewriting
-third-party package internals that `npm install` overwrites. pkg is archived.
-
-Instead `scripts/prepare-sidecar.mjs` produces a real Node binary from the one
-running the script — thinned with `lipo` and ad-hoc signed, or macOS SIGKILLs it
-— and the app's own `dist/` ships beside it as a Tauri resource. Both hard
-constraints stop being constraints: worker_threads loads a real sibling file, and
-the addons are found exactly as in development. The binary is 111 MB, generated
-rather than committed, and gitignored.
-
-**Switching projects opens a new session, it does not reset the old one.**
-`server/session.ts` owns everything root-scoped — the store, the parser pool, the
-watcher, the updater. A switch builds the next session, swaps it in, then closes
-the previous one, so nothing is shared and nothing can leak. The alternative was
-a `reset()` on each of six modules, every one an opportunity to forget something.
-
-Switches are serialised, and the new session is built before the old one is torn
-down: a root that turns out not to exist leaves the current project serving.
-Clients are told through a `project` message rather than an `update`, because
-every spec they hold names a path in the project just left; the page clears its
-URL when it arrives.
-
-**Recent projects are a JSON file** in the app config directory, written by Rust.
-Item 6 introduces SQLite for window state and per-project settings, designed
-around the session history that phase 1 of VISION.md will need. A list of paths
-is not a reason to improvise that schema early. On launch the app opens the most
-recent directory that still exists; with none, an empty placeholder directory —
-never $HOME, which would set a parser pool loose on the whole filesystem.
-
-**Local persistence.** `src-tauri/src/store.rs` keeps recent projects, window
-state and per-project settings in SQLite under the app config directory.
-
-SQLite rather than more JSON files because of what comes next: session diff
-(`VISION.md`, phase 1) records many rows per project over time and wants to query
-them by project and by date. The schema is shaped for that now, so it arrives
-without a migration — `project` carries a surrogate `id` from day one purely so a
-later `session(project_id REFERENCES project(id))` needs no back-fill. Recents as
-a bare list of paths, which is all this phase needs, would have forced exactly
-that rewrite later.
-
-Item 3's `recent-projects.json` is imported once on first open and then deleted,
-so the two cannot drift. The import assigns distinct descending timestamps: a
-whole import lands inside one second, and equal timestamps left the recency order
-to whatever SQLite happened to return.
-
-Window geometry is tracked in memory — recorded once at startup and on every
-resize or move — and written once on exit, rather than a database write per frame
-of a drag. A restored position is checked against the attached monitors first,
-since a saved position can name a screen that is no longer there.
-
-Per-project settings are a JSON column, read and written whole for one project at
-a time and never queried across projects. Its first consumer is the editor
-scheme, which is why `openInEditor` asks for it rather than hard-coding
-`vscode://`. There is no UI for changing it yet.
-
-**Editor deep links.** A click on a box already navigates the graph, so opening
-an editor uses a different target: clicking a **symbol** opens its file at that
-symbol's own line, and a button in the box header opens the file at line 1. The
-line numbers were already in the graph; `ViewMember` now carries one.
-
-The URL is `vscode://file/<absolute path>:<line>`, built with `encodeURI` so a
-path with a space survives. Under Tauri it goes through an `open_in_editor`
-command that allowlists the scheme — the webview hands Rust a string, and
-"open whatever you are given" is how a page becomes a way to launch things. In a
-browser the OS handles the scheme itself, usually after a prompt. The scheme is
-fixed for now; item 6's per-project settings are where it would become a choice.
-
-**The port contract.** `--port=0` asks the OS to assign one; the server prints
-`codemap-port=<n>` as its first stdout line and Rust parses that. The CLI default
-is still 4400. Nothing in the web page hard-codes a port: it calls
-`get_server_port` under Tauri and uses relative URLs everywhere else, which is
-what keeps the same page working when Fastify serves it directly.
-
-**No orphaned processes, and no killing either.** On exit Rust *drops* the child
-rather than killing it. Dropping closes our end of the sidecar's stdin, which is
-the signal `--exit-on-stdin-close` already listens for, so the server runs its
-own shutdown and removes `.claude/codemap.port`. `CommandChild::kill` is SIGKILL,
-which skipped that and left the file naming a dead port — one the hook would keep
-posting to, and that something else could later occupy. Do not "fix" this back to
-a kill. The closed pipe is what guarantees the exit, which is why SIGKILLing the
-app has the same effect: verified, the sidecar still goes away and removes its
-port file.
-
-## Packaging
-
-`CI=true npm run tauri build` produces `codemap.app` (153 MB) and
-`codemap_0.1.0_aarch64.dmg` (45 MB) under `src-tauri/target/release/bundle/`.
-
-**`CI=true` is not optional.** `bundle_dmg.sh` drives Finder through AppleScript
-to arrange the disk image window, which needs macOS automation permission; without
-it the build fails at the very last step with only "error running bundle_dmg.sh".
-`CI` makes Tauri pass `--skip-jenkins`, which skips the cosmetics. If a build does
-fail there, it leaves a mounted `rw.*.dmg` behind that blocks the next attempt —
-`hdiutil detach` it first.
-
-`scripts/prepare-resources.mjs` stages what ships. The repository's
-`node_modules` is 160 MB of build tooling; the server loads six packages, and the
-frontend's dependencies are already inside `dist/web`. Staging installs only those
-six and prunes the native prebuilds to this platform: 28 MB.
-
-Prune carefully. `bindings` is tree-sitter-typescript's own `main` and `common`
-holds shared grammar code — deleting either makes the addon unloadable, and
-because a worker that fails at module load is indistinguishable from one that
-crashed, the symptom is a hang rather than an error.
-
-**The app is not signed or notarised.** macOS will refuse it on first launch;
-right-click and Open. Signing is out of scope for phase D.
+  `.claude/codemap.port`, so one hook definition survives a port the OS reassigns
+  on every launch, and follows a switch between projects. The file is written only
+  when `.claude/` already exists — the server does not create Claude Code's
+  directory uninvited — and is removed on shutdown.
+- **The app writes the hook for you.** A hook that names a port rather than reading
+  the file counts as *not* installed, so an old one is offered the upgrade instead
+  of being mistaken for a working one.
 
 ## The view layer
 
-The page never draws the whole project. `selectView(graph, spec) -> ViewGraph`
-reduces the graph to a slice, and the spec lives in the URL, so navigation is
-links: the back button works and a view is shareable.
+The page never draws the whole project. `selectView(graph, spec, now, git)` reduces
+the graph to a slice, and the spec lives in the URL, so navigation is links: the
+back button works and a view is shareable.
 
 ```
 /                            root, auto-descends past single-child directories
 /?scope=src/graph            the files in one directory
 /?focus=<file>&depth=1       a file and its neighbours, imports both ways
+/?changed=1                  only what differs from the git base
 ```
 
-- Above 40 files in scope, boxes stand for directories instead of files, and
-  edges between them are aggregated with a weight.
-- Files outside the current scope collapse to their directory and are drawn
-  dimmed, so a scoped view still shows what it connects to.
+- Above 40 files in scope, boxes stand for directories, and edges between them are
+  aggregated with a weight.
+- Files outside the current scope collapse to their directory and are drawn dimmed.
 - Every `ViewNode` carries the `files` it stands for. That is what lets the page
   tell an in-view change from one it must report as happening elsewhere.
 - `ViewGraph` is a separate type from `Graph` on purpose. A box standing for a
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
-  model has no business carrying. The graph stays the single source of truth.
+  model has no business carrying.
 
-## The menu bar
+**Two wire formats, two readers.** The URL carries the spec as short flat keys
+(`changed`, `edges`, `since`); the websocket carries a `ViewSpec` object with its
+filter nested (`onlyChanged`, `edgeKinds`, `sinceMs`). Reading one with the other's
+parser silently yields the default filter — no error, just a diagram that quietly
+widens back to everything. Keep `toSpec` and `toSocketSpec` apart.
 
-Two rows, the way an editor is laid out: menus and project on top, breadcrumb
-and view controls below.
+## Git status
 
-**Nothing in a menu is decoration.** Every item runs something the app can
-already do, and an item that needs a selection is greyed with the reason in its
-tooltip rather than silently doing nothing. If a menu would need filler to look
-complete, the filler is left out instead.
+`project/git.ts` compares the working tree against a base and returns a
+`Record<path, GitFileStatus>` — `git diff --name-status -z <base>` for the tracked
+half, the `??` entries of `git status --porcelain -z` for the untracked one. It
+**never throws**: a directory that is not a repository is a missing feature, not an
+error, and every caller treats `null` as "no git here".
 
-  File       open a folder, install the hook, reload
-  Edit       copy path, open in editor, reject the selection's group
-  Selection  focus it, show its group, clear
-  View       panel, call edges, filters, zoom
-  Go         search, back, forward, whole project, up one level
-  Help       the welcome screen
-
-Filters that were URL-only now have menu items that tick, and a "filtered" chip
-appears in the breadcrumb row so a narrowed view can never be mistaken for the
-whole project.
-
-## The welcome screen
-
-Shown when there is nothing to draw, and from Help. Actions, not prose: open a
-folder, a recent project, install the hook, search — plus the shortcuts that
-actually work. In a browser it says how to point the CLI at a directory instead
-of offering a folder picker that only exists in the desktop app.
+- The base is `HEAD`, `HEAD~1` or `branch` (the merge base with the default branch).
+  It is a **session setting, not a view**, so it does not go in the URL — no more
+  than the project root does. The `?changed=1` filter *is* a view, and does.
+- Paths come back relative to the repo root; the project may be opened at a
+  subdirectory, so they are translated and anything outside is dropped.
+- **A commit is invisible to the watcher.** `isIgnoredDirectoryName` drops every
+  dotted directory, so `.git` is never watched. Hence a 3 second poll that publishes
+  only when the status actually changed, unref'd so it cannot hold the process open,
+  and cleared with the session.
+- Git status is a small badge on a box, never a third full-box tint. Amber already
+  means "just changed" and blue means "the agent asked about this".
 
 ## Architectural groups
 
-The graph finds groups of files that lean on each other more than on anything
-else — label propagation over the import graph, deterministic, no model
-involved. A person, or an agent, gives them names.
+The graph finds groups of files that lean on each other more than on anything else —
+label propagation over the import graph, deterministic, no model involved. A person,
+or an agent, gives them names. See non-negotiable decision 5 for the rule that
+governs membership.
 
-That split is the whole design. **Membership comes from the graph and only from
-the graph.** A tidy grouping that does not match the imports is worse than none,
-because it is wrong in a way that looks authoritative. A model may suggest a
-name; it may never decide who belongs.
+- Frames are drawn tight around where members actually landed, not around dagre's
+  parent box, which spans every rank its children touch. Where two overlap badly the
+  more cohesive one keeps its frame — and the panel lists every group regardless, so
+  a frame that cannot be drawn is still nameable and still editable.
+- Accepted names live in `.codemap/groups.json` **in the project, committed**: a name
+  for a piece of architecture belongs beside the code. The file is written only when
+  a decision is made.
+- Names are matched back to freshly computed clusters by member overlap, so they
+  survive membership drifting. That is why `storedId` exists — see *Graph model*.
+- A group's **size** is the slack around its members, not an absolute rectangle. The
+  frame hugs what it encloses; a free-floating box would describe nothing.
 
-Frames are drawn tight around where members actually landed, not around dagre's
-parent box, which spans every rank its children touch. Where two still overlap
-badly the more cohesive one keeps its frame — and the panel lists every group
-regardless, so a frame that cannot be drawn is still nameable.
+## The rest of the page
 
-Accepted names live in `.codemap/groups.json` **in the project, committed**: a
-name for a piece of architecture belongs beside the code and is worth sharing.
-The file is written only when a decision is made. Names are matched back to
-freshly computed clusters by member overlap, so they survive membership drifting.
+- **The menu bar.** Two rows: menus and project on top, breadcrumb and view controls
+  below. **Nothing in a menu is decoration.** Every item runs something the app can
+  already do, and an item that needs a selection is greyed with the reason in its
+  tooltip rather than silently doing nothing.
+- **The welcome screen.** Shown from Help, and when there is genuinely nothing to
+  draw. **Not** when a filter emptied the view — it covers the viewport and only
+  carries a close button when opened deliberately, so showing it there buried the
+  menu bar and the "filtered" chip that were the only ways back out.
+- **Search.** ⌘K searches the **whole graph**, not the slice on screen. Matching is
+  a subsequence, the way editors do it: `gst` finds `GraphStore`.
+- **Call edges** are off by default (`?calls=1`). When on, a call edge *replaces* the
+  import between the same pair rather than being drawn beside it.
+- **The side panel.** Click inspects, double-click navigates. `zoomOnDoubleClick` is
+  off and must stay off: d3-zoom handles a double click on the pane and stops it
+  bubbling, so `onNodeDoubleClick` never fires and the view silently zooms instead.
+- **The change feed** is the session's own history, the last 200 batches in memory,
+  discarded with the session. It is *not* session history — that is VISION.md phase 1
+  and it gets a schema designed for it rather than a ring buffer promoted into one.
+
+## Live updates
+
+Every connected client is sent a view **computed for its own spec**. The behaviour is
+*mark, do not move*:
+
+- A touched box pulses and holds a warm tint. The camera does not move.
+- Box positions are preserved across an update, and only re-laid-out when the set of
+  boxes actually changes. **The layout cache key must include everything that changes
+  frame geometry** — the group list, and each group's colour and padding — or an edit
+  will not appear until something else forces a relayout.
+- A change landing outside the current view is not drawn; it increments a
+  "N changes outside" badge that focuses the most recent one when clicked.
+
+Following the agent automatically was considered and rejected: it makes it impossible
+to study one part of the graph while the agent works elsewhere.
 
 ## Seeing the agent
 
-The server could not tell an agent's request from a browser's — both arrive as
-plain HTTP. The MCP proxy now marks its own with `x-codemap-tool` and
-`x-codemap-arg`, and one `onRequest` hook records them. Headers rather than a
-separate report: one request, and nothing to keep in sync.
-
-That buys three things:
-
-- **One timeline.** The agent's questions and the file changes in a single
-  column. Two lists would hide the point — an agent looks a file up and then
-  rewrites it, and the lookup is what explains the edit.
-- **A second pulse.** A box glows amber when the file changed and blue when the
-  agent asked about it, so you watch its attention move before anything is
-  written.
-- **A status that says something.** Not a lit dot: "something is connected" is
-  not worth a widget. It names the tool and how long ago — `MCP search_symbols
-  now` — because what the agent is *doing* is the part worth a glance.
-
-If the marker never arrives, no agent has used the MCP tools this session, and
-the status says exactly that rather than implying a fault.
+The MCP proxy marks its own requests with `x-codemap-tool` and `x-codemap-arg`, and
+one `onRequest` hook records them. Headers rather than a separate report: one request,
+and nothing to keep in sync. That buys one timeline (the agent's questions and the
+file changes in a single column), a second pulse (a box glows blue when the agent
+asked about it), and a status that names the tool and how long ago.
 
 ## The MCP server
 
 `scripts/mcp.mjs` exposes codemap to whichever agent is working in the project.
-`.mcp.json` wires it up; it needs no configuration beyond that.
+`.mcp.json` wires it up.
 
-The direction is the point, and it is the same argument as the hook's. An MCP
-server is called **by** an agent and can never call one, so the app cannot ask a
-model to name a group. Instead it offers the unnamed groups to the agent already
-running — no API key, no cost, nothing leaving the machine.
+The direction is the point. An MCP server is called **by** an agent and can never
+call one, so the app cannot ask a model to name a group. Instead it offers the
+unnamed groups to the agent already running — no API key, no cost, nothing leaving
+the machine.
 
-  list_groups     the clusters, named and unnamed
-  name_group      accept one with a name
-  describe_file   declares / used by / uses
-  search_symbols  subsequence search over the whole project
+```
+list_groups     the clusters, named and unnamed
+name_group      accept one with a name
+describe_file   declares / used by / uses
+search_symbols  subsequence search over the whole project
+```
 
-It holds no graph of its own; it talks to a running codemap over HTTP and finds
-it through the same `.claude/codemap.port` file the hook reads. With nothing
-running it says so, and says how to start it.
+It holds no graph of its own; it talks to a running codemap over HTTP and finds it
+through the same `.claude/codemap.port` file the hook reads.
 
-## Search and call edges
+## Desktop shell and packaging
 
-**⌘K** (or ⌘P) opens a palette that searches the **whole graph**, not the slice
-on screen — reaching something you cannot see is the point of it. Matching is a
-subsequence, the way editors do it: `gst` finds `GraphStore`. Enter shows the
-hit in the graph, ⇧Enter opens it in the editor.
+Full reasoning in [DECISIONS.md](DECISIONS.md). The rules:
 
-**Call edges** are off by default and toggled with `?calls=1`. When on, a call
-edge *replaces* the import between the same pair rather than being drawn beside
-it: two edges take the same path on screen, and "calls twelve things in here"
-says more than "imported a type from here", which is all an import alone tells
-you. Every navigation carries the flag, or turning it on and then moving would
-lose it.
+- **The server is not bundled into a single executable.** `scripts/prepare-sidecar.mjs`
+  produces a real Node binary and `dist/` ships beside it as a Tauri resource, so
+  `worker_threads` loads a real sibling file and the native addons resolve as they do
+  in development. Node SEA cannot do either. Do not try again without reading why.
+- **Switching projects opens a new session; it does not reset the old one.**
+  `server/session.ts` owns everything root-scoped. A switch builds the next session,
+  swaps it in, then closes the previous one.
+- **On exit Rust *drops* the child rather than killing it.** The closed stdin pipe is
+  what `--exit-on-stdin-close` listens for, so the server runs its own shutdown and
+  removes its port file. `kill` is SIGKILL, which skipped that and left the file
+  naming a dead port. **Do not "fix" this back to a kill.**
+- **`CI=true` is not optional** for `npm run tauri build`. Without it the build fails
+  at the last step in `bundle_dmg.sh`, which drives Finder through AppleScript. A
+  failed build leaves a mounted `rw.*.dmg` that blocks the next attempt.
+- **Prune carefully** in `scripts/prepare-resources.mjs`. `bindings` is
+  tree-sitter-typescript's own `main` and `common` holds shared grammar code —
+  deleting either makes the addon unloadable, and because a worker that fails at
+  module load is indistinguishable from one that crashed, the symptom is a hang
+  rather than an error.
+- **The app is not signed or notarised.** macOS will refuse it on first launch;
+  right-click and Open.
 
-## The side panel
+---
 
-The diagram can only show what a file *uses*. The graph has always known the
-other direction too — the edges run both ways — but nothing asked, so the page
-could never answer "what depends on this". `view/detail.ts` asks, and the panel
-shows it.
+## Conventions
 
-- **Click inspects, double-click navigates.** A single click used to teleport the
-  view, which made every glance at a box a navigation you then had to undo.
-- `zoomOnDoubleClick` is off, and must stay off. d3-zoom handles a double click
-  on the pane and stops it bubbling before React sees it, so `onNodeDoubleClick`
-  never fires and the view silently zooms instead of navigating.
-- The panel lists **every** symbol, where the box has room for eight.
-- **The change feed** is the session's own history: `Session` keeps the last 200
-  batches in memory, and a project switch discards them with the session. It
-  answers "what did the agent do while I was away". It is *not* session
-  history — that is `VISION.md` phase 1, and it gets a schema designed for it
-  rather than a ring buffer promoted into one.
+- Strict TypeScript. No `any` without a comment explaining why.
+- Small modules with one responsibility. The parser does not know about websockets.
+- Prefer plain functions over classes unless there is real state to hold.
+- Keep I/O at the edges. `graph/` and `view/` are pure and must stay that way — that
+  is why `src/git/types.ts` exists separately from `src/project/git.ts`.
+- Comments explain *why*, not *what*.
 
-## Live updates
+**Testing.** The rule used to be "no test framework ceremony in the MVP, but the
+graph engine must be pure enough to test later". Later has arrived, and the evidence
+is that every check in DECISIONS.md is a scratch script that was run once and thrown
+away, so nothing in it can be re-run to see if it still holds.
 
-Every connected client is sent a view **computed for its own spec** — a client
-looking at one directory is never handed another's slice.
+Use `node --test`. It is built into Node, so this adds no dependency and no ceremony.
 
-The behaviour is *mark, do not move*, chosen deliberately:
+- **Test the pure modules**: `graph/`, `view/`, `project/groups.ts`, and the parsing
+  half of `project/git.ts`. These are where logic hides and where a bug is silent.
+- **Do not** unit-test the server, the React page, or the parser workers. Those are
+  I/O and integration; a scratch script against a running server is still the right
+  tool, and it belongs in DECISIONS.md when it proves something.
+- A bug worth fixing is worth a test that fails first. The last three bugs found by
+  review all lived in pure functions.
 
-- A touched box pulses and holds a warm tint. The camera does not move.
-- Box positions are preserved across an update. They are only re-laid-out when
-  the set of boxes actually changes, and `fitView` runs on navigation only. A box
-  must not jump because the agent saved a file.
-- A change landing outside the current view is not drawn; it increments a
-  "N changes outside" badge that focuses the most recent one when clicked.
+## Working style
 
-Following the agent automatically was considered and rejected: it makes it
-impossible to study one part of the graph while the agent works elsewhere.
-
-## Decisions taken while building step 1
-
-- **ESM with `createRequire`.** `tree-sitter` and its grammars are native CommonJS
-  addons with no ESM entry point. `createRequire` is confined to `parser/extract.ts`.
-- **Nodes are patched incrementally, edges are re-derived wholesale.** Only a
-  changed file is re-parsed (decision 2 holds — parsing is the expensive part), but
-  `derive()` rebuilds all nodes and edges from the stored `ParsedFile`s on every
-  mutation. It is pure in-memory work, and it means a newly added file can satisfy
-  an import that failed to resolve earlier.
-- **Top-level declarations only.** Class methods are not separate nodes; calls made
-  inside a method attribute to the enclosing class.
-- **Unresolvable references are dropped.** Bare specifiers and names that resolve
-  to nothing produce no edge. Resolution is: own file first, then imported files.
-- **`.d.ts` files are skipped** — they restate types the accompanying source declares.
-
-## Decisions taken while building step 2
-
-- **One box per file, not per class.** A file's symbols are listed inside its box,
-  and symbol-level `extends` / `implements` are lifted to the owning files.
-- **`calls` edges are not drawn.** At file granularity a call into another file is
-  already implied by the import edge beside it. They stay in the graph, and the
-  CLI prints them.
-- **React Flow, not Mermaid.** Mermaid rendered a static SVG and could not pan,
-  zoom or collapse. It is in git history if a static export is ever wanted. The
-  view layer, not the renderer, is what makes large projects legible.
-- **dagre lays out, React Flow draws.** Boxes are measured before layout, from
-  member counts, because dagre needs dimensions up front.
-
-## Decisions taken while building steps 3 and 4
-
-- **One batch entry point on the store.** `applyBatch(store, updated, removed)`
-  replaced `setFile` / `setFiles` / `removeFile`. A re-derivation is whole-graph
-  work, so an agent touching five files should cost one, not five.
-- **Every filtering rule has one definition.** `isIgnoredDirectoryName` and
-  `isSourceFileName` live in `walk.ts` and are used by the scan, the watcher and
-  the hook endpoint, so none of them can disagree about what the project contains.
-- **Coalescing lives in the updater, not in either source.** This is what makes
-  the two sources one pipeline: a hook and a watcher event for the same edit,
-  80 ms apart, become a single graph update and a single pulse.
-- **The server pushes views, not deltas.** A `GraphDelta` does not map onto a view
-  slice — a change can be entirely outside what a client is looking at.
-- **Updates are published even when the graph did not change.** A comment-only
-  edit still tells you where the agent is working.
-- **Deltas are not stored.** `applyBatch` returns one and nothing reads it. Session
-  diff (`VISION.md`, phase 1) is where that changes; the seam is there, the
-  storage is not, because unused storage is not worth carrying.
+- Make one coherent change at a time. Do not refactor unrelated code while
+  implementing a feature.
+- When a design decision is ambiguous, ask instead of guessing — this codebase is
+  small enough that a wrong assumption is cheap to prevent and expensive to unwind.
+- Explain what changed and why after each step.
+- **Keep this file true.** It is the first thing read and the easiest thing to let
+  rot. When a section here describes something that is no longer the case, that is a
+  bug: it sends the next agent to rebuild something that exists, or to trust
+  something that is gone. Move the history to DECISIONS.md rather than growing this
+  one — it has been 662 lines and contradicting itself once already.
 
 ## Dependency note
 
@@ -589,74 +488,45 @@ while the current binding is `0.25.1`. The real constraint is the parser ABI, wh
 was verified to work. `.npmrc` sets `legacy-peer-deps=true` so `npm install` succeeds;
 re-verify by parsing a file if either package is bumped.
 
-## Verified
-
-- Parses its own source and a class/interface fixture: `extends`, `implements`,
-  cross-file `calls`, `.js`→`.ts` specifier resolution, deduplicated import edges,
-  self-edges dropped.
-- Editing one file yields a delta touching only that file's nodes; ids in untouched
-  files stay stable. Adding a file resolves a previously unresolvable import.
-- 360 parses through the pool block the main thread for 1.1 ms; the same work
-  inline blocks it for 114 ms.
-- View selection on a generated 120-file project: root collapses to 8 folder boxes
-  with weighted edges in 0.5 ms; focus depth 1 gives 19 boxes, depth 2 gives 64.
-- End to end over a real websocket: an edit adds the new symbol to its box, a new
-  file appears with its edge, a delete removes the box, and three simultaneous
-  writes arrive as one coalesced message.
-- The hook endpoint accepts source files and relative paths; rejects `.md`,
-  `node_modules`, paths outside the root, and payloads with no `file_path` —
-  always with HTTP 200. A hook for a file that no longer exists removes it.
-- **A hook and a watcher event for the same edit produce exactly one websocket
-  message.** The two sources really are one pipeline.
-- The real page bundle, mounted in jsdom against a running server: the touched box
-  pulses, the new symbol appears, positions are unchanged, and a change outside
-  the view produces a badge that focuses that file when clicked. Test tooling
-  (jsdom, esbuild) lives outside the repo so it is not a dependency.
-
-**Confirmed in a real browser** (headless Chrome via playwright-core, installed
-outside the repo): edges render with correct geometry at root, scope and focus
-views, and weight labels appear on aggregated edges. The empty edge container in
-jsdom was jsdom's missing layout engine, not a fault.
-
-**Still not verified:** whether Claude Code picks up a newly added
-`.claude/settings.json` without a restart. The watcher covers the same edits
-either way, so the hook failing silently costs latency, not correctness.
-
 ## Known limitations
 
-- The hook's port is hard-coded to 4400 in `.claude/settings.json`.
+Structural, and each one a real report rather than a worry:
+
 - Focus depth 2 on a densely coupled project explodes (64 boxes on the synthetic
-  test). There is no cap or warning yet.
+  test). There is no cap or warning. At depth 4 the browser main thread blocks for
+  about 2 s — client-side dagre plus the React Flow mount for ~288 boxes. The server
+  answers in 3 ms; the cost is entirely in the page.
 - Every save re-parses; there is no content hash, so a save that changes nothing
   still costs a parse and a publish.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
-- **Saving window state on quit is unverified.** Driving or quitting a native
-  window from outside needs macOS accessibility permission, which is not granted
-  here, so the restore path was proved from a log line and the save path only by
-  reading. Check it by resizing, quitting with Cmd-Q, and relaunching.
-- `codemap.db-wal` and `-shm` are left behind on exit: Tauri leaves through
-  `std::process::exit`, so no final checkpoint runs. Harmless — the commits are
-  already durable and the next open recovers — but the files persist.
-- Errors in the persistence layer are swallowed. A read-only or full config
-  directory loses a remembered preference silently rather than saying so.
-- `schema_version` is written but never read. There is a place to put an upgrade,
-  not an upgrade path.
-- Grouping keys off the directory tree only. There is no filtering by name, kind
-  or path glob, and a flat directory above the threshold cannot be grouped at all
-  (it now reports `grouped: false` honestly rather than claiming otherwise).
-- A focus view at depth 4 on a well-connected file blocks the browser main thread
-  for about 2 s: client-side dagre plus the React Flow mount for ~288 boxes. The
-  server answers in 3 ms; the cost is entirely in the page.
+- A file with a syntax error silently loses symbols. tree-sitter is error-tolerant
+  and `parseSource` never checks `tree.rootNode.hasError`, so a malformed file is
+  indistinguishable from an empty one.
+- Grouping keys off the directory tree only. There is no filtering by name, kind or
+  path glob, and a flat directory above the threshold cannot be grouped at all (it
+  reports `grouped: false` honestly rather than claiming otherwise).
 - Edges have no obstacle avoidance, so they route through unrelated boxes — 26% of
   edges in a 10-box root view.
-- A file with a syntax error silently loses symbols. tree-sitter is error-tolerant
-  and `parseSource` never checks `tree.rootNode.hasError`, so a malformed file
-  is indistinguishable from an empty one.
+- A group with no `id` in `groups.json` — written before ids existed — cannot be
+  given a colour or a size until it is renamed, which heals the id. Nothing in this
+  repo's file is in that state.
 - `/api/hook` can still answer 413/400/415: Fastify's 1 MiB body limit and its
   content-type parser reject before the route handler's deliberate 200.
-- A failed view fetch leaves the previous graph rendered under the error banner,
-  and re-navigating to the same URL is a no-op because only `search` drives the
-  refetch.
-- Deleting and recreating the focused file drops the page out of focus mode while
-  the URL still says `?focus=`.
+- A failed view fetch leaves the previous graph rendered under the error banner, and
+  re-navigating to the same URL is a no-op because only `search` drives the refetch.
+- Deleting and recreating the focused file drops the page out of focus mode while the
+  URL still says `?focus=`.
+- **Saving window state on quit is unverified.** Driving a native window from outside
+  needs macOS accessibility permission, which is not granted here, so the restore
+  path was proved from a log line and the save path only by reading. Check it by
+  resizing, quitting with Cmd-Q, and relaunching.
+- `codemap.db-wal` and `-shm` are left behind on exit: Tauri leaves through
+  `std::process::exit`, so no final checkpoint runs. Harmless, but the files persist.
+- Errors in the persistence layer are swallowed. A read-only config directory loses a
+  remembered preference silently.
+- `schema_version` is written but never read. There is a place to put an upgrade, not
+  an upgrade path.
+- **Still not verified:** whether Claude Code picks up a newly added
+  `.claude/settings.json` without a restart. The watcher covers the same edits either
+  way, so the hook failing silently costs latency, not correctness.
