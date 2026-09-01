@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import {
   decideCluster,
   fetchClusters,
+  fetchAgentCalls,
   fetchHookStatus,
   fetchView,
   installHook,
@@ -13,12 +14,14 @@ import {
   openInEditor,
   rememberProject,
   switchProject,
+  type AgentCall,
   type GroupSuggestion,
   type SearchHit,
   type ViewGraph,
   type ViewResponse,
 } from './api';
 import { HookBanner } from './HookBanner';
+import { AgentStatus } from './AgentStatus';
 import { MenuBar, type Menu } from './MenuBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
@@ -35,6 +38,11 @@ const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 /** The default edge kinds plus calls; the button is a shortcut for this set. */
 const CALL_EDGES = 'imports,extends,implements,calls';
+
+interface AgentMessage {
+  type: 'agent';
+  call: AgentCall;
+}
 
 interface LiveMessage {
   /** `project` means the server switched roots; every path on screen is stale. */
@@ -63,6 +71,9 @@ export function App() {
   const [revision, setRevision] = useState(0);
   const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
+  const [agentCalls, setAgentCalls] = useState<AgentCall[]>([]);
+  /** Files the agent asked about just now, for a pulse of their own. */
+  const [agentLooking, setAgentLooking] = useState<string[]>([]);
   const flow = useReactFlow();
   const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
 
@@ -148,7 +159,16 @@ export function App() {
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
-        const message = JSON.parse(event.data) as LiveMessage;
+        const parsed = JSON.parse(event.data) as LiveMessage | AgentMessage;
+
+        if (parsed.type === 'agent') {
+          setAgentCalls((previous) => [parsed.call, ...previous].slice(0, 200));
+          // A path target is a box on screen; a search term is not.
+          if (parsed.call.target?.includes('/')) setAgentLooking([parsed.call.target]);
+          return;
+        }
+
+        const message = parsed;
 
         if (message.type === 'project') {
           // The URL names a scope or a file in the project we just left.
@@ -261,6 +281,34 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [pulsing]);
 
+  useEffect(() => {
+    if (agentLooking.length === 0) return;
+    const timer = window.setTimeout(() => setAgentLooking([]), PULSE_MS);
+    return () => window.clearTimeout(timer);
+  }, [agentLooking]);
+
+  // The log is fetched once per project; the socket keeps it current after that.
+  useEffect(() => {
+    let cancelled = false;
+    fetchAgentCalls().then(
+      (result) => {
+        if (!cancelled) setAgentCalls(result.calls);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.root]);
+
+  const queriedBoxIds = useMemo(() => {
+    if (!view || agentLooking.length === 0) return new Set<string>();
+    const asked = new Set(agentLooking);
+    return new Set(
+      view.nodes.filter((node) => node.files.some((file) => asked.has(file))).map((n) => n.id),
+    );
+  }, [view, agentLooking]);
+
   const changedBoxIds = useMemo(() => {
     if (!view || pulsing.length === 0) return new Set<string>();
     const touched = new Set(pulsing);
@@ -303,6 +351,7 @@ export function App() {
         external: node.external,
         focused: node.focused,
         changed: changedBoxIds.has(node.id),
+        queried: queriedBoxIds.has(node.id),
         root: data?.root ?? '',
       },
     }));
@@ -367,7 +416,7 @@ export function App() {
     });
 
     return { nodes: [...frames, ...laid.nodes] as FlowNode[], edges: builtEdges };
-  }, [view, changedBoxIds, data?.root, clusters, decide]);
+  }, [view, changedBoxIds, queriedBoxIds, data?.root, clusters, decide]);
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();
@@ -648,6 +697,7 @@ export function App() {
         menus={menus}
         trailing={
           <>
+            <AgentStatus last={agentCalls[0] ?? null} total={agentCalls.length} />
             <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
             <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
             <span className="counts">
@@ -796,6 +846,7 @@ export function App() {
             onFocus={goTo}
             groups={clusters}
             onDecide={decide}
+            agentCalls={agentCalls}
           />
         )}
       </main>

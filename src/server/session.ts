@@ -6,6 +6,18 @@ import { scanProject } from '../project/scan.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
 
+/**
+ * One thing the agent asked codemap. Kept beside the change log because the
+ * order between them is the interesting part: an agent looks a file up, then
+ * edits it, and seeing the lookup explains the edit.
+ */
+export interface AgentCall {
+  at: number;
+  tool: string;
+  /** What it asked about — a path, a query — when the tool had one. */
+  target: string | null;
+}
+
 /** One batch of files that changed together, newest last. */
 export interface ChangeEntry {
   at: number;
@@ -36,6 +48,9 @@ export interface Session {
   queue(change: FileChange): void;
   /** What has changed since this project was opened, newest last. */
   history(): readonly ChangeEntry[];
+  /** What the agent has asked, newest last. */
+  agentCalls(): readonly AgentCall[];
+  recordAgentCall(call: AgentCall): void;
   close(): Promise<void>;
 }
 
@@ -53,6 +68,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   for (const failure of scan.failures) handlers.onError(failure);
 
   const history: ChangeEntry[] = [];
+  const agent: AgentCall[] = [];
 
   const updater = createUpdater({
     store,
@@ -73,6 +89,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     store,
     queue: (change) => updater.queue(change),
     history: () => history,
+    agentCalls: () => agent,
+    recordAgentCall: (call) => {
+      agent.push(call);
+      if (agent.length > MAX_HISTORY) agent.shift();
+    },
     async close() {
       updater.close();
       await Promise.allSettled([watcher.close(), pool.close()]);

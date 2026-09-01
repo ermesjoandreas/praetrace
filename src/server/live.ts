@@ -29,6 +29,11 @@ export interface LiveHub {
    * nothing.
    */
   projectChanged(): void;
+  /**
+   * An agent asked something. The graph did not change, so this is its own
+   * message rather than a view update nobody needs.
+   */
+  agentActed(call: { at: number; tool: string; target: string | null }): void;
   clientCount(): number;
 }
 
@@ -76,6 +81,13 @@ export function createLiveHub(getSession: () => { root: string; store: GraphStor
     projectChanged() {
       for (const socket of [...clients.keys()]) clients.set(socket, ROOT_SPEC);
       for (const [socket, spec] of clients) push(socket, spec, [], 'project');
+    },
+
+    agentActed(call) {
+      const payload = JSON.stringify({ type: 'agent', call });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
     },
 
     clientCount() {

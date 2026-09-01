@@ -232,3 +232,16 @@ export async function decideCluster(
     throw new Error(body.error ?? `HTTP ${response.status}`);
   }
 }
+
+export interface AgentCall {
+  at: number;
+  tool: string;
+  target: string | null;
+}
+
+export async function fetchAgentCalls(): Promise<{ calls: AgentCall[]; lastAt: number | null }> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/agent`);
+  if (!response.ok) throw new Error(`agent log failed: HTTP ${response.status}`);
+  return (await response.json()) as { calls: AgentCall[]; lastAt: number | null };
+}

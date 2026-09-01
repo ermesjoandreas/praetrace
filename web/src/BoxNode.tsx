@@ -11,6 +11,7 @@ export type BoxData = {
   external: boolean;
   focused: boolean;
   changed: boolean;
+  queried: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
 };
@@ -25,6 +26,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
   if (data.changed) classes.push('box-changed');
+  if (data.queried) classes.push('box-queried');
   if (data.focused) classes.push('box-focused');
 
   /** Clicking a box navigates, so opening an editor must not also do that. */

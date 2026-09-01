@@ -38,6 +38,22 @@ export interface AppOptions {
 export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
+  // The MCP proxy marks its own requests, which is the only way to tell an
+  // agent's question from a browser's. One hook, no extra round trip.
+  app.addHook('onRequest', async (request) => {
+    const tool = request.headers['x-codemap-tool'];
+    if (typeof tool !== 'string' || tool === '') return;
+
+    const rawTarget = request.headers['x-codemap-arg'];
+    const call = {
+      at: Date.now(),
+      tool,
+      target: typeof rawTarget === 'string' && rawTarget !== '' ? rawTarget : null,
+    };
+    host.current().recordAgentCall(call);
+    hub.agentActed(call);
+  });
+
   app.register(fastifyStatic, { root: WEB_DIR });
   app.register(websocket);
 
@@ -88,6 +104,11 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const root = host.current().root;
     await writeGroups(root, applyDecision(await readGroups(root), files, { name, state }));
     return { ok: true };
+  });
+
+  app.get('/api/agent', async () => {
+    const calls = [...host.current().agentCalls()].reverse();
+    return { calls, lastAt: calls[0]?.at ?? null, total: calls.length };
   });
 
   app.get('/api/changes', async () => ({ changes: [...host.current().history()].reverse() }));

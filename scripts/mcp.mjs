@@ -32,8 +32,21 @@ async function serverOrigin() {
   return `http://127.0.0.1:${port}`;
 }
 
-async function api(pathname, init) {
-  const response = await fetch(`${await serverOrigin()}${pathname}`, init);
+/**
+ * Every call carries which tool asked and what about, so codemap can show the
+ * agent's questions beside its edits. Headers rather than a separate report:
+ * one request, and nothing to keep in sync.
+ */
+async function api(pathname, init, mark) {
+  const response = await fetch(`${await serverOrigin()}${pathname}`, {
+    ...init,
+    headers: {
+      ...init?.headers,
+      ...(mark
+        ? { 'x-codemap-tool': mark.tool, ...(mark.target ? { 'x-codemap-arg': mark.target } : {}) }
+        : {}),
+    },
+  });
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`codemap replied ${response.status}: ${body.slice(0, 200)}`);
@@ -66,7 +79,7 @@ server.registerTool(
   },
   () =>
     run(async () => {
-      const { clusters } = await api('/api/clusters');
+      const { clusters } = await api('/api/clusters', undefined, { tool: 'list_groups' });
       const live = clusters.filter((group) => group.state !== 'rejected');
       if (live.length === 0) return 'No groups found in this project.';
 
@@ -95,11 +108,15 @@ server.registerTool(
   },
   ({ files, name }) =>
     run(async () => {
-      await api('/api/clusters', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ files, name, state: 'accepted' }),
-      });
+      await api(
+        '/api/clusters',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ files, name, state: 'accepted' }),
+        },
+        { tool: 'name_group', target: name },
+      );
       return `Named ${files.length} files "${name}". It now shows as an accepted group in codemap.`;
     }),
 );
@@ -116,7 +133,10 @@ server.registerTool(
   },
   ({ path: target }) =>
     run(async () => {
-      const detail = await api(`/api/detail?path=${encodeURIComponent(target)}`);
+      const detail = await api(`/api/detail?path=${encodeURIComponent(target)}`, undefined, {
+        tool: 'describe_file',
+        target,
+      });
       if (detail.kind === 'folder') {
         return [`${detail.path} — ${detail.files.length} files`, ...detail.files.map((f) => `  ${f}`)].join('\n');
       }
@@ -145,7 +165,10 @@ server.registerTool(
   },
   ({ query }) =>
     run(async () => {
-      const { hits } = await api(`/api/search?q=${encodeURIComponent(query)}`);
+      const { hits } = await api(`/api/search?q=${encodeURIComponent(query)}`, undefined, {
+        tool: 'search_symbols',
+        target: query,
+      });
       if (hits.length === 0) return `Nothing matches "${query}".`;
       return hits.map((hit) => `${hit.kind} ${hit.name} — ${hit.path}:${hit.line}`).join('\n');
     }),

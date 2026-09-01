@@ -444,6 +444,28 @@ name for a piece of architecture belongs beside the code and is worth sharing.
 The file is written only when a decision is made. Names are matched back to
 freshly computed clusters by member overlap, so they survive membership drifting.
 
+## Seeing the agent
+
+The server could not tell an agent's request from a browser's — both arrive as
+plain HTTP. The MCP proxy now marks its own with `x-codemap-tool` and
+`x-codemap-arg`, and one `onRequest` hook records them. Headers rather than a
+separate report: one request, and nothing to keep in sync.
+
+That buys three things:
+
+- **One timeline.** The agent's questions and the file changes in a single
+  column. Two lists would hide the point — an agent looks a file up and then
+  rewrites it, and the lookup is what explains the edit.
+- **A second pulse.** A box glows amber when the file changed and blue when the
+  agent asked about it, so you watch its attention move before anything is
+  written.
+- **A status that says something.** Not a lit dot: "something is connected" is
+  not worth a widget. It names the tool and how long ago — `MCP search_symbols
+  now` — because what the agent is *doing* is the part worth a glance.
+
+If the marker never arrives, no agent has used the MCP tools this session, and
+the status says exactly that rather than implying a fault.
+
 ## The MCP server
 
 `scripts/mcp.mjs` exposes codemap to whichever agent is working in the project.
