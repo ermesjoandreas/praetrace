@@ -237,6 +237,8 @@ export interface GroupSuggestion {
   /** 0 is an outer group; 1 sits inside one. */
   depth: number;
   parent: string | null;
+  /** The id this group is recorded under. See src/project/groups.ts. */
+  storedId?: string;
   /** Absent means the graph found this group; 'manual' means a person drew it. */
   origin?: 'manual';
   /** A palette key, not a CSS colour. Absent means the depth default. */

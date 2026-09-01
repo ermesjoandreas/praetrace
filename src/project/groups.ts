@@ -63,6 +63,16 @@ export interface GroupSuggestion extends Omit<Cluster, 'children'> {
   depth: number;
   /** The outer group this sits in, when it sits in one. */
   parent: string | null;
+  /**
+   * The id this group is recorded under, when it is recorded at all.
+   *
+   * Not the same as `id`, which is the cluster's, and a cluster id embeds its
+   * member count — so the moment membership drifts, the two diverge. The name
+   * survives that because it is re-matched by overlap, and everything that
+   * edits a stored group has to address it by this rather than by the id of
+   * the cluster it currently describes.
+   */
+  storedId?: string;
   /** Absent means the graph found this group; 'manual' means a person drew it. */
   origin?: 'manual';
   /** A palette key, not a CSS colour. Absent means the depth default. */
@@ -189,6 +199,7 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
     return {
       ...flat,
       ...(best === null ? {} : presentationOf(best)),
+      ...(best?.id === undefined ? {} : { storedId: best.id }),
       name: best?.name ?? null,
       state: best?.state ?? 'suggested',
     };
@@ -200,8 +211,12 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
   // no place in the nesting the clustering found, so it is its own outer group.
   for (const group of stored) {
     if (group.origin !== 'manual') continue;
+    const id = group.id ?? manualId(group.name);
     out.push({
-      id: group.id ?? manualId(group.name),
+      id,
+      // A drawn group describes no cluster, so its id never drifts: the two
+      // are the same, and saying so keeps every caller on one code path.
+      storedId: id,
       files: [...group.files],
       cohesion: 0,
       depth: 0,

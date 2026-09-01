@@ -309,6 +309,15 @@ export function App() {
   );
 
   /**
+   * Which id addresses a stored group. A cluster id embeds its member count, so
+   * it changes the moment a file joins or leaves — while the group it describes
+   * survives, re-matched by overlap under the id it was recorded with. Editing
+   * by the cluster id therefore fails on exactly the groups the overlap
+   * matching exists to keep alive.
+   */
+  const addressOf = (group: GroupSuggestion): string => group.storedId ?? group.id;
+
+  /**
    * Every group edit is answered with the whole freshly merged list, so the
    * page replaces what it holds rather than patching one row: a hand-drawn
    * group can displace a derived one, and the reply is the only place that
@@ -328,7 +337,7 @@ export function App() {
    */
   const renameGroup = useCallback(
     (group: GroupSuggestion, name: string) => {
-      if (group.origin === 'manual') editGroup({ action: 'update', id: group.id, name });
+      if (group.origin === 'manual') editGroup({ action: 'update', id: addressOf(group), name });
       else decide(group, name, 'accepted');
     },
     [decide, editGroup],
@@ -375,7 +384,10 @@ export function App() {
     const socket = socketRef.current;
     if (!socket || !view || socket.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify({ spec: view.spec }));
-  }, [view?.spec.scope, view?.spec.focus, view?.spec.depth, live]);
+    // Keyed on the whole spec, filter included. Listing scope, focus and depth
+    // by hand meant switching a filter on never reached the server, so it kept
+    // computing this client's pushes for the view it had stopped looking at.
+  }, [viewKey, live]);
 
   useEffect(() => {
     if (pulsing.length === 0) return;
@@ -534,10 +546,10 @@ export function App() {
             onAccept: (name: string) => decide(group, name, 'accepted'),
             onReject: () => decide(group, group.name ?? '', 'rejected'),
             onRename: (name: string) => renameGroup(group, name),
-            onColor: (color: GroupColor) => editGroup({ action: 'update', id: group.id, color }),
+            onColor: (color: GroupColor) => editGroup({ action: 'update', id: addressOf(group), color }),
             onPadding: (padding: { x: number; y: number }) =>
-              editGroup({ action: 'update', id: group.id, padding }),
-            onDelete: () => editGroup({ action: 'delete', id: group.id }),
+              editGroup({ action: 'update', id: addressOf(group), padding }),
+            onDelete: () => editGroup({ action: 'delete', id: addressOf(group) }),
           },
         },
       ];
@@ -757,8 +769,14 @@ export function App() {
 
   const params = new URLSearchParams(search);
   const isFiltered = ['hide', 'only', 'kinds', 'since', 'changed'].some((key) => params.has(key));
-  // Nothing to draw is the moment to say what the app is for.
   const empty = view !== undefined && view.nodes.length === 0;
+  /**
+   * Nothing to draw is the moment to say what the app is for — unless a filter
+   * is what emptied it. The welcome screen covers the viewport and only carries
+   * a close button when it was opened deliberately, so showing it here buried
+   * the menu bar and the "filtered" chip that were the only ways back out.
+   */
+  const emptyProject = empty && !isFiltered;
 
   /**
    * The panel edits every group, including the ones whose frames the overlap
@@ -771,9 +789,9 @@ export function App() {
     onCreating: setCreating,
     onCreate: createGroup,
     onRename: renameGroup,
-    onColor: (group, color) => editGroup({ action: 'update', id: group.id, color }),
-    onMembers: (group, files) => editGroup({ action: 'update', id: group.id, files }),
-    onDelete: (group) => editGroup({ action: 'delete', id: group.id }),
+    onColor: (group, color) => editGroup({ action: 'update', id: addressOf(group), color }),
+    onMembers: (group, files) => editGroup({ action: 'update', id: addressOf(group), files }),
+    onDelete: (group) => editGroup({ action: 'delete', id: addressOf(group) }),
   };
 
   const menus: Menu[] = [
@@ -1045,7 +1063,7 @@ export function App() {
 
       {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
 
-      {(showWelcome || empty) && (
+      {(showWelcome || emptyProject) && (
         <Welcome
           onOpen={(path) => {
             setShowWelcome(false);

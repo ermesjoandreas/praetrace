@@ -233,7 +233,7 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
         // computed per client rather than broadcast as one shared view.
         try {
           const message = JSON.parse(String(raw)) as { spec?: Record<string, unknown> };
-          if (message.spec) hub.setSpec(socket, toSpec(message.spec));
+          if (message.spec) hub.setSpec(socket, toSocketSpec(message.spec));
         } catch {
           // A malformed frame is not worth dropping the connection over.
         }
@@ -255,6 +255,46 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     depth: readDepth(raw['depth']),
     filter: toFilter(raw),
   };
+}
+
+/**
+ * The socket carries a ViewSpec object; the query string carries flat, shorter
+ * keys. They are two wire formats for one type, so they get two readers rather
+ * than one that guesses — reading a spec object with the query-string reader
+ * looked for `changed` and `edges` at the top level, found neither, and handed
+ * back the default filter. Every live push then silently widened the diagram
+ * back to the whole scope while the URL and the "filtered" chip still said it
+ * was narrowed.
+ */
+function toSocketSpec(raw: Record<string, unknown>): ViewSpec {
+  const filter = isRecord(raw['filter']) ? raw['filter'] : {};
+  const edges = readMembers(filter['edgeKinds'], EDGE_KINDS);
+  const since = filter['sinceMs'];
+
+  return {
+    scope: typeof raw['scope'] === 'string' ? raw['scope'] : '',
+    focus: typeof raw['focus'] === 'string' && raw['focus'] !== '' ? raw['focus'] : null,
+    depth: readDepth(raw['depth']),
+    filter: {
+      hidePath: typeof filter['hidePath'] === 'string' ? filter['hidePath'] : '',
+      onlyPath: typeof filter['onlyPath'] === 'string' ? filter['onlyPath'] : '',
+      kinds: readMembers(filter['kinds'], NODE_KINDS),
+      edgeKinds: edges.length > 0 ? edges : DEFAULT_EDGE_KINDS,
+      sinceMs: typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : 0,
+      onlyChanged: filter['onlyChanged'] === true,
+    },
+  };
+}
+
+function isRecord(raw: unknown): raw is Record<string, unknown> {
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw);
+}
+
+/** The socket sends the kind lists as arrays, where a query string sends CSV. */
+function readMembers<T extends string>(raw: unknown, allowed: readonly T[]): T[] {
+  if (!Array.isArray(raw)) return [];
+  const wanted = new Set(raw.filter((value): value is string => typeof value === 'string'));
+  return allowed.filter((value) => wanted.has(value));
 }
 
 const NODE_KINDS = ['class', 'function', 'interface', 'type'] as const;
