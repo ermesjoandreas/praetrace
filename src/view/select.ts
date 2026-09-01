@@ -66,6 +66,18 @@ interface FileEdge {
   weight: number;
 }
 
+/**
+ * The class a member belongs to, read back off its id rather than carried on
+ * the node. The id already encodes it — `path#Class.member` — and a second
+ * copy on every node in the graph could disagree with the first.
+ */
+function ownerOf(graph: Graph, id: string): string | null {
+  const hash = id.indexOf('#');
+  if (hash === -1) return null;
+  const dot = id.indexOf('.', hash);
+  return dot === -1 ? null : id.slice(hash + 1, dot);
+}
+
 /** File path -> the symbols it declares, in declaration order. */
 function collectFiles(
   graph: Graph,
@@ -82,7 +94,12 @@ function collectFiles(
   }
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
-    files.get(node.filePath)?.push({ name: node.name, kind: node.kind, line: node.range.startLine });
+    files.get(node.filePath)?.push({
+      name: node.name,
+      kind: node.kind,
+      line: node.range.startLine,
+      owner: ownerOf(graph, node.id),
+    });
   }
 
   // With a kind filter on, a file left holding nothing is not worth a box.

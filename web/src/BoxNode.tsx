@@ -94,9 +94,20 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       ) : (
         <ul className="box-members">
           {shown.map((member, index) => (
-            <li key={`${member.name}-${index}`} className={`member member-${member.kind}`}>
-              <button type="button" onClick={open(member.line)} title={`Open at line ${member.line}`}>
-                {member.kind === 'function' ? `${member.name}()` : member.name}
+            <li
+              key={`${member.owner ?? ''}${member.name}-${index}`}
+              // Indented under the class that holds it. A flat list would put a
+              // method beside the class it belongs to as though they were peers.
+              className={`member member-${member.kind}${member.owner === null ? '' : ' member-nested'}`}
+            >
+              <button
+                type="button"
+                onClick={open(member.line)}
+                title={`${member.owner === null ? '' : `${member.owner}.`}${member.name} — open at line ${member.line}`}
+              >
+                {member.kind === 'function' || member.kind === 'method'
+                  ? `${member.name}()`
+                  : member.name}
               </button>
             </li>
           ))}

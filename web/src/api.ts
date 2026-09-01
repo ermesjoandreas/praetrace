@@ -152,7 +152,7 @@ export async function openInEditor(root: string, filePath: string, line: number)
 
 export interface SymbolDetail {
   name: string;
-  kind: 'class' | 'function' | 'interface' | 'type';
+  kind: 'class' | 'function' | 'interface' | 'type' | 'method';
   line: number;
   endLine: number;
 }
@@ -189,7 +189,7 @@ export async function fetchChanges(): Promise<ChangeEntry[]> {
 }
 
 export interface SearchHit {
-  kind: 'file' | 'class' | 'function' | 'interface' | 'type';
+  kind: 'file' | 'class' | 'function' | 'interface' | 'type' | 'method';
   name: string;
   path: string;
   line: number;

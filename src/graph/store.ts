@@ -46,6 +46,8 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
   const symbolsByFile = new Map<string, Map<string, string>>();
   /** filePath -> node id per symbol, positionally aligned with ParsedFile.symbols. */
   const idsByFile = new Map<string, string[]>();
+  /** filePath -> class name -> node id, so a member can be contained by its class. */
+  const ownersByFile = new Map<string, Map<string, string>>();
 
   // Pass 1: every node must exist before edges are resolved, or a reference to a
   // file that happens to be visited later would be dropped.
@@ -61,9 +63,15 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
 
     const byName = new Map<string, string>();
     const ids: string[] = [];
+    /** Class name -> its node id, so the members that follow can attach to it. */
+    const owners = new Map<string, string>();
 
     for (const symbol of parsed.symbols) {
-      const id = uniqueId(`${parsed.filePath}#${symbol.name}`, nodes);
+      const base =
+        symbol.owner === undefined
+          ? `${parsed.filePath}#${symbol.name}`
+          : `${parsed.filePath}#${symbol.owner}.${symbol.name}`;
+      const id = uniqueId(base, nodes);
       nodes.set(id, {
         id,
         kind: symbol.kind,
@@ -72,8 +80,15 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
         range: { startLine: symbol.startLine, endLine: symbol.endLine },
       });
       ids.push(id);
-      if (!byName.has(symbol.name)) byName.set(symbol.name, id);
+      if (symbol.kind === 'class') owners.set(symbol.name, id);
+      // Methods stay out of the name table on purpose. A bare name is resolved
+      // against it, and `x.map(...)` arrives here as just `map` — so admitting
+      // members would invent a call edge to every class that happens to declare
+      // one. A missing edge is a gap; a wrong one is a lie.
+      if (symbol.owner === undefined && !byName.has(symbol.name)) byName.set(symbol.name, id);
     }
+
+    ownersByFile.set(parsed.filePath, owners);
 
     symbolsByFile.set(parsed.filePath, byName);
     idsByFile.set(parsed.filePath, ids);
@@ -119,7 +134,8 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
       const id = ids[index];
       if (!id) return;
 
-      addEdge(parsed.filePath, id, 'contains');
+      const owner = symbol.owner === undefined ? null : ownersByFile.get(parsed.filePath)?.get(symbol.owner);
+      addEdge(owner ?? parsed.filePath, id, 'contains');
 
       for (const name of symbol.extends) {
         const target = lookup(name);

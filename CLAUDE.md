@@ -124,7 +124,7 @@ These were decided deliberately. Do not change them without asking.
 Keep the node/edge shape stable and explicit:
 
 ```ts
-type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type';
+type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method';
 type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains';
 
 interface GraphNode {
@@ -144,7 +144,14 @@ interface GraphEdge {
 ```
 
 Node IDs must be **stable across re-parses** so the frontend can diff and animate
-rather than redraw everything.
+rather than redraw everything. A method lives in its own namespace —
+`path#Class.method` — so it can never collide with a top-level symbol of the
+same name, and it is contained by its class rather than by the file.
+
+**Methods are not in the name-resolution table.** A bare name is resolved against
+it, and `x.map(...)` reaches the graph layer as just `map`, so admitting members
+would invent a call edge to every class that happens to declare one. A missing
+edge is a gap; a wrong one is a lie.
 
 **A cluster id is not a stable identity.** It embeds the member count
 (`src/cli/index.ts~8`), so it changes the moment a file joins or leaves the group,

@@ -2,7 +2,7 @@ import dagre from '@dagrejs/dagre';
 import type { Edge, Node } from '@xyflow/react';
 
 export const NODE_WIDTH = 240;
-export const MAX_MEMBERS = 8;
+export const MAX_MEMBERS = 12;
 
 const HEADER_HEIGHT = 38;
 const ROW_HEIGHT = 17;

@@ -22,6 +22,8 @@ export interface ViewMember {
   kind: NodeKind;
   /** Where the symbol starts, so the page can open an editor on it. */
   line: number;
+  /** The class this is a member of, so a box can nest it under its owner. */
+  owner: string | null;
 }
 
 export interface ViewNode {

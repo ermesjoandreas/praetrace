@@ -3,12 +3,18 @@
  * parsers produce it, renderers consume it, nothing else defines structure.
  */
 
-export type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type';
+export type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method';
 
 export type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains';
 
 export interface GraphNode {
-  /** Stable across re-parses: `${filePath}` for files, `${filePath}#${symbolName}` for symbols. */
+  /**
+   * Stable across re-parses: `${filePath}` for files,
+   * `${filePath}#${symbolName}` for symbols, and
+   * `${filePath}#${ClassName}.${methodName}` for a class member — a separate
+   * namespace, so a method can never collide with a top-level symbol of the
+   * same name.
+   */
   id: string;
   kind: NodeKind;
   name: string;

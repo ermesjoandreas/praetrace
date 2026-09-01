@@ -5,11 +5,19 @@
  * graph layer's job.
  */
 
-export type SymbolKind = 'class' | 'function' | 'interface' | 'type';
+export type SymbolKind = 'class' | 'function' | 'interface' | 'type' | 'method';
 
 export interface ParsedSymbol {
   name: string;
   kind: SymbolKind;
+  /**
+   * The class this belongs to, for a method. Absent on a top-level symbol.
+   *
+   * Carried as a name rather than an id because a parsed file knows nothing
+   * about ids — that is the graph layer's job, and keeping it that way is what
+   * lets a file be parsed in isolation.
+   */
+  owner?: string;
   /** 1-based, inclusive. */
   startLine: number;
   endLine: number;

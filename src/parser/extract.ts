@@ -85,17 +85,25 @@ function collectHeritage(declaration: Node): { extends: string[]; implements: st
 }
 
 /**
- * Every name invoked inside a symbol. Nested functions are not separate nodes in
- * the MVP, so their calls attribute to the enclosing top-level symbol.
+ * Every name invoked inside a symbol.
+ *
+ * `exclude` holds subtrees that are symbols in their own right — a class's
+ * methods — so the class does not also claim what they call. Without it every
+ * call inside a method would produce two edges from two different nodes, and the
+ * weight on the drawn edge would be twice what the code actually does.
  */
-function collectCalls(declaration: Node): string[] {
+function collectCalls(declaration: Node, exclude: readonly Node[] = []): string[] {
   const names = new Set<string>();
+  const inside = (node: Node): boolean =>
+    exclude.some((skip) => node.startIndex >= skip.startIndex && node.endIndex <= skip.endIndex);
 
   for (const call of declaration.descendantsOfType('call_expression')) {
+    if (inside(call)) continue;
     const name = nameOf(call.childForFieldName('function'));
     if (name) names.add(name);
   }
   for (const construction of declaration.descendantsOfType('new_expression')) {
+    if (inside(construction)) continue;
     const name = nameOf(construction.childForFieldName('constructor'));
     if (name) names.add(name);
   }
@@ -103,7 +111,54 @@ function collectCalls(declaration: Node): string[] {
   return [...names];
 }
 
-function makeSymbol(declaration: Node, name: string, kind: SymbolKind): ParsedSymbol {
+/**
+ * A class's members, as symbols of their own.
+ *
+ * They were deliberately left out of the MVP, on the grounds that a call into
+ * another file is already implied by the import beside it. What that missed is
+ * that the tool's whole premise is watching an agent work, and an agent adding a
+ * method to an existing class is the single most common thing it does — which
+ * used to produce a graph update that changed nothing visible.
+ *
+ * A field holding an arrow function is a method in everything but syntax, so it
+ * counts as one.
+ */
+function collectMembers(declaration: Node, owner: string, symbols: ParsedSymbol[]): Node[] {
+  const body = declaration.childForFieldName('body');
+  if (!body) return [];
+
+  const bodies: Node[] = [];
+  for (const member of body.namedChildren) {
+    const isMethod = member.type === 'method_definition';
+    const isArrowField =
+      member.type === 'public_field_definition' &&
+      member.childForFieldName('value')?.type === 'arrow_function';
+    if (!isMethod && !isArrowField) continue;
+
+    const name = nameOf(member.childForFieldName('name'));
+    if (!name) continue;
+
+    bodies.push(member);
+    symbols.push({
+      name,
+      kind: 'method',
+      owner,
+      startLine: member.startPosition.row + 1,
+      endLine: member.endPosition.row + 1,
+      extends: [],
+      implements: [],
+      calls: collectCalls(member),
+    });
+  }
+  return bodies;
+}
+
+function makeSymbol(
+  declaration: Node,
+  name: string,
+  kind: SymbolKind,
+  exclude: readonly Node[] = [],
+): ParsedSymbol {
   const heritage = collectHeritage(declaration);
   return {
     name,
@@ -112,7 +167,7 @@ function makeSymbol(declaration: Node, name: string, kind: SymbolKind): ParsedSy
     endLine: declaration.endPosition.row + 1,
     extends: heritage.extends,
     implements: heritage.implements,
-    calls: collectCalls(declaration),
+    calls: collectCalls(declaration, exclude),
   };
 }
 
@@ -125,7 +180,7 @@ const DECLARATION_KINDS: ReadonlyMap<string, SymbolKind> = new Map([
   ['type_alias_declaration', 'type'],
 ]);
 
-/** Only top-level declarations become nodes; class members do not. */
+/** Top-level declarations, plus the members of any class among them. */
 function collectTopLevel(node: Node, imports: string[], symbols: ParsedSymbol[]): void {
   if (node.type === 'import_statement') {
     const specifier = specifierOf(node.childForFieldName('source'));
@@ -146,7 +201,14 @@ function collectTopLevel(node: Node, imports: string[], symbols: ParsedSymbol[])
   const kind = DECLARATION_KINDS.get(node.type);
   if (kind) {
     const name = nameOf(node.childForFieldName('name'));
-    if (name) symbols.push(makeSymbol(node, name, kind));
+    if (!name) return;
+
+    // The class is pushed before its members, and the graph layer relies on
+    // that order to attach each one to the class it just saw.
+    const members: ParsedSymbol[] = [];
+    const bodies = kind === 'class' ? collectMembers(node, name, members) : [];
+    symbols.push(makeSymbol(node, name, kind, bodies));
+    symbols.push(...members);
     return;
   }
 

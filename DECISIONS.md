@@ -20,6 +20,11 @@ claim about the code can be traced to the run that established it.
   an import that failed to resolve earlier.
 - **Top-level declarations only.** Class methods are not separate nodes; calls made
   inside a method attribute to the enclosing class.
+  **Reversed later.** The premise of the tool is watching an agent work, and adding
+  a method to an existing class is the most common thing it does — which produced a
+  graph update that changed nothing visible. Methods are nodes now, contained by
+  their class, and a class no longer claims the calls its methods make or the same
+  call would be counted twice from two different nodes.
 - **Unresolvable references are dropped.** Bare specifiers and names that resolve
   to nothing produce no edge. Resolution is: own file first, then imported files.
 - **`.d.ts` files are skipped** — they restate types the accompanying source declares.
