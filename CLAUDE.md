@@ -190,6 +190,7 @@ npm run dev:web                   # vite dev server, proxies /api to a running s
 npm run codemap -- <dir>          # the same graph as text
 npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
+node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
 
 node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
 npm run tauri dev                 # the desktop app
@@ -515,7 +516,31 @@ re-verify by parsing a file if either package is bumped.
 
 ## Known limitations
 
-Structural, and each one a real report rather than a worry:
+Structural, and each one a real report rather than a worry. The first four were
+measured with `scripts/corpus.mjs` against zustand, type-fest, zod, vuejs/core and
+TanStack/query — 32 to 925 files each — and they are the ones that decide whether
+the graph can be trusted at a glance on a project that is not this one:
+
+- **A monorepo's own structure is invisible.** Packages import each other by
+  name, and a bare specifier resolves to nothing: 357 of vuejs/core's imports are
+  `@vue/*` and 503 of TanStack/query's are `@tanstack/*`, all internal, none
+  drawn. The cross-package architecture is exactly what a map is wanted for, and
+  it is the one part missing. Same cause as tsconfig path aliases (`@/`, `~/`),
+  which cost zod 37 edges and query 25.
+- **A types-only library draws as unconnected boxes.** `.d.ts` is skipped because
+  it restates what the source declares — true for an app, false for type-fest,
+  where 100% of 487 imports go unresolved, no import edge survives, and the
+  clustering finds 0 groups in 221 files.
+- **Enums, namespaces, `declare module` and class expressions are not parsed.**
+  Not dropped with a warning — absent. 54 enums in vuejs/core, 32 in zod.
+- **Files that declare something and yield no symbols**: 86 in TanStack/query,
+  53 in vuejs/core. Cause unknown; that is what makes it worth chasing.
+- Re-deriving the whole graph on every save is **not** the scaling problem it
+  looked like: it tracks edge count at roughly 2 µs each, so 12 ms for zod's 500
+  files and 15 ms for vuejs/core. It stays comfortable well past this project.
+- The 89% single-cluster blob is **this project's shape, not the algorithm's**.
+  The same clustering gives 3 groups at 31% on zustand, 5 at 35% on zod, 11 at
+  28% on vuejs/core and 47 at 7% on TanStack/query.
 
 - Focus depth 2 on a densely coupled project explodes (64 boxes on the synthetic
   test). There is no cap or warning. At depth 4 the browser main thread blocks for
