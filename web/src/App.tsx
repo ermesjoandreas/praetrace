@@ -1,11 +1,15 @@
-import { Background, Controls, MiniMap, ReactFlow, type Edge } from '@xyflow/react';
+import { Background, Controls, MiniMap, ReactFlow, useReactFlow, type Edge } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import {
   decideCluster,
   fetchClusters,
+  fetchHookStatus,
   fetchView,
+  installHook,
+  isDesktop,
   liveUrl,
+  pickProject,
   openInEditor,
   rememberProject,
   switchProject,
@@ -15,7 +19,9 @@ import {
   type ViewResponse,
 } from './api';
 import { HookBanner } from './HookBanner';
+import { MenuBar, type Menu } from './MenuBar';
 import { ProjectMenu } from './ProjectMenu';
+import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
 import { Sidebar } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
@@ -55,6 +61,9 @@ export function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
+  const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
+  const [showWelcome, setShowWelcome] = useState(false);
+  const flow = useReactFlow();
   const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
 
   const socketRef = useRef<WebSocket | null>(null);
@@ -194,6 +203,19 @@ export function App() {
       socket?.close();
     };
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchHookStatus().then(
+      (status) => {
+        if (!cancelled) setHookInstalled(status.installed);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root]);
 
   useEffect(() => {
     let cancelled = false;
@@ -442,14 +464,63 @@ export function App() {
   // dialog has to be told no.
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'p')) {
+      const command = event.metaKey || event.ctrlKey;
+
+      if (command && (event.key === 'k' || event.key === 'p')) {
         event.preventDefault();
         setSearchOpen(true);
+      } else if (command && event.key === 'b') {
+        event.preventDefault();
+        setShowSidebar((was) => !was);
+      } else if (command && event.key === 'o') {
+        event.preventDefault();
+        openProjectRef.current?.();
+      } else if (command && event.shiftKey && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        fitRef.current?.();
+      } else if (event.key === 'Escape') {
+        setSelected(null);
+        setShowWelcome(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const openProjectRef = useRef<(() => void) | null>(null);
+  const fitRef = useRef<(() => void) | null>(null);
+
+  const openProject = useCallback(() => {
+    void pickProject().then((picked) => {
+      if (picked !== null) handleSwitchProject(picked);
+    });
+  }, [handleSwitchProject]);
+
+  // The key handler is registered once; these keep it pointed at the current
+  // callbacks without tearing the listener down on every render.
+  openProjectRef.current = openProject;
+  fitRef.current = () => void flow.fitView({ padding: 0.15 });
+
+  const setFilter = useCallback(
+    (key: string, value: string | null) => {
+      const params = new URLSearchParams(window.location.search);
+      if (value === null) params.delete(key);
+      else params.set(key, value);
+      navigate(params);
+    },
+    [navigate],
+  );
+
+  const clearFilters = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    for (const key of ['hide', 'only', 'kinds', 'since']) params.delete(key);
+    navigate(params);
+  }, [navigate]);
+
+  const groupOfSelection = useMemo(
+    () => (selected === null ? null : clusters.find((group) => group.files.includes(selected)) ?? null),
+    [clusters, selected],
+  );
 
   const goToMissed = useCallback(() => {
     const latest = missed.at(-1);
@@ -459,15 +530,138 @@ export function App() {
     navigate(params);
   }, [missed, navigate]);
 
+  const params = new URLSearchParams(search);
+  const isFiltered = ['hide', 'only', 'kinds', 'since'].some((key) => params.has(key));
+  // Nothing to draw is the moment to say what the app is for.
+  const empty = view !== undefined && view.nodes.length === 0;
+
+  const menus: Menu[] = [
+    {
+      title: 'File',
+      items: [
+        {
+          label: 'Open folder…',
+          shortcut: '⌘O',
+          run: openProject,
+          ...(isDesktop ? {} : { disabledBecause: 'The folder picker is only in the desktop app' }),
+        },
+        {
+          label: hookInstalled === false ? 'Install Claude Code hook' : 'Claude Code hook installed',
+          separatorBefore: true,
+          ...(hookInstalled === false
+            ? { run: () => void installHook().then(() => setRevision((n) => n + 1)) }
+            : { disabledBecause: 'Already installed for this project' }),
+        },
+        { label: 'Reload graph', run: () => setReloadToken((n) => n + 1) },
+      ],
+    },
+    {
+      title: 'Edit',
+      items: [
+        {
+          label: 'Copy path',
+          shortcut: '⌘C',
+          ...(selected === null
+            ? { disabledBecause: 'Nothing selected' }
+            : { run: () => void navigator.clipboard.writeText(selected) }),
+        },
+        {
+          label: 'Open in editor',
+          ...(selected === null || data === null
+            ? { disabledBecause: 'Nothing selected' }
+            : { run: () => void openInEditor(data.root, selected, 1) }),
+        },
+        {
+          label: 'Reject this group',
+          separatorBefore: true,
+          ...(groupOfSelection === null
+            ? { disabledBecause: 'The selection is not in a group' }
+            : { run: () => decide(groupOfSelection, groupOfSelection.name ?? '', 'rejected') }),
+        },
+      ],
+    },
+    {
+      title: 'Selection',
+      items: [
+        {
+          label: 'Focus the selection',
+          ...(selected === null ? { disabledBecause: 'Nothing selected' } : { run: () => goTo(selected, 'file') }),
+        },
+        {
+          label: 'Show its group in the panel',
+          ...(groupOfSelection === null
+            ? { disabledBecause: 'The selection is not in a group' }
+            : { run: () => setShowSidebar(true) }),
+        },
+        { label: 'Clear selection', shortcut: '⎋', separatorBefore: true, run: () => setSelected(null) },
+      ],
+    },
+    {
+      title: 'View',
+      items: [
+        { label: 'Panel', shortcut: '⌘B', checked: showSidebar, run: () => setShowSidebar((was) => !was) },
+        { label: 'Call edges', checked: showCalls, run: toggleCalls },
+        {
+          label: 'Hide type-only files',
+          separatorBefore: true,
+          checked: params.get('kinds') === 'class,function',
+          run: () => setFilter('kinds', params.get('kinds') === 'class,function' ? null : 'class,function'),
+        },
+        {
+          label: 'Only changed in the last 10 minutes',
+          checked: params.get('since') === '10m',
+          run: () => setFilter('since', params.get('since') === '10m' ? null : '10m'),
+        },
+        { label: 'Clear filters', run: clearFilters },
+        { label: 'Zoom in', separatorBefore: true, run: () => void flow.zoomIn() },
+        { label: 'Zoom out', run: () => void flow.zoomOut() },
+        { label: 'Fit to screen', shortcut: '⇧⌘F', run: () => void flow.fitView({ padding: 0.15 }) },
+      ],
+    },
+    {
+      title: 'Go',
+      items: [
+        { label: 'Find a file or symbol…', shortcut: '⌘K', run: () => setSearchOpen(true) },
+        { label: 'Back', shortcut: '⌘[', separatorBefore: true, run: () => window.history.back() },
+        { label: 'Forward', shortcut: '⌘]', run: () => window.history.forward() },
+        { label: 'Whole project', separatorBefore: true, run: () => goToScope('') },
+        {
+          label: 'Up one level',
+          ...(view && view.trail.length > 1
+            ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
+            : { disabledBecause: 'Already at the top' }),
+        },
+      ],
+    },
+    {
+      title: 'Help',
+      items: [
+        { label: 'Keyboard shortcuts', run: () => setShowWelcome(true) },
+        { label: 'What this is', run: () => setShowWelcome(true) },
+      ],
+    },
+  ];
+
   return (
     <div className="app">
-      <header>
-        <span className="brand">codemap</span>
-        <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
-        <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
+      <MenuBar
+        menus={menus}
+        trailing={
+          <>
+            <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
+            <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
+            <span className="counts">
+              {view
+                ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
+                : ''}
+            </span>
+          </>
+        }
+      />
 
+      <nav className="breadcrumb">
         {focus === null ? (
-          <nav className="trail">
+          <span className="trail">
             {view?.trail.map((step, index) => (
               <span key={step.scope}>
                 {index > 0 && <span className="sep">/</span>}
@@ -480,9 +674,9 @@ export function App() {
                 </button>
               </span>
             ))}
-          </nav>
+          </span>
         ) : (
-          <nav className="trail">
+          <span className="trail">
             <span className="focus-label">focus</span>
             <code>{focus}</code>
             <span className="depth">
@@ -492,18 +686,20 @@ export function App() {
               <span>
                 {depth} hop{depth === 1 ? '' : 's'}
               </span>
-              <button
-                type="button"
-                onClick={() => changeDepth(depth + 1)}
-                disabled={depth >= MAX_DEPTH}
-              >
+              <button type="button" onClick={() => changeDepth(depth + 1)} disabled={depth >= MAX_DEPTH}>
                 +
               </button>
             </span>
             <button type="button" className="clear" onClick={() => goToScope('')}>
               clear
             </button>
-          </nav>
+          </span>
+        )}
+
+        {isFiltered && (
+          <button type="button" className="filter-chip" onClick={clearFilters} title="Clear all filters">
+            filtered ✕
+          </button>
         )}
 
         {missed.length > 0 && (
@@ -523,32 +719,33 @@ export function App() {
 
         <button
           type="button"
-          className={showCalls ? 'calls-toggle calls-on' : 'calls-toggle'}
-          onClick={toggleCalls}
-          title="Draw who calls whom, not only who imports whom"
-        >
-          calls
-        </button>
-
-        <button
-          type="button"
           className="panel-toggle"
           onClick={() => setShowSidebar((was) => !was)}
-          title={showSidebar ? 'Hide panel' : 'Show panel'}
+          title={showSidebar ? 'Hide panel (⌘B)' : 'Show panel (⌘B)'}
         >
           {showSidebar ? '⇥' : '⇤'}
         </button>
-
-        <span className="counts">
-          {view
-            ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
-            : ''}
-        </span>
-      </header>
+      </nav>
 
       {data !== null && <HookBanner root={data.root} />}
 
       {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
+
+      {(showWelcome || empty) && (
+        <Welcome
+          onOpen={(path) => {
+            setShowWelcome(false);
+            handleSwitchProject(path);
+          }}
+          onSearch={() => {
+            setShowWelcome(false);
+            setSearchOpen(true);
+          }}
+          hookInstalled={hookInstalled}
+          onInstallHook={() => void installHook().then(() => setRevision((n) => n + 1))}
+          onClose={showWelcome ? () => setShowWelcome(false) : null}
+        />
+      )}
 
       <main>
         <div className="canvas">

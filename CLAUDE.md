@@ -395,6 +395,34 @@ links: the back button works and a view is shareable.
   directory is not a `GraphNode`, and an aggregated edge needs a weight the core
   model has no business carrying. The graph stays the single source of truth.
 
+## The menu bar
+
+Two rows, the way an editor is laid out: menus and project on top, breadcrumb
+and view controls below.
+
+**Nothing in a menu is decoration.** Every item runs something the app can
+already do, and an item that needs a selection is greyed with the reason in its
+tooltip rather than silently doing nothing. If a menu would need filler to look
+complete, the filler is left out instead.
+
+  File       open a folder, install the hook, reload
+  Edit       copy path, open in editor, reject the selection's group
+  Selection  focus it, show its group, clear
+  View       panel, call edges, filters, zoom
+  Go         search, back, forward, whole project, up one level
+  Help       the welcome screen
+
+Filters that were URL-only now have menu items that tick, and a "filtered" chip
+appears in the breadcrumb row so a narrowed view can never be mistaken for the
+whole project.
+
+## The welcome screen
+
+Shown when there is nothing to draw, and from Help. Actions, not prose: open a
+folder, a recent project, install the hook, search — plus the shortcuts that
+actually work. In a browser it says how to point the CLI at a directory instead
+of offering a folder picker that only exists in the desktop app.
+
 ## Architectural groups
 
 The graph finds groups of files that lean on each other more than on anything
