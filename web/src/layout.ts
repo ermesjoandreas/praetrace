@@ -36,6 +36,10 @@ export interface ClusterInput {
   padding?: { x: number; y: number };
   /** 'manual' means a person drew this group; it changes who wins an overlap. */
   origin?: 'manual';
+  /** A hand-placed frame, used verbatim while locked. */
+  geometry?: { x: number; y: number; width: number; height: number };
+  /** Locked frames are placed by hand and never recomputed. */
+  locked?: boolean;
 }
 
 /**
@@ -65,14 +69,24 @@ export const MAX_PADDING = 120;
  * that two frames never overlap badly survives; only who wins changes.
  */
 function withoutOverlaps(
-  candidates: (ClusterBounds & { cohesion: number; area: number; manual: boolean })[],
+  candidates: (ClusterBounds & { cohesion: number; area: number; manual: boolean; locked: boolean })[],
 ): ClusterBounds[] {
   const ranked = [...candidates].sort(
-    (a, b) => Number(b.manual) - Number(a.manual) || b.cohesion - a.cohesion || a.area - b.area,
+    (a, b) =>
+      Number(b.locked) - Number(a.locked) ||
+      Number(b.manual) - Number(a.manual) ||
+      b.cohesion - a.cohesion ||
+      a.area - b.area,
   );
   const kept: (ClusterBounds & { area: number })[] = [];
 
   for (const candidate of ranked) {
+    // A frame someone locked is never dropped for overlapping. They put it
+    // there looking at the thing it overlaps.
+    if (candidate.locked) {
+      kept.push(candidate);
+      continue;
+    }
     // An outer frame is meant to contain the inner ones, so only frames at the
     // same level can be said to clash.
     const clashes = kept.some((other) => {
@@ -128,6 +142,7 @@ export function layoutNodes<T extends Node>(
     depth: number;
     manual: boolean;
     padding: { x: number; y: number } | undefined;
+    locked: { x: number; y: number; width: number; height: number } | undefined;
   }[] = [];
   const registered = new Set<string>();
 
@@ -155,6 +170,7 @@ export function layoutNodes<T extends Node>(
       depth: cluster.depth,
       manual: cluster.origin === 'manual',
       padding: cluster.padding,
+      locked: cluster.locked === true ? cluster.geometry : undefined,
     });
   }
 
@@ -179,13 +195,34 @@ export function layoutNodes<T extends Node>(
   // space other clusters occupy in between. A box drawn tight around where the
   // members actually landed is far smaller and overlaps far less.
   const byId = new Map(placed.map((node) => [node.id, node]));
-  const candidates: (ClusterBounds & { cohesion: number; area: number; manual: boolean })[] = [];
+  const candidates: (ClusterBounds & {
+    cohesion: number;
+    area: number;
+    manual: boolean;
+    locked: boolean;
+  })[] = [];
 
   for (const cluster of drawn) {
     let left = Infinity;
     let top = Infinity;
     let right = -Infinity;
     let bottom = -Infinity;
+
+    // A locked frame is where someone put it. Recomputing it from the members
+    // would undo the act of locking on the very next edit, which is the one
+    // thing a lock is for.
+    if (cluster.locked) {
+      candidates.push({
+        ...cluster.locked,
+        id: cluster.id,
+        depth: cluster.depth,
+        cohesion: cluster.cohesion,
+        area: cluster.locked.width * cluster.locked.height,
+        manual: cluster.manual,
+        locked: true,
+      });
+      continue;
+    }
 
     for (const file of cluster.files) {
       const node = byId.get(file);
@@ -211,6 +248,7 @@ export function layoutNodes<T extends Node>(
       cohesion: cluster.cohesion,
       area: box.width * box.height,
       manual: cluster.manual,
+      locked: false,
     });
   }
 

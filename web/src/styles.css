@@ -1394,6 +1394,22 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 .group-editor-name:focus { border-color: var(--accent); }
 
+.group-editor-top { display: flex; align-items: center; gap: 6px; }
+.group-editor-top .group-editor-name { flex: 1; min-width: 0; }
+
+.group-editor-close {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 5px;
+}
+.group-editor-close:hover { background: var(--line); color: var(--text); }
+
 .group-editor-foot {
   display: flex;
   align-items: center;
@@ -1434,23 +1450,47 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 .group-delete:hover { border-color: #5a2b2b; color: #f2a2a2; }
 
-.group-resize {
-  position: absolute;
-  right: -6px;
-  bottom: -6px;
-  width: 14px;
-  height: 14px;
-  padding: 0;
-  border: 1px solid var(--line-strong);
-  border-right-color: var(--accent);
-  border-bottom-color: var(--accent);
-  border-radius: 3px;
-  background: var(--panel);
-  cursor: nwse-resize;
-  /* The frame lets clicks through to the boxes behind it; the handle is the
-     one part of it that must not. touch-action keeps a trackpad drag from
-     being read as a scroll before the pointer events arrive. */
-  pointer-events: auto;
-  touch-action: none;
+/* React Flow's own resize handles. The frame body is pointer-events:none so it
+   never swallows a click meant for a box behind it, which would leave the
+   handles inert too — they have to opt back in. */
+.react-flow__node .group-resize-line,
+.react-flow__node .group-resize-dot {
+  pointer-events: all;
 }
-.group-resize:hover { border-color: var(--accent); }
+
+.group-resize-line { border-color: rgba(var(--group-color, 122, 162, 247), 0.5); }
+
+.group-resize-dot {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--panel);
+  border-radius: 2px;
+  background: rgb(var(--group-color, 122, 162, 247));
+}
+
+/* A locked frame is dragged by its label, the way a window moves by its title
+   bar, so the label has to say it can be grabbed. */
+.group-locked > .group-label { cursor: grab; }
+.group-locked > .group-label:active { cursor: grabbing; }
+.group-locked { border-style: solid; }
+
+.group-lock {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+  padding: 2px 3px;
+}
+.group-lock:hover, .group-lock[aria-pressed='true'] { opacity: 1; background: var(--line); }
+
+/* The price of the lock: a frame held in place can stop containing what it
+   names, and it has to say so rather than quietly cropping. */
+.group-outside {
+  color: var(--folder);
+  font-size: 10px;
+  white-space: nowrap;
+}
+

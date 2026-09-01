@@ -470,6 +470,25 @@ export function App() {
     };
   }, [data?.root]);
 
+  /**
+   * A frame that was dragged keeps where it was put. Only frames are draggable,
+   * and only while locked, so anything arriving here is a deliberate placement.
+   */
+  const handleFrameDragStop = useCallback(
+    (_: unknown, node: { id: string; position: { x: number; y: number }; width?: number | null; height?: number | null }) => {
+      if (!node.id.startsWith('group:')) return;
+      const group = clusters.find((candidate) => `group:${candidate.id}` === node.id);
+      if (!group || node.width == null || node.height == null) return;
+      editGroup({
+        action: 'update',
+        id: group.storedId ?? group.id,
+        geometry: { x: node.position.x, y: node.position.y, width: node.width, height: node.height },
+        locked: true,
+      });
+    },
+    [clusters, editGroup],
+  );
+
   const queriedBoxIds = useMemo(() => {
     if (!view || agentLooking.length === 0) return new Set<string>();
     const asked = new Set(agentLooking);
@@ -541,7 +560,12 @@ export function App() {
       .map((group) => {
         const pad = group.padding;
         const slack = pad === undefined ? '' : `${pad.x}x${pad.y}`;
-        return `${group.id}~${group.files.join(',')}~${group.color ?? ''}~${slack}`;
+        // Geometry and the lock decide the frame's shape as much as membership
+        // does, so a key without them reuses the cached bounds and a resize
+        // simply never appears.
+        const box = group.geometry;
+        const placed = box === undefined ? '' : `${box.x},${box.y},${box.width},${box.height}`;
+        return `${group.id}~${group.files.join(',')}~${group.color ?? ''}~${slack}~${placed}~${group.locked === true ? 'L' : ''}`;
       })
       .join('|');
     const previous = layoutRef.current;
@@ -572,6 +596,8 @@ export function App() {
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
+    /** Where every box actually landed, for asking what a locked frame missed. */
+    const placed = new Map(laid.nodes.map((box) => [box.id, box]));
     laid.clusters.sort((a, b) => a.depth - b.depth);
     // Frames first, so they render behind the boxes they enclose.
     const frames: GroupNodeType[] = laid.clusters.flatMap((bounds) => {
@@ -587,7 +613,11 @@ export function App() {
           // Outer frames sit behind the inner ones they contain.
           zIndex: bounds.depth === 0 ? -2 : -1,
           selectable: false,
-          draggable: false,
+          // Dragged by its label, the way a window moves by its title bar. The
+          // frame body cannot be the handle: it is drawn behind the boxes it
+          // encloses and would swallow every drag meant for the canvas.
+          draggable: group.locked === true,
+          dragHandle: '.group-label',
           data: {
             id: group.id,
             name: group.name,
@@ -598,13 +628,38 @@ export function App() {
             origin: group.origin ?? null,
             color: group.color ?? null,
             padding: group.padding ?? null,
+            locked: group.locked === true,
+            outside:
+              group.locked === true
+                ? group.files.filter((file) => {
+                    const box = placed.get(file);
+                    if (!box) return false;
+                    return (
+                      box.position.x < bounds.x ||
+                      box.position.y < bounds.y ||
+                      box.position.x + (box.width ?? 0) > bounds.x + bounds.width ||
+                      box.position.y + (box.height ?? 0) > bounds.y + bounds.height
+                    );
+                  }).length
+                : 0,
             onAccept: (name: string) => decide(group, name, 'accepted'),
             onReject: () => decide(group, group.name ?? '', 'rejected'),
             onRename: (name: string) => renameGroup(group, name),
             onColor: (color: GroupColor) => editGroup({ action: 'update', id: addressOf(group), color }),
-            onPadding: (padding: { x: number; y: number }) =>
-              editGroup({ action: 'update', id: addressOf(group), padding }),
             onDelete: () => editGroup({ action: 'delete', id: addressOf(group) }),
+            onGeometry: (geometry: { x: number; y: number; width: number; height: number }) =>
+              editGroup({ action: 'update', id: addressOf(group), geometry, locked: true }),
+            onLock: (locked: boolean) =>
+              editGroup({
+                action: 'update',
+                id: addressOf(group),
+                locked,
+                // Locking with no frame of its own holds it exactly where it is
+                // drawn right now, which is the only sane reading of the click.
+                ...(locked && group.geometry === undefined
+                  ? { geometry: { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height } }
+                  : {}),
+              }),
           },
         },
       ];
@@ -1182,6 +1237,7 @@ export function App() {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          onNodeDragStop={handleFrameDragStop}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
           onNodesChange={handleNodesChange}

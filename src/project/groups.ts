@@ -54,6 +54,23 @@ export interface NamedGroup {
   color?: GroupColor;
   /** Frame slack in px around the members. Absent means the layout default. */
   padding?: { x: number; y: number };
+  /**
+   * A frame the user placed by hand, in graph coordinates.
+   *
+   * Only honoured while `locked`. Unlocked, a frame is derived from where its
+   * members landed, and it should be: a rectangle that no longer contains what
+   * it names is worse than one that moves.
+   */
+  geometry?: { x: number; y: number; width: number; height: number };
+  /**
+   * Keep that geometry through a relayout.
+   *
+   * The frame normally hugs its members, which is what makes it trustworthy —
+   * but it also means every edit nudges it. A lock is how someone says "I know,
+   * put it here anyway". A member that then falls outside is marked rather than
+   * quietly cropped, so the frame cannot lie about what it holds.
+   */
+  locked?: boolean;
 }
 
 export interface GroupSuggestion extends Omit<Cluster, 'children'> {
@@ -79,6 +96,23 @@ export interface GroupSuggestion extends Omit<Cluster, 'children'> {
   color?: GroupColor;
   /** Frame slack in px around the members. Absent means the layout default. */
   padding?: { x: number; y: number };
+  /**
+   * A frame the user placed by hand, in graph coordinates.
+   *
+   * Only honoured while `locked`. Unlocked, a frame is derived from where its
+   * members landed, and it should be: a rectangle that no longer contains what
+   * it names is worse than one that moves.
+   */
+  geometry?: { x: number; y: number; width: number; height: number };
+  /**
+   * Keep that geometry through a relayout.
+   *
+   * The frame normally hugs its members, which is what makes it trustworthy —
+   * but it also means every edit nudges it. A lock is how someone says "I know,
+   * put it here anyway". A member that then falls outside is marked rather than
+   * quietly cropped, so the frame cannot lie about what it holds.
+   */
+  locked?: boolean;
 }
 
 /**
@@ -146,12 +180,14 @@ function overlap(a: readonly string[], b: readonly string[]): number {
  * through the JSON file.
  */
 function presentationOf(
-  group: Pick<NamedGroup, 'origin' | 'color' | 'padding'>,
-): Pick<NamedGroup, 'origin' | 'color' | 'padding'> {
+  group: Pick<NamedGroup, 'origin' | 'color' | 'padding' | 'geometry' | 'locked'>,
+): Pick<NamedGroup, 'origin' | 'color' | 'padding' | 'geometry' | 'locked'> {
   return {
     ...(group.origin === undefined ? {} : { origin: group.origin }),
     ...(group.color === undefined ? {} : { color: group.color }),
     ...(group.padding === undefined ? {} : { padding: group.padding }),
+    ...(group.geometry === undefined ? {} : { geometry: group.geometry }),
+    ...(group.locked === undefined ? {} : { locked: group.locked }),
   };
 }
 
@@ -314,7 +350,14 @@ export function createManualGroup(
 export function updateGroup(
   stored: readonly NamedGroup[],
   id: string,
-  patch: { name?: string; color?: GroupColor; padding?: { x: number; y: number }; files?: string[] },
+  patch: {
+    name?: string;
+    color?: GroupColor;
+    padding?: { x: number; y: number };
+    files?: string[];
+    geometry?: { x: number; y: number; width: number; height: number };
+    locked?: boolean;
+  },
 ): NamedGroup[] {
   const target = stored.find((group) => group.id === id);
   if (target === undefined) throw new Error(`no group with id ${id}`);
@@ -322,17 +365,27 @@ export function updateGroup(
     throw new Error('membership comes from the import graph; only a manual group can be given files');
   }
 
-  return stored.map((group) =>
-    group.id === id
-      ? {
-          ...group,
-          ...(patch.name === undefined ? {} : { name: patch.name }),
-          ...(patch.color === undefined ? {} : { color: patch.color }),
-          ...(patch.padding === undefined ? {} : { padding: patch.padding }),
-          ...(patch.files === undefined ? {} : { files: [...patch.files] }),
-        }
-      : group,
-  );
+  return stored.map((group) => {
+    if (group.id !== id) return group;
+
+    const next: NamedGroup = {
+      ...group,
+      ...(patch.name === undefined ? {} : { name: patch.name }),
+      ...(patch.color === undefined ? {} : { color: patch.color }),
+      ...(patch.padding === undefined ? {} : { padding: patch.padding }),
+      ...(patch.files === undefined ? {} : { files: [...patch.files] }),
+      ...(patch.geometry === undefined ? {} : { geometry: patch.geometry }),
+      ...(patch.locked === undefined ? {} : { locked: patch.locked }),
+    };
+
+    // Unlocking forgets the hand-placed frame outright, and the key is deleted
+    // rather than set to undefined: exactOptionalPropertyTypes makes those two
+    // different things, and only the missing key survives the JSON file. A
+    // rectangle kept here would spring back the next time someone locked the
+    // group, long after anyone remembered putting it there.
+    if (patch.locked === false) delete next.geometry;
+    return next;
+  });
 }
 
 /**

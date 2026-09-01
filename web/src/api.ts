@@ -245,6 +245,10 @@ export interface GroupSuggestion {
   color?: GroupColor;
   /** Frame slack in px around the members. Absent means the layout default. */
   padding?: { x: number; y: number };
+  /** A hand-placed frame. Only honoured while locked. */
+  geometry?: { x: number; y: number; width: number; height: number };
+  /** Keep that geometry through a relayout. */
+  locked?: boolean;
 }
 
 export async function fetchClusters(): Promise<GroupSuggestion[]> {

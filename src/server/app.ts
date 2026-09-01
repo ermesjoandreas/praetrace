@@ -336,6 +336,8 @@ interface GroupAction {
   files?: unknown;
   color?: unknown;
   padding?: unknown;
+  geometry?: unknown;
+  locked?: unknown;
 }
 
 /**
@@ -361,12 +363,18 @@ function applyGroupAction(stored: readonly NamedGroup[], body: GroupAction): Nam
       // one to rename back.
       if (name === '') throw new Error('a group needs a name');
       const padding = readPadding(body.padding);
+      const geometry = readGeometry(body.geometry);
+      if (body.locked !== undefined && typeof body.locked !== 'boolean') {
+        throw new Error('locked must be a boolean');
+      }
       const files = body.files === undefined ? undefined : readStrings(body.files);
 
       return updateGroup(stored, readId(body.id), {
         ...(name === undefined ? {} : { name }),
         ...(color === undefined ? {} : { color }),
         ...(padding === undefined ? {} : { padding }),
+        ...(geometry === undefined ? {} : { geometry }),
+        ...(body.locked === undefined ? {} : { locked: body.locked as boolean }),
         ...(files === undefined ? {} : { files }),
       });
     }
@@ -400,6 +408,22 @@ function readColor(raw: unknown): GroupColor | undefined {
     throw new Error(`colour must be one of ${GROUP_COLORS.join(', ')}`);
   }
   return raw as GroupColor;
+}
+
+/** A hand-placed frame, in graph coordinates. Same NaN trap as the padding. */
+function readGeometry(
+  raw: unknown,
+): { x: number; y: number; width: number; height: number } | undefined {
+  if (raw === undefined) return undefined;
+  const { x, y, width, height } = (raw ?? {}) as Record<string, unknown>;
+  const finite = (value: unknown): value is number =>
+    typeof value === 'number' && Number.isFinite(value);
+  if (!finite(x) || !finite(y) || !finite(width) || !finite(height)) {
+    throw new Error('geometry must be { x, y, width, height } in graph units');
+  }
+  // A frame with no area cannot be grabbed again to undo it.
+  if (width < 40 || height < 30) throw new Error('a frame needs some size to it');
+  return { x, y, width, height };
 }
 
 function readPadding(raw: unknown): { x: number; y: number } | undefined {
