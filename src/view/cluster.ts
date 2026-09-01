@@ -14,11 +14,21 @@ import type { Graph } from '../graph/types.js';
  * lowest path, so the same graph always yields the same groups.
  */
 export interface Cluster {
-  /** The lexicographically first member; stable while that file stays in it. */
+  /**
+   * The first member alphabetically, plus the size. Stable while that file
+   * stays in the group — and the size matters, because an outer group shares
+   * its first file with its own first child, and without it a group could end
+   * up being set as its own parent.
+   */
   id: string;
   files: string[];
   /** Share of the group's edges that stay inside it, 0..1. */
   cohesion: number;
+  /**
+   * Groups found inside this one by running the same clustering on just its
+   * members. Empty when the group does not usefully divide.
+   */
+  children: Cluster[];
 }
 
 /** Below this, a "group" is just a couple of files that happen to touch. */
@@ -26,28 +36,117 @@ const MIN_SIZE = 3;
 const MIN_COHESION = 0.5;
 const MAX_ROUNDS = 20;
 
+/** Fewer members than this and there is nothing worth dividing. */
+const MIN_SPLIT = 6;
+/** Two levels is what a person can read; a third is a decoration. */
+const MAX_DEPTH = 2;
+
 export function clusterFiles(graph: Graph): Cluster[] {
   const neighbours = undirectedNeighbours(graph);
-  const files = [...neighbours.keys()].sort();
-  if (files.length === 0) return [];
+  const fine = partition(neighbours, [...neighbours.keys()].sort());
+  if (fine.length < 2) return fine;
 
-  const label = new Map(files.map((file) => [file, file]));
+  // Label propagation resolves at exactly one scale, so subdividing a group it
+  // already decided is one thing finds nothing — verified: a tight group returns
+  // a single label every time. Nesting comes from the other direction, which is
+  // Louvain's aggregation step: make each group a node, weight the edges by how
+  // much crosses between them, and cluster *that*. Groups that merge up there
+  // become the children of the group they merged into.
+  const between = crossings(fine, neighbours);
+  const merged = propagate(between, fine.map((cluster) => cluster.id));
+
+  const byLabel = new Map<string, Cluster[]>();
+  for (const cluster of fine) {
+    const label = merged.get(cluster.id) ?? cluster.id;
+    byLabel.set(label, [...(byLabel.get(label) ?? []), cluster]);
+  }
+
+  const outer: Cluster[] = [];
+  for (const children of byLabel.values()) {
+    // One child is not a nesting, it is the same group drawn twice.
+    if (children.length < 2) {
+      const only = children[0];
+      if (only) outer.push(only);
+      continue;
+    }
+
+    const files = children.flatMap((child) => child.files).sort();
+    outer.push({
+      id: identify(files),
+      files,
+      cohesion: cohesionOf(files, neighbours),
+      children: [...children].sort((a, b) => b.files.length - a.files.length),
+    });
+  }
+
+  return outer.sort((a, b) => b.files.length - a.files.length || a.id.localeCompare(b.id));
+}
+
+/** How much traffic runs between each pair of groups. */
+function crossings(
+  clusters: readonly Cluster[],
+  neighbours: ReadonlyMap<string, Map<string, number>>,
+): Map<string, Map<string, number>> {
+  const owner = new Map<string, string>();
+  for (const cluster of clusters) for (const file of cluster.files) owner.set(file, cluster.id);
+
+  const between = new Map<string, Map<string, number>>();
+  for (const cluster of clusters) between.set(cluster.id, new Map());
+
+  for (const cluster of clusters) {
+    for (const file of cluster.files) {
+      for (const [neighbour, weight] of neighbours.get(file) ?? []) {
+        const other = owner.get(neighbour);
+        if (other === undefined || other === cluster.id) continue;
+        const edges = between.get(cluster.id);
+        if (edges) edges.set(other, (edges.get(other) ?? 0) + weight);
+      }
+    }
+  }
+  return between;
+}
+
+function cohesionOf(files: readonly string[], neighbours: ReadonlyMap<string, Map<string, number>>): number {
+  const inside = new Set(files);
+  let internal = 0;
+  let external = 0;
+
+  for (const file of files) {
+    for (const [neighbour, weight] of neighbours.get(file) ?? []) {
+      if (inside.has(neighbour)) internal += weight;
+      else external += weight;
+    }
+  }
+  const total = internal + external;
+  return total === 0 ? 0 : internal / total;
+}
+
+/**
+ * Label propagation itself: each node repeatedly adopts whichever label is
+ * heaviest among its neighbours. Used on files first, then on the groups those
+ * files formed.
+ */
+function propagate(
+  neighbours: ReadonlyMap<string, Map<string, number>>,
+  nodes: readonly string[],
+): Map<string, string> {
+  const label = new Map(nodes.map((node) => [node, node]));
 
   for (let round = 0; round < MAX_ROUNDS; round += 1) {
     let moved = false;
 
     // A fixed order and a deterministic tie-break are what make this repeatable;
     // the usual randomised variant would redraw the groups on every refresh.
-    for (const file of files) {
+    for (const node of nodes) {
       const weights = new Map<string, number>();
-      for (const [neighbour, weight] of neighbours.get(file) ?? []) {
+      for (const [neighbour, weight] of neighbours.get(node) ?? []) {
         const nearby = label.get(neighbour);
         if (nearby === undefined) continue;
         weights.set(nearby, (weights.get(nearby) ?? 0) + weight);
       }
       if (weights.size === 0) continue;
 
-      let best = label.get(file) ?? file;
+      let best = label.get(node) ?? node;
       let bestWeight = weights.get(best) ?? 0;
       for (const [candidate, weight] of [...weights].sort((a, b) => a[0].localeCompare(b[0]))) {
         if (weight > bestWeight) {
@@ -56,8 +155,8 @@ export function clusterFiles(graph: Graph): Cluster[] {
         }
       }
 
-      if (best !== label.get(file)) {
-        label.set(file, best);
+      if (best !== label.get(node)) {
+        label.set(node, best);
         moved = true;
       }
     }
@@ -65,9 +164,22 @@ export function clusterFiles(graph: Graph): Cluster[] {
     if (!moved) break;
   }
 
-  return assemble(files, label, neighbours)
+  return label;
+}
+
+function partition(
+  neighbours: ReadonlyMap<string, Map<string, number>>,
+  files: readonly string[],
+): Cluster[] {
+  if (files.length === 0) return [];
+
+  return assemble(files, propagate(neighbours, files), neighbours)
     .filter((cluster) => cluster.files.length >= MIN_SIZE && cluster.cohesion >= MIN_COHESION)
     .sort((a, b) => b.files.length - a.files.length || a.id.localeCompare(b.id));
+}
+
+function identify(files: readonly string[]): string {
+  return `${files[0] ?? ''}~${files.length}`;
 }
 
 /** Direction says who depends on whom; belonging is mutual. */
@@ -124,10 +236,12 @@ function assemble(
     }
 
     const total = internal + external;
+    const sorted = [...members].sort();
     return {
-      id: [...members].sort()[0] ?? '',
-      files: [...members].sort(),
+      id: identify(sorted),
+      files: sorted,
       cohesion: total === 0 ? 0 : internal / total,
+      children: [],
     };
   });
 }

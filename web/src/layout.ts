@@ -29,6 +29,9 @@ export interface ClusterInput {
   files: string[];
   /** Used to decide which frame survives when two would overlap. */
   cohesion: number;
+  /** 0 is an outer group; 1 sits inside one. */
+  depth: number;
+  parent: string | null;
 }
 
 /**
@@ -43,7 +46,10 @@ function withoutOverlaps(
   const kept: (ClusterBounds & { area: number })[] = [];
 
   for (const candidate of ranked) {
+    // An outer frame is meant to contain the inner ones, so only frames at the
+    // same level can be said to clash.
     const clashes = kept.some((other) => {
+      if (other.depth !== candidate.depth) return false;
       const width = Math.min(candidate.x + candidate.width, other.x + other.width) - Math.max(candidate.x, other.x);
       const height = Math.min(candidate.y + candidate.height, other.y + other.height) - Math.max(candidate.y, other.y);
       if (width <= 0 || height <= 0) return false;
@@ -52,7 +58,7 @@ function withoutOverlaps(
     if (!clashes) kept.push(candidate);
   }
 
-  return kept.map(({ id, x, y, width, height }) => ({ id, x, y, width, height }));
+  return kept.map(({ id, x, y, width, height, depth }) => ({ id, x, y, width, height, depth }));
 }
 
 export interface ClusterBounds {
@@ -61,6 +67,7 @@ export interface ClusterBounds {
   y: number;
   width: number;
   height: number;
+  depth: number;
 }
 
 /** Cluster ids are file paths, which are also node ids; dagre needs them apart. */
@@ -87,17 +94,27 @@ export function layoutNodes<T extends Node>(
   }
 
   const present = new Set(nodes.map((node) => node.id));
-  const drawn: { id: string; files: string[]; cohesion: number }[] = [];
+  const drawn: { id: string; files: string[]; cohesion: number; depth: number }[] = [];
+  const registered = new Set<string>();
 
-  for (const cluster of clusters) {
+  // Outer groups first, so an inner one can be parented to a node that exists.
+  for (const cluster of [...clusters].sort((a, b) => a.depth - b.depth)) {
     // Only the members actually on screen; a frame around one box says nothing.
     const members = cluster.files.filter((file) => present.has(file));
     if (members.length < 2) continue;
 
     const key = CLUSTER_PREFIX + cluster.id;
     graph.setNode(key, {});
+    registered.add(cluster.id);
+
+    // A file belongs to its innermost group; the nesting is expressed by that
+    // group's own parent, which is what makes dagre keep both levels together.
     for (const member of members) graph.setParent(member, key);
-    drawn.push({ id: cluster.id, files: members, cohesion: cluster.cohesion });
+    if (cluster.parent !== null && registered.has(cluster.parent)) {
+      graph.setParent(key, CLUSTER_PREFIX + cluster.parent);
+    }
+
+    drawn.push({ id: cluster.id, files: members, cohesion: cluster.cohesion, depth: cluster.depth });
   }
 
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
@@ -139,9 +156,11 @@ export function layoutNodes<T extends Node>(
     }
     if (!Number.isFinite(left)) continue;
 
-    const padding = 14;
+    // An outer frame needs room to sit clear of the inner ones it contains.
+    const padding = cluster.depth === 0 ? 26 : 12;
     const box = {
       id: cluster.id,
+      depth: cluster.depth,
       x: left - padding,
       y: top - padding - LABEL_HEIGHT,
       width: right - left + padding * 2,

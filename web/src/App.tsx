@@ -315,6 +315,7 @@ export function App() {
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
+    laid.clusters.sort((a, b) => a.depth - b.depth);
     // Frames first, so they render behind the boxes they enclose.
     const frames: GroupNodeType[] = laid.clusters.flatMap((bounds) => {
       const group = byId.get(bounds.id);
@@ -326,7 +327,8 @@ export function App() {
           position: { x: bounds.x, y: bounds.y },
           width: bounds.width,
           height: bounds.height,
-          zIndex: -1,
+          // Outer frames sit behind the inner ones they contain.
+          zIndex: bounds.depth === 0 ? -2 : -1,
           selectable: false,
           draggable: false,
           data: {
@@ -334,6 +336,7 @@ export function App() {
             fileCount: group.files.length,
             cohesion: group.cohesion,
             accepted: group.state === 'accepted',
+            depth: group.depth,
             onAccept: (name: string) => decide(group, name, 'accepted'),
             onReject: () => decide(group, group.name ?? '', 'rejected'),
           },

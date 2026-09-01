@@ -29,6 +29,19 @@
         "web/src/main.tsx"
       ],
       "state": "accepted"
+    },
+    {
+      "name": "",
+      "files": [
+        "src/graph/types.ts",
+        "src/project/groups.ts",
+        "src/project/hook-install.ts",
+        "src/server/app.ts",
+        "src/view/cluster.ts",
+        "src/view/detail.ts",
+        "src/view/search.ts"
+      ],
+      "state": "rejected"
     }
   ]
 }

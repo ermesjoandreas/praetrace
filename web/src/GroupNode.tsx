@@ -6,6 +6,7 @@ export type GroupData = {
   fileCount: number;
   cohesion: number;
   accepted: boolean;
+  depth: number;
   onAccept: (name: string) => void;
   onReject: () => void;
 };
@@ -26,7 +27,15 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
   const stop = (event: MouseEvent) => event.stopPropagation();
 
   return (
-    <div className={data.accepted ? 'group group-accepted' : 'group'}>
+    <div
+      className={[
+        'group',
+        `group-depth-${data.depth}`,
+        data.accepted ? 'group-accepted' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
       <div className="group-label" onMouseDown={stop} onClick={stop}>
         {naming ? (
           <input

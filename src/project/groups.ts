@@ -17,9 +17,13 @@ export interface NamedGroup {
   state: 'accepted' | 'rejected';
 }
 
-export interface GroupSuggestion extends Cluster {
+export interface GroupSuggestion extends Omit<Cluster, 'children'> {
   name: string | null;
   state: 'suggested' | 'accepted' | 'rejected';
+  /** Nesting depth: 0 is an outer group, 1 is one found inside it. */
+  depth: number;
+  /** The outer group this sits in, when it sits in one. */
+  parent: string | null;
 }
 
 /**
@@ -63,11 +67,20 @@ function overlap(a: readonly string[], b: readonly string[]): number {
  * Merge what the graph found with what the user has already said about it.
  * Rejected groups stay in the answer, marked, so the page can keep them out of
  * sight without the next scan proposing them all over again.
+ *
+ * Flattened, with depth and parent kept, because every consumer — the drawing,
+ * the panel, the MCP tools — wants to walk them in order rather than recurse.
  */
 export function mergeGroups(clusters: readonly Cluster[], stored: readonly NamedGroup[]): GroupSuggestion[] {
   const taken = new Set<NamedGroup>();
+  const out: GroupSuggestion[] = [];
 
-  return clusters.map((cluster) => {
+  const walk = (cluster: Cluster, depth: number, parent: string | null): void => {
+    out.push({ ...describeOne(cluster), depth, parent });
+    for (const child of cluster.children) walk(child, depth + 1, cluster.id);
+  };
+
+  const describeOne = (cluster: Cluster): Omit<GroupSuggestion, 'depth' | 'parent'> => {
     let best: NamedGroup | null = null;
     let bestScore = MATCH_THRESHOLD;
 
@@ -82,12 +95,16 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
 
     if (best) taken.add(best);
 
+    const { children: _children, ...flat } = cluster;
     return {
-      ...cluster,
+      ...flat,
       name: best?.name ?? null,
       state: best?.state ?? 'suggested',
     };
-  });
+  };
+
+  for (const cluster of clusters) walk(cluster, 0, null);
+  return out;
 }
 
 /** Record a decision, replacing whatever was previously said about this group. */

@@ -204,6 +204,9 @@ export interface GroupSuggestion {
   cohesion: number;
   name: string | null;
   state: 'suggested' | 'accepted' | 'rejected';
+  /** 0 is an outer group; 1 sits inside one. */
+  depth: number;
+  parent: string | null;
 }
 
 export async function fetchClusters(): Promise<GroupSuggestion[]> {

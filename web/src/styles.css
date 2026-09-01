@@ -806,3 +806,12 @@ main { display: flex; flex: 1; min-height: 0; }
   padding: 2px 6px;
   width: 100%;
 }
+
+/* An outer group is a container for the inner ones, so it should read as a
+   region rather than compete with them for attention. */
+.group-depth-0 {
+  border-color: #2f3542;
+  background: rgba(122, 162, 247, 0.02);
+}
+.group-depth-0 .group-name { font-size: 12px; letter-spacing: 0.06em; }
+.group-depth-1 { background: rgba(122, 162, 247, 0.05); }
