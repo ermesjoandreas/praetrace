@@ -353,7 +353,14 @@ function GroupList({
               )}
 
               {open && (
-                <div className="group-editor">
+                // Its own class, not the canvas popover's: that one is a panel
+                // floating over the diagram, this one is a strip inside a list,
+                // and they were sharing a name and therefore a stylesheet.
+                <div className="group-palette">
+                  {/* The only other way out is the swatch that opened it, and
+                      the ✕ next to it deletes the group. Two ✕ that far apart
+                      in meaning need the harmless one to be the near one. */}
+                  <span className="group-palette-label">Colour</span>
                   <div className="group-swatches">
                     {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
                       <button
@@ -366,6 +373,14 @@ function GroupList({
                       />
                     ))}
                   </div>
+                  <button
+                    type="button"
+                    className="group-palette-close"
+                    title="Done"
+                    onClick={() => setEditing(null)}
+                  >
+                    ✕
+                  </button>
                 </div>
               )}
 

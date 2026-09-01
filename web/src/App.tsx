@@ -51,6 +51,7 @@ import { Sidebar, type GroupEditor } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { Activity } from './Activity';
+import { ContextMenu } from './ContextMenu';
 import { NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
@@ -133,6 +134,8 @@ export function App() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [baseOpen, setBaseOpen] = useState(false);
+  /** Where the right-click menu is, and what was under the cursor. */
+  const [contextAt, setContextAt] = useState<{ x: number; y: number; node: string | null } | null>(null);
   /**
    * Lifted out of the panel that used to own it: two panels read this now, and
    * the left one is the reason the data exists.
@@ -677,6 +680,20 @@ export function App() {
 
   // Click inspects, double-click moves. A single click used to teleport the
   // view, which made every glance at a box a navigation you had to undo.
+  /**
+   * Right-click opens the menu, and left-click does not: a left click already
+   * inspects a box, and taking that over would make every glance a decision.
+   */
+  const openContext = useCallback((event: MouseEvent, node: FlowNode | null) => {
+    event.preventDefault();
+    // A frame is a node too, and it covers most of the canvas. Falling through
+    // to the pane menu rather than returning is what stops a right-click inside
+    // a group from being a click that does nothing at all.
+    const box = node !== null && node.type === 'box' ? node : null;
+    if (box !== null) setSelected((current) => (current === box.id ? current : box.id));
+    setContextAt({ x: event.clientX, y: event.clientY, node: box?.id ?? null });
+  }, []);
+
   const handleNodeClick = useCallback((_event: MouseEvent, node: FlowNode) => {
     if (node.type !== 'box') return;
     setSelected(node.id);
@@ -1044,6 +1061,100 @@ export function App() {
     },
   ];
 
+  /**
+   * What the right-click menu offers, decided by what was under the cursor.
+   *
+   * Contextual rather than one fixed list: a menu that offers "open in editor"
+   * over empty canvas has to grey half of itself out every time, and a menu that
+   * is mostly grey teaches you to stop opening it.
+   */
+  const contextItems: MenuItem[] = (() => {
+    const target = contextAt?.node ?? null;
+    const box = target === null ? undefined : view?.nodes.find((node) => node.id === target);
+
+    if (box !== undefined) {
+      return [
+        { label: box.kind === 'folder' ? 'Look inside' : 'Go here', run: () => goTo(box.id, box.kind) },
+        {
+          label: 'Open in editor',
+          ...(data === null || box.kind === 'folder'
+            ? { disabledBecause: 'Only a file opens in an editor' }
+            : { run: () => void openInEditor(data.root, box.id, 1) }),
+        },
+        { label: 'Copy path', shortcut: '⌘C', run: () => void navigator.clipboard.writeText(box.id) },
+        {
+          label: `Create group from selection…`,
+          separatorBefore: true,
+          ...(selection.boxes < 2
+            ? { disabledBecause: 'Shift-click two or more boxes first' }
+            : {
+                run: () => {
+                  setShowSidebar(true);
+                  setCreating(true);
+                },
+              }),
+        },
+        {
+          label: 'Show its group in the panel',
+          ...(groupOfSelection === null
+            ? { disabledBecause: 'This is not in a group' }
+            : { run: () => setShowSidebar(true) }),
+        },
+        {
+          label: 'Only this folder',
+          run: () => goToScope(box.kind === 'folder' ? box.id : box.id.split('/').slice(0, -1).join('/')),
+        },
+      ];
+    }
+
+    return [
+      {
+        label:
+          selection.boxes < 2
+            ? 'Create group from selection…'
+            : `Create group from ${selection.boxes} boxes…`,
+        ...(selection.boxes < 2
+          ? { disabledBecause: 'Shift-click two or more boxes first' }
+          : {
+              run: () => {
+                setShowSidebar(true);
+                setCreating(true);
+              },
+            }),
+      },
+      {
+        label: 'Clear selection',
+        shortcut: '⎋',
+        ...(selection.boxes === 0
+          ? { disabledBecause: 'Nothing selected' }
+          : { run: clearSelection }),
+      },
+      {
+        label: 'Fit to screen',
+        shortcut: '⇧⌘F',
+        separatorBefore: true,
+        run: () => void flow.fitView({ padding: 0.15 }),
+      },
+      {
+        label: 'Up one level',
+        ...(view && view.trail.length > 1
+          ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
+          : { disabledBecause: 'Already at the top' }),
+      },
+      { label: 'Whole project', run: () => goToScope('') },
+      {
+        label: 'Find a file or symbol…',
+        shortcut: '⌘K',
+        separatorBefore: true,
+        run: () => setSearchOpen(true),
+      },
+      {
+        label: 'Clear filters',
+        ...(isFiltered ? { run: clearFilters } : { disabledBecause: 'Nothing is filtered' }),
+      },
+    ];
+  })();
+
   return (
     <div className="app">
       <MenuBar
@@ -1199,6 +1310,15 @@ export function App() {
 
       {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
 
+      {contextAt !== null && (
+        <ContextMenu
+          x={contextAt.x}
+          y={contextAt.y}
+          items={contextItems}
+          onClose={() => setContextAt(null)}
+        />
+      )}
+
       {(showWelcome || emptyProject) && (
         <Welcome
           onOpen={(path) => {
@@ -1237,6 +1357,8 @@ export function App() {
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          onPaneContextMenu={(event) => openContext(event as MouseEvent, null)}
+          onNodeContextMenu={openContext}
           onNodeDragStop={handleFrameDragStop}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}

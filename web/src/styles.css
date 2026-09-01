@@ -969,6 +969,10 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 .menu-title:hover, .menu-title-open { background: var(--line); }
 
+/* The right-click menu wears the menu bar chrome, but is placed against the
+   window rather than under a title. */
+.context-menu { position: fixed; top: auto; left: auto; z-index: 60; min-width: 216px; }
+
 .menu-drop {
   position: absolute;
   top: calc(100% + 3px);
@@ -1420,6 +1424,34 @@ main { display: flex; flex: 1; min-height: 0; }
 .group-editor-hint { color: var(--muted); font-size: 10px; line-height: 1.4; }
 
 .group-swatches { display: flex; gap: 5px; }
+
+/* The palette inside the panel's group list. Distinct from .group-editor, which
+   is the popover that floats over the diagram: same controls, different room. */
+.group-palette {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.group-palette .group-swatches { flex: 1; }
+.group-palette-label { color: var(--muted); font-size: 10px; }
+
+.group-palette-close {
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
+}
+.group-palette-close:hover { background: var(--line); color: var(--text); }
 
 .group-swatch {
   width: 13px;
