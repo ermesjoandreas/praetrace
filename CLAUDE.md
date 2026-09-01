@@ -124,8 +124,8 @@ These were decided deliberately. Do not change them without asking.
 Keep the node/edge shape stable and explicit:
 
 ```ts
-type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method';
-type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains';
+type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
+type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates';
 
 interface GraphNode {
   id: string;          // stable: `${filePath}#${symbolName}`
@@ -148,10 +148,28 @@ rather than redraw everything. A method lives in its own namespace —
 `path#Class.method` — so it can never collide with a top-level symbol of the
 same name, and it is contained by its class rather than by the file.
 
-**Methods are not in the name-resolution table.** A bare name is resolved against
+**A class box is a UML class box.** Fields and methods are both nodes, with the
+visibility, `static` and `abstract` the source actually stated — absent means the
+source said nothing, which in TypeScript is public, so the parser reports what
+was written rather than what it inferred. Attributes are pushed before
+operations, which is the order a UML class box reads in.
+
+**An association is what an import cannot say.** A field's declared type gives
+`Store ──has──> Logger`; an import only says this file mentions that one.
+The edge runs between the two classifiers, not from the attribute holding it —
+the field is how the relationship is spelled, the class is what has it. Like
+`calls`, it is opt-in (`?edges=…,associates`) and *replaces* the import between the
+same pair rather than being drawn beside it. `Logger[]` sets `many`, for 1..*.
+
+**Methods and fields are not in the name-resolution table.** A bare name is resolved against
 it, and `x.map(...)` reaches the graph layer as just `map`, so admitting members
 would invent a call edge to every class that happens to declare one. A missing
 edge is a gap; a wrong one is a lie.
+
+**Not built, and deliberately.** Sequence diagrams need call *order*, which
+`collectCalls` discards into a Set, and receiver resolution on top of that. State
+and activity diagrams are not derivable from static structure at all. ER
+diagrams are out of scope. A package diagram is the root view, and exists.
 
 **A cluster id is not a stable identity.** It embeds the member count
 (`src/cli/index.ts~8`), so it changes the moment a file joins or leaves the group,

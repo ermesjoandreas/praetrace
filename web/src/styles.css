@@ -182,7 +182,30 @@ main { display: flex; flex: 1; min-height: 0; }
 /* A method sits under the class that holds it, dimmer and indented, with a rule
    down the left so a run of them reads as one class's contents rather than as
    more top-level symbols. */
-.member-nested { padding-left: 10px; margin-left: 3px; border-left: 1px solid var(--line); }
+.member-nested {
+  display: flex;
+  align-items: baseline;
+  padding-left: 4px;
+  margin-left: 3px;
+  border-left: 1px solid var(--line);
+}
+.member-nested button { padding-left: 0; }
+.member-field button { color: #7dcfff; }
+.member-field button:hover { color: var(--text); }
+
+/* UML's visibility column. Fixed width so the names line up under each other
+   rather than stepping in and out with the marker. */
+.member-vis {
+  flex: none;
+  width: 9px;
+  color: var(--line-strong);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+/* The two UML type styles: static is underlined, abstract is italic. */
+.member-static button { text-decoration: underline; text-underline-offset: 2px; }
+.member-abstract button { font-style: italic; }
 .member-method button { color: var(--muted); }
 .member-method button:hover { color: var(--text); }
 .member-more { color: var(--line-strong); font-style: italic; }
@@ -779,6 +802,9 @@ main { display: flex; flex: 1; min-height: 0; }
 /* Calls replace the import between the same pair, so they read as the stronger
    relationship rather than a second line on the same path. */
 .react-flow__edge.edge-calls .react-flow__edge-path { stroke: #9ece6a; stroke-width: 1.6; }
+/* Association: a has-a, drawn apart from both the import it replaces and the
+   call edge it sits beside. */
+.react-flow__edge.edge-associates .react-flow__edge-path { stroke: #7dcfff; stroke-width: 1.6; }
 
 /* --- suggested groups --- */
 

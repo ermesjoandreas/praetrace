@@ -24,6 +24,10 @@ export interface ViewMember {
   line: number;
   /** The class this is a member of, so a box can nest it under its owner. */
   owner: string | null;
+  /** UML's +, - and #. null means the source did not say, which is public. */
+  visibility: 'public' | 'private' | 'protected' | null;
+  isStatic: boolean;
+  isAbstract: boolean;
 }
 
 export interface ViewNode {

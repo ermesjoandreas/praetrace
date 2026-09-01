@@ -99,6 +99,9 @@ function collectFiles(
       kind: node.kind,
       line: node.range.startLine,
       owner: ownerOf(graph, node.id),
+      visibility: node.visibility ?? null,
+      isStatic: node.isStatic === true,
+      isAbstract: node.isAbstract === true,
     });
   }
 
@@ -115,14 +118,14 @@ function collectFiles(
 /**
  * Collapse symbol-level edges onto the files that hold them.
  *
- * `contains` is structural and never drawn. `calls` is drawn only when asked
- * for, and then it *replaces* the import between the same pair: two edges would
- * take the same path on screen, and "calls twelve things in here" says more
- * than "imported a type from here", which is all an import on its own tells you.
+ * `contains` is structural and never drawn. `calls` and `associates` are
+ * drawn only when asked for, and each then *replaces* the import between the
+ * same pair: two edges would take the same path on screen, and "calls twelve
+ * things in here", or "holds one of those", says more than "imported a type
+ * from here", which is all an import on its own tells you.
  */
 function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
   const byKey = new Map<string, FileEdge>();
-  const showCalls = keepsEdge('calls', filter);
 
   for (const edge of graph.edges) {
     if (edge.kind === 'contains' || !keepsEdge(edge.kind, filter)) continue;
@@ -138,13 +141,17 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
   }
 
   const lifted = [...byKey.values()];
-  if (!showCalls) return lifted;
-
-  const calling = new Set(
-    lifted.filter((edge) => edge.kind === 'calls').map((edge) => `${edge.from} ${edge.to}`),
+  // Whichever detail edges the filter let through; each hides the import that
+  // runs the same way, and neither is on by default.
+  const detail = new Set(
+    lifted
+      .filter((edge) => edge.kind === 'calls' || edge.kind === 'associates')
+      .map((edge) => `${edge.from} ${edge.to}`),
   );
+  if (detail.size === 0) return lifted;
+
   return lifted.filter(
-    (edge) => edge.kind !== 'imports' || !calling.has(`${edge.from} ${edge.to}`),
+    (edge) => edge.kind !== 'imports' || !detail.has(`${edge.from} ${edge.to}`),
   );
 }
 

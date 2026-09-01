@@ -36,6 +36,13 @@ const GIT_LETTER: Record<GitFileStatus, string> = {
   renamed: 'R',
 };
 
+/**
+ * UML's three markers. A member whose source said nothing is public, which is
+ * what TypeScript means by silence, so it gets the + a UML reader expects
+ * rather than a blank that would read as "unknown".
+ */
+const VISIBILITY = { private: '−', protected: '#', public: '+' } as const;
+
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const shown = data.members.slice(0, MAX_MEMBERS);
   const hidden = data.members.length - shown.length;
@@ -98,8 +105,21 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
               key={`${member.owner ?? ''}${member.name}-${index}`}
               // Indented under the class that holds it. A flat list would put a
               // method beside the class it belongs to as though they were peers.
-              className={`member member-${member.kind}${member.owner === null ? '' : ' member-nested'}`}
+              className={[
+                'member',
+                `member-${member.kind}`,
+                member.owner === null ? '' : 'member-nested',
+                member.isStatic ? 'member-static' : '',
+                member.isAbstract ? 'member-abstract' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
             >
+              {member.owner !== null && (
+                <span className="member-vis" aria-hidden="true">
+                  {VISIBILITY[member.visibility ?? 'public']}
+                </span>
+              )}
               <button
                 type="button"
                 onClick={open(member.line)}

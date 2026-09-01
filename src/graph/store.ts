@@ -78,6 +78,10 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
         name: symbol.name,
         filePath: parsed.filePath,
         range: { startLine: symbol.startLine, endLine: symbol.endLine },
+        ...(symbol.visibility === undefined ? {} : { visibility: symbol.visibility }),
+        ...(symbol.isStatic === undefined ? {} : { isStatic: symbol.isStatic }),
+        ...(symbol.isAbstract === undefined ? {} : { isAbstract: symbol.isAbstract }),
+        ...(symbol.many === undefined ? {} : { many: symbol.many }),
       });
       ids.push(id);
       if (symbol.kind === 'class') owners.set(symbol.name, id);
@@ -148,6 +152,13 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
       for (const name of symbol.calls) {
         const target = lookup(name);
         if (target) addEdge(id, target, 'calls');
+      }
+      // UML draws an association between the two classifiers, not from the
+      // attribute that holds it: the field is how the relationship is spelled,
+      // the class is what has it.
+      if (symbol.typeName !== undefined && owner) {
+        const target = lookup(symbol.typeName);
+        if (target) addEdge(owner, target, 'associates');
       }
     });
   }

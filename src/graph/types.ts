@@ -3,9 +3,9 @@
  * parsers produce it, renderers consume it, nothing else defines structure.
  */
 
-export type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method';
+export type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
 
-export type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains';
+export type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates';
 
 export interface GraphNode {
   /**
@@ -23,6 +23,15 @@ export interface GraphNode {
   range: { startLine: number; endLine: number };
   /** File nodes only: unix milliseconds of the last write. */
   modifiedAt?: number;
+  /**
+   * UML's three modifiers, present only when the source stated them. Carried on
+   * the node because they describe the declaration, not a relationship.
+   */
+  visibility?: 'public' | 'private' | 'protected';
+  isStatic?: boolean;
+  isAbstract?: boolean;
+  /** Fields only: `Logger[]` rather than `Logger`, for the association's 1..*. */
+  many?: boolean;
 }
 
 export interface GraphEdge {

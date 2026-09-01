@@ -123,33 +123,107 @@ function collectCalls(declaration: Node, exclude: readonly Node[] = []): string[
  * A field holding an arrow function is a method in everything but syntax, so it
  * counts as one.
  */
+/**
+ * UML's three modifiers, read off the declaration rather than inferred. An
+ * absent visibility means the source did not say, which in TypeScript is public
+ * — recorded as absent so the diagram can tell "written public" from "not
+ * written", the way the source can.
+ */
+function modifiersOf(member: Node): Pick<ParsedSymbol, 'visibility' | 'isStatic' | 'isAbstract'> {
+  let visibility: ParsedSymbol['visibility'];
+  let isStatic = false;
+  let isAbstract = false;
+
+  for (const child of member.children) {
+    if (child.type === 'accessibility_modifier') {
+      const text = child.text;
+      if (text === 'private' || text === 'protected' || text === 'public') visibility = text;
+    } else if (child.type === 'static') isStatic = true;
+    else if (child.type === 'abstract') isAbstract = true;
+  }
+
+  return {
+    ...(visibility === undefined ? {} : { visibility }),
+    ...(isStatic ? { isStatic: true } : {}),
+    ...(isAbstract ? { isAbstract: true } : {}),
+  };
+}
+
+/**
+ * The declared type of a field, reduced to the one name an association can be
+ * drawn to. `Logger[]` and `Array<Logger>` both name Logger and both mean many
+ * of them, which is the cardinality on the edge.
+ */
+function typeOf(member: Node): { typeName?: string; many?: boolean } {
+  const annotation = member.childForFieldName('type');
+  const declared = annotation?.namedChildren[0] ?? null;
+  if (!declared) return {};
+
+  if (declared.type === 'array_type') {
+    const name = nameOf(declared.namedChildren[0] ?? null);
+    return name === null ? { many: true } : { typeName: name, many: true };
+  }
+  if (declared.type === 'generic_type') {
+    const base = nameOf(declared.childForFieldName('name'));
+    // Array<T> and the collection types name their element, not themselves.
+    if (base === 'Array' || base === 'Set' || base === 'ReadonlyArray') {
+      const args = declared.childForFieldName('type_arguments');
+      const inner = nameOf(args?.namedChildren[0] ?? null);
+      return inner === null ? { many: true } : { typeName: inner, many: true };
+    }
+    return base === null ? {} : { typeName: base };
+  }
+
+  const name = nameOf(declared);
+  return name === null ? {} : { typeName: name };
+}
+
 function collectMembers(declaration: Node, owner: string, symbols: ParsedSymbol[]): Node[] {
   const body = declaration.childForFieldName('body');
   if (!body) return [];
 
   const bodies: Node[] = [];
-  for (const member of body.namedChildren) {
-    const isMethod = member.type === 'method_definition';
-    const isArrowField =
-      member.type === 'public_field_definition' &&
-      member.childForFieldName('value')?.type === 'arrow_function';
-    if (!isMethod && !isArrowField) continue;
+  const fields: ParsedSymbol[] = [];
+  const methods: ParsedSymbol[] = [];
 
+  for (const member of body.namedChildren) {
     const name = nameOf(member.childForFieldName('name'));
     if (!name) continue;
 
-    bodies.push(member);
-    symbols.push({
+    const isMethod =
+      member.type === 'method_definition' ||
+      member.type === 'method_signature' ||
+      member.type === 'abstract_method_signature' ||
+      (member.type === 'public_field_definition' &&
+        member.childForFieldName('value')?.type === 'arrow_function');
+    const isField =
+      !isMethod &&
+      (member.type === 'public_field_definition' || member.type === 'property_signature');
+    if (!isMethod && !isField) continue;
+
+    const common = {
       name,
-      kind: 'method',
       owner,
       startLine: member.startPosition.row + 1,
       endLine: member.endPosition.row + 1,
       extends: [],
       implements: [],
-      calls: collectCalls(member),
-    });
+      ...modifiersOf(member),
+    };
+
+    if (isMethod) {
+      bodies.push(member);
+      methods.push({ ...common, kind: 'method', calls: collectCalls(member) });
+    } else {
+      // A field initialiser can call things, and those calls are the class's
+      // doing rather than any method's, so they are collected here too.
+      fields.push({ ...common, kind: 'field', calls: collectCalls(member), ...typeOf(member) });
+    }
   }
+
+  // Attributes before operations, which is the order a UML class box reads in
+  // and, not by accident, the order the declarations usually appear in anyway.
+  symbols.push(...fields, ...methods);
   return bodies;
 }
 
@@ -206,8 +280,9 @@ function collectTopLevel(node: Node, imports: string[], symbols: ParsedSymbol[])
     // The class is pushed before its members, and the graph layer relies on
     // that order to attach each one to the class it just saw.
     const members: ParsedSymbol[] = [];
-    const bodies = kind === 'class' ? collectMembers(node, name, members) : [];
-    symbols.push(makeSymbol(node, name, kind, bodies));
+    const bodies =
+      kind === 'class' || kind === 'interface' ? collectMembers(node, name, members) : [];
+    symbols.push({ ...makeSymbol(node, name, kind, bodies), ...modifiersOf(node) });
     symbols.push(...members);
     return;
   }

@@ -297,8 +297,8 @@ function readMembers<T extends string>(raw: unknown, allowed: readonly T[]): T[]
   return allowed.filter((value) => wanted.has(value));
 }
 
-const NODE_KINDS = ['class', 'function', 'interface', 'type', 'method'] as const;
-const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls'] as const;
+const NODE_KINDS = ['class', 'function', 'interface', 'type', 'method', 'field'] as const;
+const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'associates'] as const;
 
 /** Every field is user input, from a query string or a socket frame. */
 function toFilter(raw: Record<string, unknown>): ViewFilter {

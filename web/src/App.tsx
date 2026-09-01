@@ -60,7 +60,18 @@ type FlowNode = BoxNodeType | GroupNodeType;
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 /** The default edge kinds plus calls; the button is a shortcut for this set. */
-const CALL_EDGES = 'imports,extends,implements,calls';
+/**
+ * The edge kinds a URL asks for. Structure is always drawn; calls and
+ * associations are opted into, and each is spelled out in the CSV rather than
+ * enumerated as a combination — two flags are four strings, and the next one
+ * would be eight.
+ */
+const BASE_EDGES = ['imports', 'extends', 'implements'] as const;
+
+function edgeParam(calls: boolean, associates: boolean): string | null {
+  const extra = [calls ? 'calls' : '', associates ? 'associates' : ''].filter(Boolean);
+  return extra.length === 0 ? null : [...BASE_EDGES, ...extra].join(',');
+}
 
 /**
  * The three bases the server accepts, and the words each one gets. One list
@@ -399,6 +410,7 @@ export function App() {
   const focus = view?.spec.focus ?? null;
   // The calls button is one case of the edge filter, not a flag of its own.
   const showCalls = view?.spec.filter.edgeKinds.includes('calls') ?? false;
+  const showAssoc = view?.spec.filter.edgeKinds.includes('associates') ?? false;
   const onlyChanged = view?.spec.filter.onlyChanged ?? false;
   /** null when the project is not a git work tree, which is normal, not a fault. */
   const git = view?.git ?? null;
@@ -735,11 +747,12 @@ export function App() {
         params.set('focus', target);
         if (depth !== 1) params.set('depth', String(depth));
       }
-      if (showCalls) params.set('edges', CALL_EDGES);
+      const edges = edgeParam(showCalls, showAssoc);
+      if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [navigate, depth, showCalls, onlyChanged],
+    [navigate, depth, showCalls, showAssoc, onlyChanged],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -754,11 +767,12 @@ export function App() {
     (scope: string) => {
       const params = new URLSearchParams();
       if (scope !== '') params.set('scope', scope);
-      if (showCalls) params.set('edges', CALL_EDGES);
+      const edges = edgeParam(showCalls, showAssoc);
+      if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [navigate, showCalls, onlyChanged],
+    [navigate, showCalls, showAssoc, onlyChanged],
   );
 
   const changeDepth = useCallback(
@@ -767,11 +781,12 @@ export function App() {
       const params = new URLSearchParams();
       params.set('focus', focus);
       if (next !== 1) params.set('depth', String(next));
-      if (showCalls) params.set('edges', CALL_EDGES);
+      const edges = edgeParam(showCalls, showAssoc);
+      if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [focus, navigate, showCalls, onlyChanged],
+    [focus, navigate, showCalls, showAssoc, onlyChanged],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -783,13 +798,26 @@ export function App() {
     );
   }, []);
 
-  const toggleCalls = useCallback(() => {
-    // Built from the live URL so every other part of the view survives the flip.
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('edges') === CALL_EDGES) params.delete('edges');
-    else params.set('edges', CALL_EDGES);
-    navigate(params);
-  }, [navigate]);
+  /** Built from the live URL so every other part of the view survives the flip. */
+  const toggleEdgeKind = useCallback(
+    (calls: boolean, associates: boolean) => {
+      const params = new URLSearchParams(window.location.search);
+      const edges = edgeParam(calls, associates);
+      if (edges === null) params.delete('edges');
+      else params.set('edges', edges);
+      navigate(params);
+    },
+    [navigate],
+  );
+
+  const toggleCalls = useCallback(
+    () => toggleEdgeKind(!showCalls, showAssoc),
+    [toggleEdgeKind, showCalls, showAssoc],
+  );
+  const toggleAssoc = useCallback(
+    () => toggleEdgeKind(showCalls, !showAssoc),
+    [toggleEdgeKind, showCalls, showAssoc],
+  );
 
   const toggleChanged = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1001,6 +1029,9 @@ export function App() {
       items: [
         { label: 'Panel', shortcut: '⌘B', checked: showSidebar, run: () => setShowSidebar((was) => !was) },
         { label: 'Call edges', checked: showCalls, run: toggleCalls },
+        // A field's declared type is the has-a UML exists to show, and an import
+        // edge cannot say it: an import means this file mentions that one.
+        { label: 'Association edges (has-a)', checked: showAssoc, run: toggleAssoc },
         {
           label: 'Hide type-only files',
           separatorBefore: true,
