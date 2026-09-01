@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { MouseEvent } from 'react';
-import { openInEditor, type ViewMember } from './api';
+import { openInEditor, type GitFileStatus, type ViewMember } from './api';
 import { MAX_MEMBERS } from './layout';
 
 export type BoxData = {
@@ -12,11 +12,29 @@ export type BoxData = {
   focused: boolean;
   changed: boolean;
   queried: boolean;
+  /** Its own git status. null for folder boxes and for unchanged files. */
+  gitStatus: GitFileStatus | null;
+  /** How many of `files` differ from the base. 0 or 1 for a file box. */
+  gitChanged: number;
   /** Needed to build an absolute path for an editor link. */
   root: string;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
+
+/**
+ * Git gets a badge, never a tint. The box surface already carries two signals —
+ * amber for just written, blue for the agent just asked — and both are about
+ * this minute. Standing against a commit is a slower fact about the same box,
+ * so it sits beside the name rather than competing for the same surface.
+ */
+const GIT_LETTER: Record<GitFileStatus, string> = {
+  modified: 'M',
+  added: 'A',
+  deleted: 'D',
+  untracked: '?',
+  renamed: 'R',
+};
 
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const shown = data.members.slice(0, MAX_MEMBERS);
@@ -44,6 +62,24 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
         <span className="box-title-text" title={data.label}>
           {data.label}
         </span>
+        {data.gitStatus !== null && (
+          <span
+            className={`box-git box-git-${data.gitStatus}`}
+            title={`${data.gitStatus} vs the git base`}
+          >
+            {GIT_LETTER[data.gitStatus]}
+          </span>
+        )}
+        {/* A folder box stands for many files, so the useful fact is how many
+            of them moved, not which way any single one did. */}
+        {data.kind === 'folder' && data.gitChanged > 0 && (
+          <span
+            className="box-git box-git-count"
+            title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
+          >
+            {data.gitChanged}
+          </span>
+        )}
         {file !== undefined && (
           <button type="button" className="box-open" title="Open in editor" onClick={open(1)}>
             ↗

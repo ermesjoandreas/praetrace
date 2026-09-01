@@ -1111,3 +1111,179 @@ main { display: flex; flex: 1; min-height: 0; }
   max-width: 100%;
 }
 .feed-target:hover { color: var(--accent); }
+
+/* --- where a file stands against a commit --- */
+
+/* Small and beside the name, never a wash over the box: the surface already
+   carries amber for "just written" and blue for "the agent just asked", and a
+   third tint would leave all three unreadable. */
+.box-git {
+  --git-color: 139, 147, 161;
+  flex: none;
+  min-width: 16px;
+  padding: 0 3px;
+  border: 1px solid rgba(var(--git-color), 0.45);
+  border-radius: 3px;
+  background: rgba(var(--git-color), 0.12);
+  color: rgb(var(--git-color));
+  font-size: 10px;
+  line-height: 14px;
+  text-align: center;
+}
+
+.box-git-modified  { --git-color: 224, 175, 104; }
+.box-git-added     { --git-color: 158, 206, 106; }
+.box-git-deleted   { --git-color: 247, 118, 142; }
+.box-git-untracked { --git-color: 139, 147, 161; }
+.box-git-renamed   { --git-color: 187, 154, 247; }
+.box-git-count     { --git-color: 122, 162, 247; }
+
+.git-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: default;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 9px;
+}
+button.git-chip { cursor: pointer; }
+button.git-chip:hover { border-color: var(--accent); color: var(--text); }
+.git-chip strong { color: var(--text); font-weight: 600; }
+
+.git-base-select {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 7px;
+}
+.git-base-select:hover { border-color: var(--line-strong); color: var(--text); }
+/* The dropdown itself is drawn by the OS, which would otherwise pick a light
+   list against this page's dark chrome. */
+.git-base-select option { background: var(--panel); color: var(--text); }
+
+/* --- naming, colouring and sizing a group --- */
+
+/* Palette keys, resolved once as channels so both a frame and its swatch can
+   tint from the same value. The stylesheet owns what 'teal' means; the project
+   file only ever stores the key. */
+[data-color="slate"]  { --group-color: 107, 115, 134; }
+[data-color="blue"]   { --group-color: 122, 162, 247; }
+[data-color="teal"]   { --group-color: 42, 195, 222; }
+[data-color="green"]  { --group-color: 158, 206, 106; }
+[data-color="amber"]  { --group-color: 224, 175, 104; }
+[data-color="orange"] { --group-color: 255, 158, 100; }
+[data-color="red"]    { --group-color: 247, 118, 142; }
+[data-color="violet"] { --group-color: 187, 154, 247; }
+
+/* A frame sits behind the boxes it encloses, so its tint has to stay under
+   them: enough colour to tell two neighbouring groups apart, not enough to
+   change what a box looks like. */
+.group[data-color] {
+  border-color: rgba(var(--group-color), 0.5);
+  background: rgba(var(--group-color), 0.055);
+}
+.group[data-color].group-accepted { border-color: rgba(var(--group-color), 0.75); }
+.group[data-color] .group-name { color: rgb(var(--group-color)); }
+
+/* Drawn by a person, not found in the imports. It reads as decided — solid,
+   with its own inner stroke — while saying so in the label, because a frame
+   that looked derived would claim an authority the graph never gave it. */
+.group-manual {
+  border-style: solid;
+  box-shadow: inset 0 0 0 1px rgba(var(--group-color, 139, 147, 161), 0.2);
+}
+.group-manual .group-meta {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* The handle is positioned against the frame's own corner. */
+.group { position: relative; }
+
+.group-edit {
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: var(--line-strong);
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.group-edit:hover, .group-edit[aria-pressed="true"] { color: var(--accent); background: var(--line); }
+
+.group-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-left: 6px;
+  padding: 3px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+.group-swatches { display: inline-flex; gap: 4px; }
+
+.group-swatch {
+  width: 13px;
+  height: 13px;
+  padding: 0;
+  border: 1px solid rgba(var(--group-color), 0.6);
+  border-radius: 3px;
+  background: rgba(var(--group-color), 0.5);
+  cursor: pointer;
+}
+.group-swatch:hover { background: rgb(var(--group-color)); }
+/* Ringed rather than merely brighter: eight saturated squares in a row leave
+   no room for "slightly more vivid" to be the difference that matters. */
+.group-swatch-active {
+  background: rgb(var(--group-color));
+  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px rgb(var(--group-color));
+}
+
+.group-delete {
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  padding: 1px 7px;
+}
+.group-delete:hover { border-color: #5a2b2b; color: #f2a2a2; }
+
+.group-resize {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-right-color: var(--accent);
+  border-bottom-color: var(--accent);
+  border-radius: 3px;
+  background: var(--panel);
+  cursor: nwse-resize;
+  /* The frame lets clicks through to the boxes behind it; the handle is the
+     one part of it that must not. touch-action keeps a trackpad drag from
+     being read as a scroll before the pointer events arrive. */
+  pointer-events: auto;
+  touch-action: none;
+}
+.group-resize:hover { border-color: var(--accent); }

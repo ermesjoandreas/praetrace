@@ -1,3 +1,4 @@
+import type { GitStatus } from '../git/types.js';
 import type { Graph } from '../graph/types.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
 import type { ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
@@ -16,19 +17,46 @@ const GROUP_THRESHOLD = 40;
  * a box standing for a directory is not a `GraphNode`, and an aggregated edge
  * needs a weight the core model has no business carrying.
  *
- * Pure, so a view can be checked without a browser.
+ * Pure, so a view can be checked without a browser. That is also why the git
+ * status arrives as an argument: reading it shells out, and the view layer is
+ * the wrong place for I/O. It defaults to null because a project that is not a
+ * work tree is normal, not an error.
  */
-export function selectView(graph: Graph, spec: ViewSpec, now: number): ViewGraph {
-  const files = collectFiles(graph, spec.filter, now);
+export function selectView(
+  graph: Graph,
+  spec: ViewSpec,
+  now: number,
+  git: GitStatus | null = null,
+): ViewGraph {
+  // One set, built once and threaded down: every lookup below is a membership
+  // test, and Object.keys on each file would be the whole cost of the view.
+  const changed = git ? new Set(Object.keys(git.files)) : null;
+
+  const files = collectFiles(graph, spec.filter, now, changed);
   // Edges to a file the filter removed would point at a box that is not there.
   const edges = liftEdgesToFiles(graph, spec.filter).filter(
     (edge) => files.has(edge.from) && files.has(edge.to),
   );
 
   if (spec.focus !== null && files.has(spec.focus)) {
-    return focusView(spec, files, edges);
+    return focusView(spec, files, edges, git, changed);
   }
-  return scopeView(spec, files, edges);
+  return scopeView(spec, files, edges, git, changed);
+}
+
+/**
+ * The project-wide count, not the count in this slice: the chip beside it says
+ * "vs <base>", and a number that shrank because you navigated into a directory
+ * would read as work disappearing.
+ */
+function gitSummary(git: GitStatus | null): ViewGraph['git'] {
+  if (git === null) return null;
+  return {
+    base: git.base,
+    requested: git.requested,
+    branch: git.branch,
+    changed: Object.keys(git.files).length,
+  };
 }
 
 interface FileEdge {
@@ -39,12 +67,17 @@ interface FileEdge {
 }
 
 /** File path -> the symbols it declares, in declaration order. */
-function collectFiles(graph: Graph, filter: ViewFilter, now: number): Map<string, ViewMember[]> {
+function collectFiles(
+  graph: Graph,
+  filter: ViewFilter,
+  now: number,
+  changed: ReadonlySet<string> | null,
+): Map<string, ViewMember[]> {
   const files = new Map<string, ViewMember[]>();
 
   for (const node of graph.nodes.values()) {
     if (node.kind !== 'file') continue;
-    if (!keepsFile(node.filePath, node.modifiedAt ?? 0, filter, now)) continue;
+    if (!keepsFile(node.filePath, node.modifiedAt ?? 0, filter, now, changed)) continue;
     if (!files.has(node.filePath)) files.set(node.filePath, []);
   }
   for (const node of graph.nodes.values()) {
@@ -98,7 +131,13 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
   );
 }
 
-function fileNode(filePath: string, members: ViewMember[], focused: boolean): ViewNode {
+function fileNode(
+  filePath: string,
+  members: ViewMember[],
+  focused: boolean,
+  git: GitStatus | null,
+): ViewNode {
+  const gitStatus = git?.files[filePath] ?? null;
   return {
     id: filePath,
     kind: 'file',
@@ -107,6 +146,8 @@ function fileNode(filePath: string, members: ViewMember[], focused: boolean): Vi
     files: [filePath],
     external: false,
     focused,
+    gitStatus,
+    gitChanged: gitStatus ? 1 : 0,
   };
 }
 
@@ -116,6 +157,8 @@ function focusView(
   spec: ViewSpec,
   files: ReadonlyMap<string, ViewMember[]>,
   edges: readonly FileEdge[],
+  git: GitStatus | null,
+  _changed: ReadonlySet<string> | null,
 ): ViewGraph {
   const focus = spec.focus ?? '';
   const neighbours = new Map<string, Set<string>>();
@@ -143,7 +186,7 @@ function focusView(
 
   const nodes = [...reached]
     .sort()
-    .map((filePath) => fileNode(filePath, files.get(filePath) ?? [], filePath === focus));
+    .map((filePath) => fileNode(filePath, files.get(filePath) ?? [], filePath === focus, git));
 
   const kept = edges
     .filter((edge) => reached.has(edge.from) && reached.has(edge.to))
@@ -156,6 +199,7 @@ function focusView(
     trail: trailFor(''),
     totalFiles: reached.size,
     grouped: false,
+    git: gitSummary(git),
   };
 }
 
@@ -171,6 +215,8 @@ function scopeView(
   spec: ViewSpec,
   files: ReadonlyMap<string, ViewMember[]>,
   edges: readonly FileEdge[],
+  git: GitStatus | null,
+  changed: ReadonlySet<string> | null,
 ): ViewGraph {
   const allPaths = [...files.keys()].sort();
   const scope = descend(normaliseScope(spec.scope), allPaths);
@@ -208,6 +254,10 @@ function scopeView(
       files: [],
       external: !inside,
       focused: false,
+      gitStatus: target.kind === 'file' ? (git?.files[target.id] ?? null) : null,
+      // Filled in with the rest of `backing` below, once the box knows which
+      // files it actually stands for.
+      gitChanged: 0,
     };
     nodes.set(target.id, created);
     return created;
@@ -231,6 +281,7 @@ function scopeView(
 
   for (const node of nodes.values()) {
     node.files = [...(backing.get(node.id) ?? [])].sort();
+    if (changed !== null) node.gitChanged = node.files.filter((file) => changed.has(file)).length;
   }
 
   const boxes = [...nodes.values()].sort(byExternalThenId);
@@ -245,6 +296,7 @@ function scopeView(
     // directory above the threshold has no subdirectories to group by, so every
     // file stays its own box and calling that "grouped" would be a lie.
     grouped: boxes.some((node) => node.kind === 'folder' && !node.external),
+    git: gitSummary(git),
   };
 }
 

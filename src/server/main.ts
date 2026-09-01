@@ -30,6 +30,11 @@ async function main(): Promise<void> {
   host = await startSessionHost(args.find((arg) => !arg.startsWith('--')) ?? '.', {
     onApplied: (changedFiles) => hub?.publish(changedFiles),
     onError: (message) => console.error(`codemap: ${message}`),
+    // A commit or a checkout changed what differs from the base. Published with
+    // no changed files, because nothing was written: the badges and the chip
+    // are new, and pulsing every box a commit touched would say the agent had
+    // just been there.
+    onGitChanged: () => hub?.publish([]),
   });
 
   // The port is only known after listen, so the file follows the project

@@ -18,6 +18,8 @@ export interface ViewFilter {
   edgeKinds: EdgeKind[];
   /** Keep only files written within this many milliseconds. 0 lifts the limit. */
   sinceMs: number;
+  /** Keep only files that differ from the git base. */
+  onlyChanged: boolean;
 }
 
 export const DEFAULT_EDGE_KINDS: EdgeKind[] = ['imports', 'extends', 'implements'];
@@ -28,6 +30,7 @@ export const NO_FILTER: ViewFilter = {
   kinds: [],
   edgeKinds: DEFAULT_EDGE_KINDS,
   sinceMs: 0,
+  onlyChanged: false,
 };
 
 export function isFiltering(filter: ViewFilter): boolean {
@@ -35,7 +38,8 @@ export function isFiltering(filter: ViewFilter): boolean {
     filter.hidePath !== '' ||
     filter.onlyPath !== '' ||
     filter.kinds.length > 0 ||
-    filter.sinceMs > 0
+    filter.sinceMs > 0 ||
+    filter.onlyChanged
   );
 }
 
@@ -52,11 +56,25 @@ export function matchesPattern(filePath: string, pattern: string): boolean {
   return new RegExp(`^${escaped}$`).test(filePath);
 }
 
-export function keepsFile(filePath: string, modifiedAt: number, filter: ViewFilter, now: number): boolean {
+/**
+ * `changed` is the set of paths git reports as differing from the base, or null
+ * when the project is not a git work tree. Passed in rather than looked up: a
+ * filter that shelled out to git would put I/O in the middle of a pure view.
+ */
+export function keepsFile(
+  filePath: string,
+  modifiedAt: number,
+  filter: ViewFilter,
+  now: number,
+  changed: ReadonlySet<string> | null,
+): boolean {
   if (filter.onlyPath !== '' && !matchesPattern(filePath, filter.onlyPath)) return false;
   if (filter.hidePath !== '' && matchesPattern(filePath, filter.hidePath)) return false;
   // modifiedAt === 0 means the stat failed. Unknown is not old.
   if (filter.sinceMs > 0 && modifiedAt > 0 && modifiedAt < now - filter.sinceMs) return false;
+  // Without git there is nothing to compare against, so "only changed" keeps
+  // nothing rather than quietly keeping everything.
+  if (filter.onlyChanged && (changed === null || !changed.has(filePath))) return false;
   return true;
 }
 

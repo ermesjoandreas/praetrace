@@ -6,8 +6,45 @@ import {
   type ChangeEntry,
   type AgentCall,
   type Detail,
+  type GroupColor,
   type GroupSuggestion,
 } from './api';
+
+/**
+ * What the panel can do to a group. The frame on the canvas offers the same
+ * decisions, but a frame that loses the overlap contest is never drawn — so
+ * everything a group can be asked has to be reachable from here too, or naming
+ * one could be the last anybody ever does to it.
+ */
+export interface GroupEditor {
+  /** The boxes picked on the canvas, and the files those boxes stand for. */
+  selection: { boxes: number; files: string[] };
+  creating: boolean;
+  onCreating: (open: boolean) => void;
+  onCreate: (name: string) => void;
+  onRename: (group: GroupSuggestion, name: string) => void;
+  onColor: (group: GroupSuggestion, color: GroupColor) => void;
+  /** Only a hand-drawn group may be given members; the rest come from imports. */
+  onMembers: (group: GroupSuggestion, files: string[]) => void;
+  onDelete: (group: GroupSuggestion) => void;
+}
+
+/**
+ * The palette, spelled out here as well as in `GroupNode`: `project/groups.ts`
+ * owns the union but reaches for node:fs, so nothing may import a value from it
+ * into the browser. A Record keyed by GroupColor is what keeps them in step — a
+ * colour added to the union fails to compile here until it is listed.
+ */
+const COLOR_LABELS: Record<GroupColor, string> = {
+  slate: 'Slate',
+  blue: 'Blue',
+  teal: 'Teal',
+  green: 'Green',
+  amber: 'Amber',
+  orange: 'Orange',
+  red: 'Red',
+  violet: 'Violet',
+};
 
 interface SidebarProps {
   root: string;
@@ -22,6 +59,7 @@ interface SidebarProps {
   /** What the agent asked, newest first. Interleaved with the changes below. */
   agentCalls: AgentCall[];
   onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
+  groupEditor: GroupEditor;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {
@@ -38,6 +76,7 @@ export function Sidebar({
   onFocus,
   groups,
   onDecide,
+  groupEditor,
   agentCalls,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -87,7 +126,7 @@ export function Sidebar({
         )}
       </section>
 
-      <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} />
+      <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} editor={groupEditor} />
 
       <Timeline changes={changes} agentCalls={agentCalls} onSelect={onSelect} />
     </aside>
@@ -208,76 +247,199 @@ function PathList({
 }
 
 /**
- * Every group the graph found, including the ones whose frames were dropped for
- * overlapping. A group that cannot be drawn can still be named.
+ * Every group the graph found and every one somebody drew, including the ones
+ * whose frames were dropped for overlapping. A group that cannot be drawn can
+ * still be named, coloured and — where a person drew it — taken apart.
  */
 function GroupList({
   groups,
   onDecide,
   onSelect,
+  editor,
 }: {
   groups: GroupSuggestion[];
   onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
   onSelect: (target: string) => void;
+  editor: GroupEditor;
 }) {
   const [naming, setNaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
+  /** The row whose palette and membership are open. One at a time. */
+  const [editing, setEditing] = useState<string | null>(null);
+  const [newName, setNewName] = useState('');
 
   const live = groups.filter((group) => group.state !== 'rejected');
-  if (live.length === 0) return null;
+  // Drawing the first group has to be possible before there is a list to add
+  // it to, so the section outlives an empty one.
+  const canCreate = editor.selection.boxes >= 2;
+  if (live.length === 0 && !canCreate) return null;
 
   return (
     <section className="groups">
       <h2>Groups</h2>
-      <ul>
-        {live.map((group) => (
-          <li key={group.id}>
-            {naming === group.id ? (
-              <input
-                autoFocus
-                value={draft}
-                placeholder="Name this group"
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && draft.trim() !== '') {
-                    onDecide(group, draft.trim(), 'accepted');
-                    setNaming(null);
-                  } else if (event.key === 'Escape') setNaming(null);
-                }}
-                onBlur={() => setNaming(null)}
-              />
-            ) : (
-              <div className="group-row">
-                <button
-                  type="button"
-                  className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
-                  onClick={() => {
-                    setDraft(group.name ?? '');
-                    setNaming(group.id);
-                  }}
-                >
-                  {group.name ?? `${group.files.length} files`}
-                </button>
-                <span className="group-cohesion">{Math.round(group.cohesion * 100)}%</span>
-                <button
-                  type="button"
-                  className="group-drop"
-                  title="Not a group"
-                  onClick={() => onDecide(group, group.name ?? '', 'rejected')}
-                >
-                  ✕
-                </button>
-              </div>
-            )}
-            <div className="group-files">
-              {group.files.map((file) => (
-                <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
-                  {file}
-                </button>
-              ))}
-            </div>
-          </li>
+
+      {canCreate &&
+        (editor.creating ? (
+          <input
+            autoFocus
+            value={newName}
+            placeholder={`Name a group of ${editor.selection.files.length} files`}
+            onChange={(event) => setNewName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && newName.trim() !== '') {
+                editor.onCreate(newName.trim());
+                setNewName('');
+              } else if (event.key === 'Escape') editor.onCreating(false);
+            }}
+            onBlur={() => editor.onCreating(false)}
+          />
+        ) : (
+          <button type="button" className="group-title" onClick={() => editor.onCreating(true)}>
+            group the {editor.selection.boxes} selected boxes
+          </button>
         ))}
+
+      <ul>
+        {live.map((group) => {
+          const manual = group.origin === 'manual';
+          const decided = manual || group.state === 'accepted';
+          const open = decided && editing === group.id;
+
+          return (
+            <li key={group.id}>
+              {naming === group.id ? (
+                <input
+                  autoFocus
+                  value={draft}
+                  placeholder="Name this group"
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && draft.trim() !== '') {
+                      editor.onRename(group, draft.trim());
+                      setNaming(null);
+                    } else if (event.key === 'Escape') setNaming(null);
+                  }}
+                  onBlur={() => setNaming(null)}
+                />
+              ) : (
+                <div className="group-row">
+                  {/* The swatch is the way in: it shows the colour the frame is
+                      drawn in and opens the palette that changes it. A group
+                      with no colour of its own is drawn in the default grey,
+                      which is what slate is.
+
+                      Only a group that has been decided has an entry in
+                      groups.json to hang a colour on, so a suggestion is not
+                      offered a palette that would have nowhere to land. Naming
+                      it accepts it, and it can be dressed after that. */}
+                  {decided && (
+                    <button
+                      type="button"
+                      className="group-swatch"
+                      data-color={group.color ?? 'slate'}
+                      aria-pressed={open}
+                      title={open ? 'Close' : manual ? 'Colour and members' : 'Colour'}
+                      onClick={() => setEditing(open ? null : group.id)}
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
+                    onClick={() => {
+                      setDraft(group.name ?? '');
+                      setNaming(group.id);
+                    }}
+                  >
+                    {group.name ?? `${group.files.length} files`}
+                  </button>
+                  {/* A drawn group carries a cohesion of 0 — the import graph
+                      was never asked to find it — and 0% would read as a
+                      terrible group rather than as somebody's decision. */}
+                  <span className="group-cohesion">
+                    {manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`}
+                  </span>
+                  {/* Rejecting is remembering that this is not a group, so the
+                      next scan stops proposing it. Nothing proposed a drawn
+                      group, so there is nothing to remember: it is deleted. */}
+                  <button
+                    type="button"
+                    className="group-drop"
+                    title={manual ? 'Delete this group' : 'Not a group'}
+                    onClick={() =>
+                      manual ? editor.onDelete(group) : onDecide(group, group.name ?? '', 'rejected')
+                    }
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+
+              {open && (
+                <div className="group-editor">
+                  <div className="group-swatches">
+                    {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        data-color={color}
+                        className={`group-swatch${group.color === color ? ' group-swatch-active' : ''}`}
+                        title={COLOR_LABELS[color]}
+                        onClick={() => editor.onColor(group, color)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="group-files">
+                {group.files.map((file) =>
+                  open && manual ? (
+                    <span className="group-row" key={file}>
+                      <button type="button" title={file} onClick={() => onSelect(file)}>
+                        {file}
+                      </button>
+                      <button
+                        type="button"
+                        className="group-drop"
+                        disabled={group.files.length <= 2}
+                        title={
+                          group.files.length <= 2
+                            ? 'A group needs at least two files'
+                            : `Take ${file} out of this group`
+                        }
+                        onClick={() =>
+                          editor.onMembers(
+                            group,
+                            group.files.filter((member) => member !== file),
+                          )
+                        }
+                      >
+                        ✕
+                      </button>
+                    </span>
+                  ) : (
+                    <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
+                      {file}
+                    </button>
+                  ),
+                )}
+                {open && manual && editor.selection.files.length > 0 && (
+                  <button
+                    type="button"
+                    title="Add what is selected on the diagram"
+                    onClick={() =>
+                      editor.onMembers(group, [
+                        ...new Set([...group.files, ...editor.selection.files]),
+                      ])
+                    }
+                  >
+                    add {editor.selection.files.length} selected
+                  </button>
+                )}
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

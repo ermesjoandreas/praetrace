@@ -1,3 +1,4 @@
+import type { GitFileStatus } from '../git/types.js';
 import type { EdgeKind, NodeKind } from '../graph/types.js';
 import type { ViewFilter } from './filter.js';
 
@@ -35,6 +36,10 @@ export interface ViewNode {
   /** Outside the current scope, kept only to show what the scope connects to. */
   external: boolean;
   focused: boolean;
+  /** Its own git status. null for folder boxes and for unchanged files. */
+  gitStatus: GitFileStatus | null;
+  /** How many of `files` differ from the base. 0 or 1 for a file box. */
+  gitChanged: number;
 }
 
 export interface ViewEdge {
@@ -56,4 +61,6 @@ export interface ViewGraph {
   totalFiles: number;
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
+  /** null when the project is not a git work tree. */
+  git: { base: string; requested: string; branch: string | null; changed: number } | null;
 }

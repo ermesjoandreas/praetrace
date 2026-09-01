@@ -1,20 +1,39 @@
-import { Background, Controls, MiniMap, ReactFlow, useReactFlow, type Edge } from '@xyflow/react';
+import {
+  Background,
+  Controls,
+  MiniMap,
+  ReactFlow,
+  useReactFlow,
+  type Edge,
+  type NodeChange,
+} from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react';
 import {
   decideCluster,
   fetchClusters,
   fetchAgentCalls,
   fetchHookStatus,
   fetchView,
+  groupAction,
   installHook,
   isDesktop,
   liveUrl,
   pickProject,
   openInEditor,
   rememberProject,
+  setGitBase,
   switchProject,
   type AgentCall,
+  type GroupColor,
   type GroupSuggestion,
   type SearchHit,
   type ViewGraph,
@@ -22,11 +41,11 @@ import {
 } from './api';
 import { HookBanner } from './HookBanner';
 import { AgentStatus } from './AgentStatus';
-import { MenuBar, type Menu } from './MenuBar';
+import { MenuBar, type Menu, type MenuItem } from './MenuBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
-import { Sidebar } from './Sidebar';
+import { Sidebar, type GroupEditor } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
@@ -38,6 +57,25 @@ const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 /** The default edge kinds plus calls; the button is a shortcut for this set. */
 const CALL_EDGES = 'imports,extends,implements,calls';
+
+/**
+ * The three bases the server accepts, and the words each one gets. One list
+ * because three things read it — the picker, the chip and the View menu — and
+ * they must never disagree about what a base is called or which is in force.
+ */
+const GIT_BASES = [
+  { value: 'HEAD', option: 'uncommitted', chip: 'HEAD', menu: 'Compare against uncommitted changes' },
+  { value: 'HEAD~1', option: '+ last commit', chip: 'HEAD~1', menu: 'Compare against the last commit too' },
+  { value: 'branch', option: 'whole branch', chip: 'the branch', menu: 'Compare against the whole branch' },
+] as const;
+
+/**
+ * The ring on a box that is part of the selection. It sits on the node wrapper
+ * rather than on the box, because the box surface already carries three signals
+ * of its own — just written, just asked about, and its git badge — and being
+ * picked is the one of them the user is holding themselves.
+ */
+const PICKED_STYLE: CSSProperties = { boxShadow: '0 0 0 2px var(--accent)', borderRadius: '7px' };
 
 interface AgentMessage {
   type: 'agent';
@@ -65,6 +103,14 @@ export function App() {
   const [missed, setMissed] = useState<string[]>([]);
   /** The box being inspected. Selecting is not navigating. */
   const [selected, setSelected] = useState<string | null>(null);
+  /**
+   * The boxes React Flow has picked out, which is a different question from
+   * which one is being inspected: one box is described in the panel, several
+   * are what a group gets drawn around.
+   */
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  /** The name field for a group about to be drawn, in the panel. */
+  const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
@@ -262,11 +308,65 @@ export function App() {
     [],
   );
 
+  /**
+   * Every group edit is answered with the whole freshly merged list, so the
+   * page replaces what it holds rather than patching one row: a hand-drawn
+   * group can displace a derived one, and the reply is the only place that
+   * knows which.
+   */
+  const editGroup = useCallback((body: unknown) => {
+    groupAction(body).then(setClusters, (cause: unknown) =>
+      setError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, []);
+
+  /**
+   * Naming a suggestion is what accepts it, and acceptance finds its cluster
+   * again through membership. A hand-drawn group has no cluster to be found in,
+   * so it is patched by the id it was born with — which is also what lets it be
+   * renamed without becoming a different group.
+   */
+  const renameGroup = useCallback(
+    (group: GroupSuggestion, name: string) => {
+      if (group.origin === 'manual') editGroup({ action: 'update', id: group.id, name });
+      else decide(group, name, 'accepted');
+    },
+    [decide, editGroup],
+  );
+
+  /** What the picked boxes stand for. A folder box is many files, so a group
+   * drawn around one has to take the files, never the box's own id. */
+  const selection = useMemo(() => {
+    const chosen = (data?.view.nodes ?? []).filter((node) => picked.has(node.id));
+    // Counted from the view rather than from `picked`, which can still name a
+    // box that the last update removed.
+    return { boxes: chosen.length, files: [...new Set(chosen.flatMap((node) => node.files))] };
+  }, [data?.view, picked]);
+
+  const createGroup = useCallback(
+    (name: string) => {
+      groupAction({ action: 'create', name, files: selection.files }).then(
+        (next) => {
+          setClusters(next);
+          setCreating(false);
+        },
+        (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+      );
+    },
+    [selection.files],
+  );
+
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
   const focus = view?.spec.focus ?? null;
   // The calls button is one case of the edge filter, not a flag of its own.
   const showCalls = view?.spec.filter.edgeKinds.includes('calls') ?? false;
+  const onlyChanged = view?.spec.filter.onlyChanged ?? false;
+  /** null when the project is not a git work tree, which is normal, not a fault. */
+  const git = view?.git ?? null;
+  // What the row calls the base. The resolved one is a merge-base sha for
+  // 'branch', which says nothing to anybody, so it stays in the tooltip.
+  const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.chip ?? git?.base ?? '';
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
 
   // Tell the server which slice this client is looking at, so its updates are
@@ -345,6 +445,11 @@ export function App() {
       position: { x: 0, y: 0 },
       width: NODE_WIDTH,
       height: boxHeight(node.members.length, node.kind === 'folder'),
+      // The selection is held here, not inside React Flow: it re-reads the
+      // nodes prop on every update, so a selection it kept to itself would be
+      // wiped the moment the agent saved a file.
+      selected: picked.has(node.id),
+      ...(picked.has(node.id) ? { style: PICKED_STYLE } : {}),
       data: {
         label: node.label,
         kind: node.kind,
@@ -354,12 +459,24 @@ export function App() {
         focused: node.focused,
         changed: changedBoxIds.has(node.id),
         queried: queriedBoxIds.has(node.id),
+        gitStatus: node.gitStatus,
+        gitChanged: node.gitChanged,
         root: data?.root ?? '',
       },
     }));
 
     const shown = clusters.filter((group) => group.state !== 'rejected');
-    const clusterKey = shown.map((group) => group.id).join('|');
+    // Everything a frame is drawn from, not just which groups exist. Dragging a
+    // corner or taking a file out of a hand-drawn group changes no id, so a key
+    // of ids alone would hand back the cached bounds and the frame would never
+    // move.
+    const clusterKey = shown
+      .map((group) => {
+        const pad = group.padding;
+        const slack = pad === undefined ? '' : `${pad.x}x${pad.y}`;
+        return `${group.id}~${group.files.join(',')}~${group.color ?? ''}~${slack}`;
+      })
+      .join('|');
     const previous = layoutRef.current;
 
     // The groups arrive from their own request, after the first layout. Without
@@ -405,20 +522,29 @@ export function App() {
           selectable: false,
           draggable: false,
           data: {
+            id: group.id,
             name: group.name,
             fileCount: group.files.length,
             cohesion: group.cohesion,
             accepted: group.state === 'accepted',
             depth: group.depth,
+            origin: group.origin ?? null,
+            color: group.color ?? null,
+            padding: group.padding ?? null,
             onAccept: (name: string) => decide(group, name, 'accepted'),
             onReject: () => decide(group, group.name ?? '', 'rejected'),
+            onRename: (name: string) => renameGroup(group, name),
+            onColor: (color: GroupColor) => editGroup({ action: 'update', id: group.id, color }),
+            onPadding: (padding: { x: number; y: number }) =>
+              editGroup({ action: 'update', id: group.id, padding }),
+            onDelete: () => editGroup({ action: 'delete', id: group.id }),
           },
         },
       ];
     });
 
     return { nodes: [...frames, ...laid.nodes] as FlowNode[], edges: builtEdges };
-  }, [view, changedBoxIds, queriedBoxIds, data?.root, clusters, decide]);
+  }, [view, changedBoxIds, queriedBoxIds, picked, data?.root, clusters, decide, editGroup, renameGroup]);
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();
@@ -435,6 +561,32 @@ export function App() {
     setShowSidebar(true);
   }, []);
 
+  /**
+   * Selection is the only node change this canvas has any use for: positions
+   * come from the layout and nothing else about a box is editable here. It has
+   * to be handled all the same — React Flow works out the changes and then
+   * drops them when the nodes are controlled and nobody is listening, so
+   * without this there is no selection to pick a group out of.
+   */
+  const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    if (!changes.some((change) => change.type === 'select')) return;
+    setPicked((was) => {
+      const next = new Set(was);
+      for (const change of changes) {
+        if (change.type !== 'select') continue;
+        if (change.selected) next.add(change.id);
+        else next.delete(change.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelected(null);
+    setPicked(new Set());
+    setCreating(false);
+  }, []);
+
   const goTo = useCallback(
     (target: string, kind: 'file' | 'folder') => {
       const params = new URLSearchParams();
@@ -445,9 +597,10 @@ export function App() {
         if (depth !== 1) params.set('depth', String(depth));
       }
       if (showCalls) params.set('edges', CALL_EDGES);
+      if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [navigate, depth, showCalls],
+    [navigate, depth, showCalls, onlyChanged],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -463,9 +616,10 @@ export function App() {
       const params = new URLSearchParams();
       if (scope !== '') params.set('scope', scope);
       if (showCalls) params.set('edges', CALL_EDGES);
+      if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [navigate, showCalls],
+    [navigate, showCalls, onlyChanged],
   );
 
   const changeDepth = useCallback(
@@ -475,9 +629,10 @@ export function App() {
       params.set('focus', focus);
       if (next !== 1) params.set('depth', String(next));
       if (showCalls) params.set('edges', CALL_EDGES);
+      if (onlyChanged) params.set('changed', '1');
       navigate(params);
     },
-    [focus, navigate, showCalls],
+    [focus, navigate, showCalls, onlyChanged],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -496,6 +651,25 @@ export function App() {
     else params.set('edges', CALL_EDGES);
     navigate(params);
   }, [navigate]);
+
+  const toggleChanged = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('changed') === '1') params.delete('changed');
+    else params.set('changed', '1');
+    navigate(params);
+  }, [navigate]);
+
+  /**
+   * Changing the base publishes a fresh view to every connected client, so a
+   * live page needs nothing more. The refetch is for the one whose socket is
+   * down: it would otherwise keep badging files against the base just left.
+   */
+  const changeBase = useCallback((base: string) => {
+    setGitBase(base).then(
+      () => setReloadToken((n) => n + 1),
+      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, []);
 
   const handlePick = useCallback(
     (hit: SearchHit, inEditor: boolean) => {
@@ -530,7 +704,7 @@ export function App() {
         event.preventDefault();
         fitRef.current?.();
       } else if (event.key === 'Escape') {
-        setSelected(null);
+        clearSelection();
         setShowWelcome(false);
       }
     };
@@ -564,7 +738,7 @@ export function App() {
 
   const clearFilters = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
-    for (const key of ['hide', 'only', 'kinds', 'since']) params.delete(key);
+    for (const key of ['hide', 'only', 'kinds', 'since', 'changed']) params.delete(key);
     navigate(params);
   }, [navigate]);
 
@@ -582,9 +756,25 @@ export function App() {
   }, [missed, navigate]);
 
   const params = new URLSearchParams(search);
-  const isFiltered = ['hide', 'only', 'kinds', 'since'].some((key) => params.has(key));
+  const isFiltered = ['hide', 'only', 'kinds', 'since', 'changed'].some((key) => params.has(key));
   // Nothing to draw is the moment to say what the app is for.
   const empty = view !== undefined && view.nodes.length === 0;
+
+  /**
+   * The panel edits every group, including the ones whose frames the overlap
+   * rule dropped. Passed as one object because it is one feature with one
+   * caller, and nine more props on `Sidebar` would say less about it.
+   */
+  const groupEditor: GroupEditor = {
+    selection,
+    creating,
+    onCreating: setCreating,
+    onCreate: createGroup,
+    onRename: renameGroup,
+    onColor: (group, color) => editGroup({ action: 'update', id: group.id, color }),
+    onMembers: (group, files) => editGroup({ action: 'update', id: group.id, files }),
+    onDelete: (group) => editGroup({ action: 'delete', id: group.id }),
+  };
 
   const menus: Menu[] = [
     {
@@ -644,7 +834,21 @@ export function App() {
             ? { disabledBecause: 'The selection is not in a group' }
             : { run: () => setShowSidebar(true) }),
         },
-        { label: 'Clear selection', shortcut: '⎋', separatorBefore: true, run: () => setSelected(null) },
+        {
+          label: 'Create group from selection…',
+          separatorBefore: true,
+          // The name is asked for in the panel, where the files it would cover
+          // are listed: a group is worth seeing before it is worth naming.
+          ...(selection.boxes < 2
+            ? { disabledBecause: 'Shift-click two or more boxes first' }
+            : {
+                run: () => {
+                  setShowSidebar(true);
+                  setCreating(true);
+                },
+              }),
+        },
+        { label: 'Clear selection', shortcut: '⎋', separatorBefore: true, run: clearSelection },
       ],
     },
     {
@@ -663,7 +867,26 @@ export function App() {
           checked: params.get('since') === '10m',
           run: () => setFilter('since', params.get('since') === '10m' ? null : '10m'),
         },
+        {
+          label: 'Only changed vs git',
+          checked: onlyChanged,
+          // Without git there is nothing to differ from, so the filter would
+          // empty the diagram rather than narrow it.
+          ...(git === null
+            ? { disabledBecause: 'This project is not a git work tree' }
+            : { run: toggleChanged }),
+        },
         { label: 'Clear filters', run: clearFilters },
+        ...GIT_BASES.map(
+          (base, index): MenuItem => ({
+            label: base.menu,
+            checked: git?.requested === base.value,
+            ...(index === 0 ? { separatorBefore: true } : {}),
+            ...(git === null
+              ? { disabledBecause: 'This project is not a git work tree' }
+              : { run: () => changeBase(base.value) }),
+          }),
+        ),
         { label: 'Zoom in', separatorBefore: true, run: () => void flow.zoomIn() },
         { label: 'Zoom out', run: () => void flow.zoomOut() },
         { label: 'Fit to screen', shortcut: '⇧⌘F', run: () => void flow.fitView({ padding: 0.15 }) },
@@ -748,6 +971,45 @@ export function App() {
           </span>
         )}
 
+        {git !== null && (
+          <>
+            <button
+              type="button"
+              className="git-chip"
+              aria-pressed={onlyChanged}
+              onClick={toggleChanged}
+              // The count is git's, not the diagram's: it includes deleted files
+              // that have no box and untracked files the graph never parses.
+              title={
+                onlyChanged
+                  ? `Showing only what differs from ${git.base} — click to show every file`
+                  : `${git.changed === 1 ? '1 path differs' : `${git.changed} paths differ`} from ${
+                      git.base
+                    }${git.branch === null ? '' : ` on ${git.branch}`} — click to show only those`
+              }
+            >
+              <strong>{git.changed}</strong> changed vs {baseLabel}
+            </button>
+
+            {/* The base is a session setting, not a view. One server watches one
+                project and runs git against one base, so a base carried in the
+                URL would promise a per-tab comparison nothing can honour — the
+                same reason the project root is not in the URL either. */}
+            <select
+              className="git-base-select"
+              value={git.requested}
+              onChange={(event) => changeBase(event.target.value)}
+              title="What the working tree is compared against"
+            >
+              {GIT_BASES.map((base) => (
+                <option key={base.value} value={base.value}>
+                  {base.option}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
         {isFiltered && (
           <button type="button" className="filter-chip" onClick={clearFilters} title="Clear all filters">
             filtered ✕
@@ -816,6 +1078,13 @@ export function App() {
           nodeTypes={nodeTypes}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
+          onNodesChange={handleNodesChange}
+          // Shift is both halves of the gesture: shift-click adds a box, and
+          // shift-drag rubber-bands over several. ⌘ and Ctrl keep adding one
+          // too — React Flow starts the rubber band on the first pixel of a
+          // shift-drag, so a shift-click that twitches lands as an empty
+          // marquee, and the modifier every other canvas uses does not.
+          multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
           nodesDraggable={false}
           nodesConnectable={false}
           // Off, or d3-zoom handles the double click on the pane and stops it
@@ -848,6 +1117,7 @@ export function App() {
             onFocus={goTo}
             groups={clusters}
             onDecide={decide}
+            groupEditor={groupEditor}
             agentCalls={agentCalls}
           />
         )}

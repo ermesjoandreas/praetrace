@@ -32,17 +32,44 @@ export interface ClusterInput {
   /** 0 is an outer group; 1 sits inside one. */
   depth: number;
   parent: string | null;
+  /** Frame slack the group carries itself, from someone dragging its corner. */
+  padding?: { x: number; y: number };
+  /** 'manual' means a person drew this group; it changes who wins an overlap. */
+  origin?: 'manual';
 }
+
+/**
+ * The slack between the members and the frame drawn around them, when the group
+ * does not carry its own. An outer frame needs room for its own label to clear
+ * the inner frame that starts at the same height, which is the common case.
+ */
+export function defaultPadding(depth: number): { x: number; y: number } {
+  return depth === 0 ? { x: 38, y: 38 } : { x: 12, y: 12 };
+}
+
+/** A frame flush against its members stops reading as a container; one with
+ * acres of slack swallows its neighbours. Both ends of a drag are bounded. */
+export const MIN_PADDING = 4;
+export const MAX_PADDING = 120;
 
 /**
  * Frames that overlap badly say less than one frame would. The tighter, more
  * cohesive group keeps its frame; the other is dropped from the drawing — it is
  * still listed in the panel, so nothing is lost, only untangled.
+ *
+ * A hand-drawn group is ranked ahead of every derived one, whatever its
+ * cohesion. It arrives from `mergeGroups` with a cohesion of 0 — honestly, the
+ * import graph never claimed to find it — and ranking on that alone would drop
+ * a frame somebody deliberately drew in favour of one the algorithm guessed at.
+ * It still takes part in the contest rather than bypassing it, so the promise
+ * that two frames never overlap badly survives; only who wins changes.
  */
 function withoutOverlaps(
-  candidates: (ClusterBounds & { cohesion: number; area: number })[],
+  candidates: (ClusterBounds & { cohesion: number; area: number; manual: boolean })[],
 ): ClusterBounds[] {
-  const ranked = [...candidates].sort((a, b) => b.cohesion - a.cohesion || a.area - b.area);
+  const ranked = [...candidates].sort(
+    (a, b) => Number(b.manual) - Number(a.manual) || b.cohesion - a.cohesion || a.area - b.area,
+  );
   const kept: (ClusterBounds & { area: number })[] = [];
 
   for (const candidate of ranked) {
@@ -94,7 +121,14 @@ export function layoutNodes<T extends Node>(
   }
 
   const present = new Set(nodes.map((node) => node.id));
-  const drawn: { id: string; files: string[]; cohesion: number; depth: number }[] = [];
+  const drawn: {
+    id: string;
+    files: string[];
+    cohesion: number;
+    depth: number;
+    manual: boolean;
+    padding: { x: number; y: number } | undefined;
+  }[] = [];
   const registered = new Set<string>();
 
   // Outer groups first, so an inner one can be parented to a node that exists.
@@ -114,7 +148,14 @@ export function layoutNodes<T extends Node>(
       graph.setParent(key, CLUSTER_PREFIX + cluster.parent);
     }
 
-    drawn.push({ id: cluster.id, files: members, cohesion: cluster.cohesion, depth: cluster.depth });
+    drawn.push({
+      id: cluster.id,
+      files: members,
+      cohesion: cluster.cohesion,
+      depth: cluster.depth,
+      manual: cluster.origin === 'manual',
+      padding: cluster.padding,
+    });
   }
 
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
@@ -138,7 +179,7 @@ export function layoutNodes<T extends Node>(
   // space other clusters occupy in between. A box drawn tight around where the
   // members actually landed is far smaller and overlaps far less.
   const byId = new Map(placed.map((node) => [node.id, node]));
-  const candidates: (ClusterBounds & { cohesion: number; area: number })[] = [];
+  const candidates: (ClusterBounds & { cohesion: number; area: number; manual: boolean })[] = [];
 
   for (const cluster of drawn) {
     let left = Infinity;
@@ -156,18 +197,21 @@ export function layoutNodes<T extends Node>(
     }
     if (!Number.isFinite(left)) continue;
 
-    // An outer frame needs room for its own label to clear the inner frame
-    // that starts at the same height, which is the common case.
-    const padding = cluster.depth === 0 ? 38 : 12;
+    const padding = cluster.padding ?? defaultPadding(cluster.depth);
     const box = {
       id: cluster.id,
       depth: cluster.depth,
-      x: left - padding,
-      y: top - padding - LABEL_HEIGHT,
-      width: right - left + padding * 2,
-      height: bottom - top + padding * 2 + LABEL_HEIGHT,
+      x: left - padding.x,
+      y: top - padding.y - LABEL_HEIGHT,
+      width: right - left + padding.x * 2,
+      height: bottom - top + padding.y * 2 + LABEL_HEIGHT,
     };
-    candidates.push({ ...box, cohesion: cluster.cohesion, area: box.width * box.height });
+    candidates.push({
+      ...box,
+      cohesion: cluster.cohesion,
+      area: box.width * box.height,
+      manual: cluster.manual,
+    });
   }
 
   return { nodes: placed, clusters: withoutOverlaps(candidates) };

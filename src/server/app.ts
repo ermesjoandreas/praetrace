@@ -4,7 +4,18 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
-import { applyDecision, mergeGroups, readGroups, writeGroups } from '../project/groups.js';
+import {
+  applyDecision,
+  createManualGroup,
+  deleteGroup,
+  GROUP_COLORS,
+  mergeGroups,
+  readGroups,
+  updateGroup,
+  writeGroups,
+  type GroupColor,
+  type NamedGroup,
+} from '../project/groups.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
 import { describe } from '../view/detail.js';
 import {
@@ -23,6 +34,14 @@ import type { SessionHost } from './session.js';
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
 const MAX_DEPTH = 4;
+
+/**
+ * The bases worth offering. Not an arbitrary revision string: whatever is picked
+ * here reaches `git diff` on the machine, and the three that mean something to
+ * someone watching an agent work are "since I last committed", "the commit
+ * before that" and "everything on this branch".
+ */
+const GIT_BASES = ['HEAD', 'HEAD~1', 'branch'] as const;
 
 export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
@@ -63,7 +82,12 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
       root: session.root,
       // The cutoff for "changed recently" is computed per request, so a stored
       // spec does not freeze time at the moment it was set.
-      view: selectView(session.store.graph, toSpec(request.query as Record<string, unknown>), Date.now()),
+      view: selectView(
+        session.store.graph,
+        toSpec(request.query as Record<string, unknown>),
+        Date.now(),
+        session.gitStatus(),
+      ),
     };
   });
 
@@ -115,6 +139,41 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
       applyDecision(await readGroups(root), files, { name, state, id }),
     );
     return { ok: true };
+  });
+
+  app.post('/api/groups', async (request, reply) => {
+    const root = host.current().root;
+
+    let next: NamedGroup[];
+    try {
+      next = applyGroupAction(await readGroups(root), (request.body ?? {}) as GroupAction);
+    } catch (error) {
+      // Every helper refuses bad input by throwing, so one catch covers the lot.
+      return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
+    }
+    await writeGroups(root, next);
+
+    // Merged rather than returned raw: `mergeGroups` is what pairs a stored name
+    // with the cluster the graph currently finds, and it is the only shape the
+    // page has a state setter for.
+    const session = host.current();
+    return { clusters: mergeGroups(clusterFiles(session.store.graph), next) };
+  });
+
+  app.get('/api/git', async () => host.current().gitStatus() ?? { available: false });
+
+  app.post('/api/git-base', async (request, reply) => {
+    const body = (request.body ?? {}) as { base?: unknown };
+    const base = typeof body.base === 'string' ? body.base : '';
+    if (!(GIT_BASES as readonly string[]).includes(base)) {
+      return reply.code(400).send({ error: `base must be one of ${GIT_BASES.join(', ')}` });
+    }
+
+    const status = await host.current().setGitBase(base);
+    // Every view carries the status, so until a fresh one is pushed the badges
+    // on screen still describe the base that was just replaced.
+    hub.publish([]);
+    return status ?? { available: false };
   });
 
   app.get('/api/agent', async () => {
@@ -211,6 +270,9 @@ function toFilter(raw: Record<string, unknown>): ViewFilter {
     kinds: readList(raw['kinds'], NODE_KINDS),
     edgeKinds: edges.length > 0 ? edges : DEFAULT_EDGE_KINDS,
     sinceMs: typeof raw['since'] === 'string' ? parseDuration(raw['since']) : 0,
+    // A flag and nothing more: which base it compares against belongs to the
+    // session, so a URL cannot narrow the view to a base nobody is looking at.
+    onlyChanged: raw['changed'] === '1',
   };
 }
 
@@ -224,4 +286,88 @@ function readDepth(raw: unknown): number {
   const value = Number(raw);
   if (!Number.isInteger(value) || value < 1) return 1;
   return Math.min(value, MAX_DEPTH);
+}
+
+/** The wire shape of a group edit. Every field is user input. */
+interface GroupAction {
+  action?: unknown;
+  id?: unknown;
+  name?: unknown;
+  files?: unknown;
+  color?: unknown;
+  padding?: unknown;
+}
+
+/**
+ * One body, three verbs, and one place that decides what each of them means.
+ * The helpers in `groups.ts` are pure and throw on anything they will not
+ * store, so all that is left here is turning an unknown body into what they
+ * take — and a throw is a 400 either way.
+ */
+function applyGroupAction(stored: readonly NamedGroup[], body: GroupAction): NamedGroup[] {
+  const color = readColor(body.color);
+
+  switch (body.action) {
+    case 'create':
+      return createManualGroup(stored, {
+        name: typeof body.name === 'string' ? body.name : '',
+        files: readStrings(body.files),
+        ...(color === undefined ? {} : { color }),
+      });
+
+    case 'update': {
+      const name = typeof body.name === 'string' ? body.name.trim() : undefined;
+      // A rename to nothing leaves a frame with no label and no way to say which
+      // one to rename back.
+      if (name === '') throw new Error('a group needs a name');
+      const padding = readPadding(body.padding);
+      const files = body.files === undefined ? undefined : readStrings(body.files);
+
+      return updateGroup(stored, readId(body.id), {
+        ...(name === undefined ? {} : { name }),
+        ...(color === undefined ? {} : { color }),
+        ...(padding === undefined ? {} : { padding }),
+        ...(files === undefined ? {} : { files }),
+      });
+    }
+
+    case 'delete':
+      return deleteGroup(stored, readId(body.id));
+
+    default:
+      throw new Error("action must be 'create', 'update' or 'delete'");
+  }
+}
+
+function readId(raw: unknown): string {
+  if (typeof raw !== 'string' || raw === '') throw new Error('id must be a non-empty string');
+  return raw;
+}
+
+function readStrings(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((value: unknown): value is string => typeof value === 'string');
+}
+
+/**
+ * An unknown colour is refused rather than dropped: silently keeping the old one
+ * looks to whoever asked like the request worked and the palette is broken.
+ */
+function readColor(raw: unknown): GroupColor | undefined {
+  if (raw === undefined) return undefined;
+  // A readonly GroupColor[] has no includes(string) overload, hence the widening.
+  if (typeof raw !== 'string' || !(GROUP_COLORS as readonly string[]).includes(raw)) {
+    throw new Error(`colour must be one of ${GROUP_COLORS.join(', ')}`);
+  }
+  return raw as GroupColor;
+}
+
+function readPadding(raw: unknown): { x: number; y: number } | undefined {
+  if (raw === undefined) return undefined;
+  const { x, y } = (raw ?? {}) as { x?: unknown; y?: unknown };
+  // NaN passes a typeof check and then poisons every frame the layout draws.
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) {
+    throw new Error('padding must be { x, y } in pixels');
+  }
+  return { x, y };
 }

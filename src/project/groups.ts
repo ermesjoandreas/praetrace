@@ -3,6 +3,24 @@ import path from 'node:path';
 import type { Cluster } from '../view/cluster.js';
 
 /**
+ * The palette a group's frame can be drawn in. Keys, not CSS colours: the
+ * stylesheet owns what 'teal' looks like, and a hex value stored in the project
+ * would freeze one theme into a file that outlives it.
+ */
+export type GroupColor = 'slate' | 'blue' | 'teal' | 'green' | 'amber' | 'orange' | 'red' | 'violet';
+
+export const GROUP_COLORS: readonly GroupColor[] = [
+  'slate',
+  'blue',
+  'teal',
+  'green',
+  'amber',
+  'orange',
+  'red',
+  'violet',
+];
+
+/**
  * The names people give the groups the graph finds.
  *
  * Kept in the project rather than in application state: a name for a piece of
@@ -22,6 +40,20 @@ export interface NamedGroup {
   /** The members at the time it was named, for matching it again after drift. */
   files: string[];
   state: 'accepted' | 'rejected';
+  /**
+   * Absent means the graph found this group; 'manual' means a person drew it.
+   *
+   * Membership is graph-derived on purpose (see CLAUDE.md): a tidy grouping that
+   * does not match the imports is wrong in a way that looks authoritative. A
+   * hand-drawn group is allowed — someone may know something the import graph
+   * does not — but it carries this marker so it can never be mistaken for
+   * something the imports actually said.
+   */
+  origin?: 'manual';
+  /** A palette key, not a CSS colour. Absent means the depth default. */
+  color?: GroupColor;
+  /** Frame slack in px around the members. Absent means the layout default. */
+  padding?: { x: number; y: number };
 }
 
 export interface GroupSuggestion extends Omit<Cluster, 'children'> {
@@ -31,6 +63,12 @@ export interface GroupSuggestion extends Omit<Cluster, 'children'> {
   depth: number;
   /** The outer group this sits in, when it sits in one. */
   parent: string | null;
+  /** Absent means the graph found this group; 'manual' means a person drew it. */
+  origin?: 'manual';
+  /** A palette key, not a CSS colour. Absent means the depth default. */
+  color?: GroupColor;
+  /** Frame slack in px around the members. Absent means the layout default. */
+  padding?: { x: number; y: number };
 }
 
 /**
@@ -53,6 +91,10 @@ function comparable(a: readonly string[], b: readonly string[]): boolean {
 
 function matches(cluster: { id: string; files: readonly string[] }, group: NamedGroup): boolean {
   if (group.id !== undefined && group.id === cluster.id) return true;
+  // A hand-drawn group is not a cluster, so it must not be reachable by overlap:
+  // accepting a derived group that happens to cover the same files would quietly
+  // delete the one someone drew.
+  if (group.origin === 'manual') return false;
   return comparable(cluster.files, group.files) && overlap(cluster.files, group.files) >= MATCH_THRESHOLD;
 }
 
@@ -87,6 +129,23 @@ function overlap(a: readonly string[], b: readonly string[]): number {
 }
 
 /**
+ * Origin, colour and padding are how a group is drawn, decided separately from
+ * what it is called. Copied across by spreading rather than by assignment
+ * because `exactOptionalPropertyTypes` makes an absent field and one set to
+ * undefined two different things, and only the first survives a round trip
+ * through the JSON file.
+ */
+function presentationOf(
+  group: Pick<NamedGroup, 'origin' | 'color' | 'padding'>,
+): Pick<NamedGroup, 'origin' | 'color' | 'padding'> {
+  return {
+    ...(group.origin === undefined ? {} : { origin: group.origin }),
+    ...(group.color === undefined ? {} : { color: group.color }),
+    ...(group.padding === undefined ? {} : { padding: group.padding }),
+  };
+}
+
+/**
  * Merge what the graph found with what the user has already said about it.
  * Rejected groups stay in the answer, marked, so the page can keep them out of
  * sight without the next scan proposing them all over again.
@@ -95,6 +154,11 @@ function overlap(a: readonly string[], b: readonly string[]): number {
  * the panel, the MCP tools — wants to walk them in order rather than recurse.
  */
 export function mergeGroups(clusters: readonly Cluster[], stored: readonly NamedGroup[]): GroupSuggestion[] {
+  // Hand-drawn groups are held out of the matching entirely. They describe no
+  // cluster, so an overlap match would be wrong twice over: the cluster would
+  // wear a name nobody gave it, and the drawn group would be consumed and then
+  // vanish from the answer.
+  const derived = stored.filter((group) => group.origin !== 'manual');
   const taken = new Set<NamedGroup>();
   const out: GroupSuggestion[] = [];
 
@@ -105,11 +169,11 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
 
   const describeOne = (cluster: Cluster): Omit<GroupSuggestion, 'depth' | 'parent'> => {
     // An exact id wins outright; otherwise the closest comparable group.
-    let best = stored.find((group) => !taken.has(group) && group.id === cluster.id) ?? null;
+    let best = derived.find((group) => !taken.has(group) && group.id === cluster.id) ?? null;
 
     if (best === null) {
       let bestScore = MATCH_THRESHOLD;
-      for (const group of stored) {
+      for (const group of derived) {
         if (taken.has(group) || !comparable(cluster.files, group.files)) continue;
         const score = overlap(cluster.files, group.files);
         if (score >= bestScore) {
@@ -124,12 +188,31 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
     const { children: _children, ...flat } = cluster;
     return {
       ...flat,
+      ...(best === null ? {} : presentationOf(best)),
       name: best?.name ?? null,
       state: best?.state ?? 'suggested',
     };
   };
 
   for (const cluster of clusters) walk(cluster, 0, null);
+
+  // Appended rather than woven in: a drawn group has no cohesion to report and
+  // no place in the nesting the clustering found, so it is its own outer group.
+  for (const group of stored) {
+    if (group.origin !== 'manual') continue;
+    out.push({
+      id: group.id ?? manualId(group.name),
+      files: [...group.files],
+      cohesion: 0,
+      depth: 0,
+      parent: null,
+      name: group.name,
+      state: group.state,
+      ...presentationOf(group),
+      origin: 'manual',
+    });
+  }
+
   return out;
 }
 
@@ -144,15 +227,104 @@ export function applyDecision(
   decision: { name: string; state: NamedGroup['state']; id?: string },
 ): NamedGroup[] {
   const cluster = { id: decision.id ?? '', files };
+  const previous = stored.find((group) => matches(cluster, group));
   const kept = stored.filter((group) => !matches(cluster, group));
 
   return [
     ...kept,
     {
+      // How the group is drawn was decided elsewhere, and renaming it is not a
+      // decision about its colour. Rebuilding the entry from the decision alone
+      // silently reset both.
+      ...(previous === undefined ? {} : presentationOf(previous)),
       name: decision.name,
       files: [...files],
       state: decision.state,
       ...(decision.id === undefined ? {} : { id: decision.id }),
     },
   ];
+}
+
+/**
+ * A stable id for a hand-drawn group, derived from its first name. Prefixed so
+ * it can never collide with a cluster id, which is a file path and a size.
+ */
+export function manualId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  return `manual:${slug === '' ? 'group' : slug}`;
+}
+
+/**
+ * Draw a group by hand. Marked 'manual' at birth, because from here on nothing
+ * downstream may present it as something the import graph found.
+ *
+ * The id is taken from the name only once, at creation: a rename must not
+ * change who the group is, or every name stored against it would be orphaned.
+ */
+export function createManualGroup(
+  stored: readonly NamedGroup[],
+  input: { name: string; files: string[]; color?: GroupColor },
+): NamedGroup[] {
+  const name = input.name.trim();
+  if (name === '') throw new Error('a group needs a name');
+  if (input.files.length < 2) throw new Error('a group needs at least two files');
+
+  const used = new Set(stored.map((group) => group.id));
+  const base = manualId(name);
+  let id = base;
+  for (let n = 2; used.has(id); n += 1) id = `${base}-${n}`;
+
+  return [
+    ...stored,
+    {
+      name,
+      id,
+      files: [...input.files],
+      state: 'accepted',
+      origin: 'manual',
+      ...(input.color === undefined ? {} : { color: input.color }),
+    },
+  ];
+}
+
+/**
+ * Patch one group by id. Name, colour and padding are presentation and may be
+ * changed on anything — naming a group the graph found is already the point of
+ * the feature. Membership may not: it comes from the imports, and the one
+ * exception is a group that never claimed to.
+ */
+export function updateGroup(
+  stored: readonly NamedGroup[],
+  id: string,
+  patch: { name?: string; color?: GroupColor; padding?: { x: number; y: number }; files?: string[] },
+): NamedGroup[] {
+  const target = stored.find((group) => group.id === id);
+  if (target === undefined) throw new Error(`no group with id ${id}`);
+  if (patch.files !== undefined && target.origin !== 'manual') {
+    throw new Error('membership comes from the import graph; only a manual group can be given files');
+  }
+
+  return stored.map((group) =>
+    group.id === id
+      ? {
+          ...group,
+          ...(patch.name === undefined ? {} : { name: patch.name }),
+          ...(patch.color === undefined ? {} : { color: patch.color }),
+          ...(patch.padding === undefined ? {} : { padding: patch.padding }),
+          ...(patch.files === undefined ? {} : { files: [...patch.files] }),
+        }
+      : group,
+  );
+}
+
+/**
+ * Forget a group entirely. Distinct from rejecting one: a rejected group is
+ * remembered so the next scan does not propose it again, while a drawn group
+ * that is deleted was never proposed by anything and leaves nothing behind.
+ */
+export function deleteGroup(stored: readonly NamedGroup[], id: string): NamedGroup[] {
+  return stored.filter((group) => group.id !== id);
 }

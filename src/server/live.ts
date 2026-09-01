@@ -1,3 +1,4 @@
+import type { GitStatus } from '../git/types.js';
 import type { GraphStore } from '../graph/store.js';
 import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
@@ -37,7 +38,9 @@ export interface LiveHub {
   clientCount(): number;
 }
 
-export function createLiveHub(getSession: () => { root: string; store: GraphStore }): LiveHub {
+export function createLiveHub(
+  getSession: () => { root: string; store: GraphStore; gitStatus(): GitStatus | null },
+): LiveHub {
   const clients = new Map<LiveSocket, ViewSpec>();
 
   const push = (
@@ -54,7 +57,7 @@ export function createLiveHub(getSession: () => { root: string; store: GraphStor
         root: session.root,
         // Recomputed per push, so a "changed in the last 5 minutes" filter keeps
         // meaning five minutes from now rather than five minutes from when it was set.
-        view: selectView(session.store.graph, spec, Date.now()),
+        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus()),
         changedFiles,
       }),
     );

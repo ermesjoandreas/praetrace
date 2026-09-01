@@ -1,7 +1,11 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import type { GitFileStatus, GitStatus } from '../../src/git/types.js';
+import type { GroupColor } from '../../src/project/groups.js';
 import type { ViewGraph } from '../../src/view/types.js';
 
-export type { ViewGraph };
+// Types only. `groups.ts` reaches for node:fs, so nothing may import a value
+// from it here — the import disappears at compile time, the module never does.
+export type { GitFileStatus, GitStatus, GroupColor, ViewGraph };
 export type ViewMember = ViewGraph['nodes'][number]['members'][number];
 
 export interface ViewResponse {
@@ -198,6 +202,32 @@ export async function searchGraph(query: string): Promise<SearchHit[]> {
   return ((await response.json()) as { hits: SearchHit[] }).hits;
 }
 
+/**
+ * What the working tree looks like against the base ref. A project that is not
+ * a git work tree is the ordinary case, not a failure, so it answers null
+ * rather than throwing: the page simply has no git to show.
+ */
+export async function fetchGit(): Promise<GitStatus | null> {
+  const server = await serverOrigin();
+  const response = await fetch(`${server}/api/git`);
+  if (!response.ok) throw new Error(`git status failed: HTTP ${response.status}`);
+  const body = (await response.json()) as GitStatus & { available?: false };
+  return body.available === false ? null : body;
+}
+
+/** Which commit the working tree is compared against: HEAD, HEAD~1 or branch. */
+export async function setGitBase(base: string): Promise<GitStatus | null> {
+  const server = await serverOrigin();
+  const response = await fetch(`${server}/api/git-base`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ base }),
+  });
+  const body = (await response.json()) as GitStatus & { available?: false; error?: string };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return body.available === false ? null : body;
+}
+
 export interface GroupSuggestion {
   id: string;
   files: string[];
@@ -207,6 +237,12 @@ export interface GroupSuggestion {
   /** 0 is an outer group; 1 sits inside one. */
   depth: number;
   parent: string | null;
+  /** Absent means the graph found this group; 'manual' means a person drew it. */
+  origin?: 'manual';
+  /** A palette key, not a CSS colour. Absent means the depth default. */
+  color?: GroupColor;
+  /** Frame slack in px around the members. Absent means the layout default. */
+  padding?: { x: number; y: number };
 }
 
 export async function fetchClusters(): Promise<GroupSuggestion[]> {
@@ -231,6 +267,24 @@ export async function decideCluster(
     const body = (await response.json()) as { error?: string };
     throw new Error(body.error ?? `HTTP ${response.status}`);
   }
+}
+
+/**
+ * Create, patch or drop one group. The server answers with the whole freshly
+ * merged list rather than the one entry that changed, because a hand-drawn
+ * group can displace a derived one — so the page replaces its list wholesale
+ * instead of trying to reconcile a single row against a shape it no longer has.
+ */
+export async function groupAction(body: unknown): Promise<GroupSuggestion[]> {
+  const server = await serverOrigin();
+  const response = await fetch(`${server}/api/groups`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const result = (await response.json()) as { clusters?: GroupSuggestion[]; error?: string };
+  if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
+  return result.clusters ?? [];
 }
 
 export interface AgentCall {

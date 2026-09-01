@@ -1,7 +1,9 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, type GraphStore } from '../graph/store.js';
 import { createParserPool } from '../parser/pool.js';
+import { readGitStatus } from '../project/git.js';
 import { scanProject } from '../project/scan.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
@@ -33,6 +35,14 @@ export interface ChangeEntry {
 const MAX_HISTORY = 200;
 
 /**
+ * A commit changes the status of every file without touching one, and the
+ * watcher cannot see it happen: `walk.ts` ignores every dotted directory, so
+ * `.git` is never watched. A poll is the only way to notice, and three seconds
+ * is well under the time it takes to look back at the window.
+ */
+const GIT_POLL_MS = 3000;
+
+/**
  * Everything scoped to one project root: the graph, the workers that build it,
  * and the watcher feeding it.
  *
@@ -51,12 +61,21 @@ export interface Session {
   /** What the agent has asked, newest last. */
   agentCalls(): readonly AgentCall[];
   recordAgentCall(call: AgentCall): void;
+  /** The working tree against the base, or null when this is not a repository. */
+  gitStatus(): GitStatus | null;
+  /** What was asked for, which is not always what git could resolve. */
+  gitBase(): string;
+  setGitBase(base: string): Promise<GitStatus | null>;
+  /** Re-reads git; true when the answer differs from the one being served. */
+  refreshGit(): Promise<boolean>;
   close(): Promise<void>;
 }
 
 export interface SessionHandlers {
   onApplied: (changedFiles: string[]) => void;
   onError: (message: string) => void;
+  /** Something outside the working tree moved — a commit, a checkout, a stash. */
+  onGitChanged: () => void;
 }
 
 async function openSession(root: string, handlers: SessionHandlers): Promise<Session> {
@@ -70,6 +89,49 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   const history: ChangeEntry[] = [];
   const agent: AgentCall[] = [];
 
+  // Read here rather than on the first request: the first view a client is sent
+  // should already know what differs from the base. A project that is not a
+  // repository answers null, which is an ordinary answer and not a failure to
+  // open — a scratch directory is exactly as valid a project as this one.
+  let requested = 'HEAD';
+  let status = await readGitStatus(root, requested);
+  let key = statusKey(status);
+  let closed = false;
+
+  /**
+   * Reads are queued behind one another rather than sharing the one in flight:
+   * `setGitBase` changes the question being asked, so handing it the answer
+   * already on its way would report the old base under the new name.
+   */
+  let reading: Promise<boolean> = Promise.resolve(false);
+
+  function refreshGit(): Promise<boolean> {
+    reading = reading.then(readGit);
+    return reading;
+  }
+
+  async function readGit(): Promise<boolean> {
+    const next = await readGitStatus(root, requested);
+    // The session can be closed while git is answering — a project switch tears
+    // it down mid read — and a status nobody will serve is not a change.
+    if (closed) return false;
+
+    const nextKey = statusKey(next);
+    if (nextKey === key) return false;
+    status = next;
+    key = nextKey;
+    return true;
+  }
+
+  const poll = setInterval(() => {
+    void refreshGit().then((changed) => {
+      if (changed && !closed) handlers.onGitChanged();
+    });
+  }, GIT_POLL_MS);
+  // Nothing about a poll is worth keeping the process alive for: the CLI has to
+  // exit on ^C and the sidecar has to go away when the shell closes its stdin.
+  poll.unref();
+
   const updater = createUpdater({
     store,
     pool,
@@ -78,7 +140,14 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       // burst still sees the change it just missed.
       history.push({ at: Date.now(), files: changedFiles });
       if (history.length > MAX_HISTORY) history.shift();
-      handlers.onApplied(changedFiles);
+      // git is re-read before the publish, not after it: the view about to be
+      // sent carries each file's status, and one computed from the previous
+      // read would show the edit without showing that it is now a change.
+      void refreshGit().then(() => {
+        // The updater refuses to publish after close, but the await above
+        // reopens that window.
+        if (!closed) handlers.onApplied(changedFiles);
+      });
     },
     onError: handlers.onError,
   });
@@ -94,11 +163,35 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       agent.push(call);
       if (agent.length > MAX_HISTORY) agent.shift();
     },
+    gitStatus: () => status,
+    gitBase: () => requested,
+    async setGitBase(base) {
+      requested = base;
+      await refreshGit();
+      return status;
+    },
+    refreshGit,
     async close() {
+      closed = true;
+      clearInterval(poll);
       updater.close();
       await Promise.allSettled([watcher.close(), pool.close()]);
     },
   };
+}
+
+/**
+ * Whether two reads say the same thing. Identity cannot answer that — every read
+ * builds a fresh object — and without an answer the poll would push a view to
+ * every client every three seconds.
+ *
+ * The entries are sorted because their order is git's output order, which is not
+ * something git promises; a reordering is not a change anyone made.
+ */
+function statusKey(status: GitStatus | null): string {
+  if (!status) return '';
+  const files = Object.entries(status.files).sort(([a], [b]) => (a < b ? -1 : 1));
+  return JSON.stringify([status.base, status.requested, status.branch, files]);
 }
 
 export interface SessionHost {
