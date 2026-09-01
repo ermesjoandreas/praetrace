@@ -12,7 +12,7 @@ import {
   parseDuration,
   type ViewFilter,
 } from '../view/filter.js';
-import { clusterFiles } from '../view/cluster.js';
+import { clusterFiles, identify } from '../view/cluster.js';
 import { search } from '../view/search.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -91,7 +91,12 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
   });
 
   app.post('/api/clusters', async (request, reply) => {
-    const body = (request.body ?? {}) as { files?: unknown; name?: unknown; state?: unknown };
+    const body = (request.body ?? {}) as {
+      files?: unknown;
+      name?: unknown;
+      state?: unknown;
+      id?: unknown;
+    };
     const files = Array.isArray(body.files) ? body.files.filter((f) => typeof f === 'string') : [];
     const state = body.state === 'rejected' ? 'rejected' : 'accepted';
     const name = typeof body.name === 'string' ? body.name.trim() : '';
@@ -102,7 +107,13 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     }
 
     const root = host.current().root;
-    await writeGroups(root, applyDecision(await readGroups(root), files, { name, state }));
+    // Derived rather than demanded: a caller that knows only the file list —
+    // the MCP tools, for one — should not have to carry an id as well.
+    const id = typeof body.id === 'string' ? body.id : identify([...files].sort());
+    await writeGroups(
+      root,
+      applyDecision(await readGroups(root), files, { name, state, id }),
+    );
     return { ok: true };
   });
 

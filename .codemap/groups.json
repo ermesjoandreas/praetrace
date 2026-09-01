@@ -1,6 +1,100 @@
 {
   "groups": [
     {
+      "name": "Presentation",
+      "files": [
+        "src/graph/types.ts",
+        "src/project/groups.ts",
+        "src/project/hook-install.ts",
+        "src/server/app.ts",
+        "src/server/live.ts",
+        "src/view/cluster.ts",
+        "src/view/detail.ts",
+        "src/view/filter.ts",
+        "src/view/search.ts",
+        "src/view/select.ts",
+        "src/view/types.ts",
+        "web/src/AgentStatus.tsx",
+        "web/src/App.tsx",
+        "web/src/BoxNode.tsx",
+        "web/src/GroupNode.tsx",
+        "web/src/HookBanner.tsx",
+        "web/src/MenuBar.tsx",
+        "web/src/ProjectMenu.tsx",
+        "web/src/SearchPalette.tsx",
+        "web/src/Sidebar.tsx",
+        "web/src/Welcome.tsx",
+        "web/src/api.ts",
+        "web/src/layout.ts",
+        "web/src/main.tsx"
+      ],
+      "state": "accepted",
+      "id": "src/graph/types.ts~24"
+    },
+    {
+      "name": "Frontend",
+      "files": [
+        "web/src/AgentStatus.tsx",
+        "web/src/App.tsx",
+        "web/src/BoxNode.tsx",
+        "web/src/GroupNode.tsx",
+        "web/src/HookBanner.tsx",
+        "web/src/MenuBar.tsx",
+        "web/src/ProjectMenu.tsx",
+        "web/src/SearchPalette.tsx",
+        "web/src/Sidebar.tsx",
+        "web/src/Welcome.tsx",
+        "web/src/api.ts",
+        "web/src/layout.ts",
+        "web/src/main.tsx"
+      ],
+      "state": "accepted",
+      "id": "web/src/AgentStatus.tsx~13"
+    },
+    {
+      "name": "HTTP surface",
+      "files": [
+        "src/graph/types.ts",
+        "src/project/groups.ts",
+        "src/project/hook-install.ts",
+        "src/server/app.ts",
+        "src/view/cluster.ts",
+        "src/view/detail.ts",
+        "src/view/search.ts"
+      ],
+      "state": "accepted",
+      "id": "src/graph/types.ts~7"
+    },
+    {
+      "name": "View selection",
+      "files": [
+        "src/server/live.ts",
+        "src/view/filter.ts",
+        "src/view/select.ts",
+        "src/view/types.ts"
+      ],
+      "state": "accepted",
+      "id": "src/server/live.ts~4"
+    },
+    {
+      "name": "Graph engine",
+      "files": [
+        "src/cli/index.ts",
+        "src/graph/resolve.ts",
+        "src/graph/store.ts",
+        "src/parser/pool.ts",
+        "src/parser/types.ts",
+        "src/project/hook.ts",
+        "src/project/scan.ts",
+        "src/project/updater.ts",
+        "src/project/walk.ts",
+        "src/project/watch.ts",
+        "src/server/session.ts"
+      ],
+      "state": "accepted",
+      "id": "src/cli/index.ts~11"
+    },
+    {
       "name": "Parsing",
       "files": [
         "src/cli/index.ts",
@@ -12,36 +106,18 @@
         "src/project/updater.ts",
         "src/server/session.ts"
       ],
-      "state": "accepted"
+      "state": "accepted",
+      "id": "src/cli/index.ts~8"
     },
     {
-      "name": "Frontend",
+      "name": "File watching",
       "files": [
-        "web/src/App.tsx",
-        "web/src/BoxNode.tsx",
-        "web/src/GroupNode.tsx",
-        "web/src/HookBanner.tsx",
-        "web/src/ProjectMenu.tsx",
-        "web/src/SearchPalette.tsx",
-        "web/src/Sidebar.tsx",
-        "web/src/api.ts",
-        "web/src/layout.ts",
-        "web/src/main.tsx"
+        "src/project/hook.ts",
+        "src/project/walk.ts",
+        "src/project/watch.ts"
       ],
-      "state": "accepted"
-    },
-    {
-      "name": "",
-      "files": [
-        "src/graph/types.ts",
-        "src/project/groups.ts",
-        "src/project/hook-install.ts",
-        "src/server/app.ts",
-        "src/view/cluster.ts",
-        "src/view/detail.ts",
-        "src/view/search.ts"
-      ],
-      "state": "rejected"
+      "state": "accepted",
+      "id": "src/project/hook.ts~3"
     }
   ]
 }

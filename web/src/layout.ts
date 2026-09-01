@@ -156,8 +156,9 @@ export function layoutNodes<T extends Node>(
     }
     if (!Number.isFinite(left)) continue;
 
-    // An outer frame needs room to sit clear of the inner ones it contains.
-    const padding = cluster.depth === 0 ? 26 : 12;
+    // An outer frame needs room for its own label to clear the inner frame
+    // that starts at the same height, which is the common case.
+    const padding = cluster.depth === 0 ? 38 : 12;
     const box = {
       id: cluster.id,
       depth: cluster.depth,

@@ -12,7 +12,14 @@ import type { Cluster } from '../view/cluster.js';
  */
 export interface NamedGroup {
   name: string;
-  /** The members at the time it was named, for matching it again later. */
+  /**
+   * The cluster id at the time of naming. Matched first, because it carries the
+   * group's size and so tells a group apart from the one nested inside it —
+   * which membership overlap cannot: a child of 8 shares 73% of an 11-file
+   * parent, and naming one used to overwrite the other.
+   */
+  id?: string;
+  /** The members at the time it was named, for matching it again after drift. */
   files: string[];
   state: 'accepted' | 'rejected';
 }
@@ -32,6 +39,22 @@ export interface GroupSuggestion extends Omit<Cluster, 'children'> {
  * groups that happen to share a file.
  */
 const MATCH_THRESHOLD = 0.5;
+
+/**
+ * Overlap alone cannot separate a group from the one inside it, so a match also
+ * has to be about the same size. A parent and child never are.
+ */
+const MIN_SIZE_RATIO = 0.75;
+
+function comparable(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length === 0 || b.length === 0) return false;
+  return Math.min(a.length, b.length) / Math.max(a.length, b.length) >= MIN_SIZE_RATIO;
+}
+
+function matches(cluster: { id: string; files: readonly string[] }, group: NamedGroup): boolean {
+  if (group.id !== undefined && group.id === cluster.id) return true;
+  return comparable(cluster.files, group.files) && overlap(cluster.files, group.files) >= MATCH_THRESHOLD;
+}
 
 function groupsPath(root: string): string {
   return path.join(root, '.codemap', 'groups.json');
@@ -81,15 +104,18 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
   };
 
   const describeOne = (cluster: Cluster): Omit<GroupSuggestion, 'depth' | 'parent'> => {
-    let best: NamedGroup | null = null;
-    let bestScore = MATCH_THRESHOLD;
+    // An exact id wins outright; otherwise the closest comparable group.
+    let best = stored.find((group) => !taken.has(group) && group.id === cluster.id) ?? null;
 
-    for (const group of stored) {
-      if (taken.has(group)) continue;
-      const score = overlap(cluster.files, group.files);
-      if (score >= bestScore) {
-        best = group;
-        bestScore = score;
+    if (best === null) {
+      let bestScore = MATCH_THRESHOLD;
+      for (const group of stored) {
+        if (taken.has(group) || !comparable(cluster.files, group.files)) continue;
+        const score = overlap(cluster.files, group.files);
+        if (score >= bestScore) {
+          best = group;
+          bestScore = score;
+        }
       }
     }
 
@@ -107,12 +133,26 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
   return out;
 }
 
-/** Record a decision, replacing whatever was previously said about this group. */
+/**
+ * Record a decision, replacing whatever was previously said about *this* group
+ * and nothing else. The size test is what stops naming a nested group from
+ * wiping the name off the group it sits in.
+ */
 export function applyDecision(
   stored: readonly NamedGroup[],
   files: readonly string[],
-  decision: { name: string; state: NamedGroup['state'] },
+  decision: { name: string; state: NamedGroup['state']; id?: string },
 ): NamedGroup[] {
-  const kept = stored.filter((group) => overlap(group.files, files) < MATCH_THRESHOLD);
-  return [...kept, { name: decision.name, files: [...files], state: decision.state }];
+  const cluster = { id: decision.id ?? '', files };
+  const kept = stored.filter((group) => !matches(cluster, group));
+
+  return [
+    ...kept,
+    {
+      name: decision.name,
+      files: [...files],
+      state: decision.state,
+      ...(decision.id === undefined ? {} : { id: decision.id }),
+    },
+  ];
 }

@@ -163,6 +163,8 @@ export function App() {
 
         if (parsed.type === 'agent') {
           setAgentCalls((previous) => [parsed.call, ...previous].slice(0, 200));
+          // Naming changes what is on screen; the other tools only read.
+          if (parsed.call.tool === 'name_group') setRevision((n) => n + 1);
           // A path target is a box on screen; a search term is not.
           if (parsed.call.target?.includes('/')) setAgentLooking([parsed.call.target]);
           return;

@@ -178,7 +178,9 @@ function partition(
     .sort((a, b) => b.files.length - a.files.length || a.id.localeCompare(b.id));
 }
 
-function identify(files: readonly string[]): string {
+/** The id a group of these files would have. Exported so the one place that
+ * records a decision derives it the same way, rather than reinventing it. */
+export function identify(files: readonly string[]): string {
   return `${files[0] ?? ''}~${files.length}`;
 }
 
