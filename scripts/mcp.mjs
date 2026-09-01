@@ -11,13 +11,38 @@
 // own, and finds it through the same port file the Claude Code hook uses, since
 // the OS assigns that port fresh on every launch.
 
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 
-const projectRoot = process.env['CLAUDE_PROJECT_DIR'] ?? process.cwd();
+/**
+ * Which project this speaks for.
+ *
+ * CLAUDE_PROJECT_DIR is not expanded inside .mcp.json's `args`, so the config
+ * cannot pass it and the variable is only sometimes in the environment. Falling
+ * back through the working directory and then this script's own repository means
+ * the server works however it was started.
+ */
+function findProjectRoot() {
+  const candidates = [
+    process.env['CLAUDE_PROJECT_DIR'],
+    process.cwd(),
+    // scripts/mcp.mjs -> the repository holding it.
+    path.dirname(path.dirname(fileURLToPath(import.meta.url))),
+  ].filter((value) => typeof value === 'string' && value !== '');
+
+  // A directory that already has a port file is certainly the right one.
+  return (
+    candidates.find((candidate) => existsSync(path.join(candidate, '.claude', 'codemap.port'))) ??
+    candidates[0]
+  );
+}
+
+const projectRoot = findProjectRoot();
 
 async function serverOrigin() {
   const portFile = path.join(projectRoot, '.claude', 'codemap.port');
