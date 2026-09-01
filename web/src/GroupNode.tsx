@@ -59,6 +59,25 @@ const COLOR_LABELS: Record<GroupColor, string> = {
  * membership did not come from the imports, and a frame that looks exactly like
  * a derived one would claim an authority the graph never gave it.
  */
+/**
+ * Drawn rather than an emoji. An emoji is full-colour and sized by the font, so
+ * it sat in this chrome as a bright sticker that ignored the group's own colour
+ * — this takes currentColor and therefore the frame's.
+ */
+function LockIcon({ locked }: { locked: boolean }) {
+  return (
+    <svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true">
+      <path
+        d={locked ? 'M4 5.6V3.9a2 2 0 1 1 4 0v1.7' : 'M4 5.6V3.9a2 2 0 1 1 4 0'}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.1"
+      />
+      <rect x="2.1" y="5.5" width="7.8" height="5.2" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function GroupNode({ data }: NodeProps<GroupNodeType>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.name ?? '');
@@ -147,7 +166,7 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
             }
             onClick={() => data.onLock(!data.locked)}
           >
-            {data.locked ? '🔒' : '🔓'}
+            <LockIcon locked={data.locked} />
           </button>
         )}
 

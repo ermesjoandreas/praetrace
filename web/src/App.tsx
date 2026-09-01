@@ -923,7 +923,30 @@ export function App() {
   }, [missed, navigate]);
 
   const params = new URLSearchParams(search);
-  const isFiltered = ['hide', 'only', 'kinds', 'since', 'changed'].some((key) => params.has(key));
+
+  /**
+   * One chip per active filter, each saying what it does and removing only
+   * itself. A single "filtered" chip named the state without naming the cause,
+   * so the only way to find out what had been narrowed was to clear everything
+   * and watch what came back.
+   */
+  const activeFilters: { key: string; label: string }[] = [
+    params.has('changed') ? { key: 'changed', label: `changed vs ${baseLabel}` } : null,
+    params.get('only') ? { key: 'only', label: `only ${params.get('only') ?? ''}` } : null,
+    params.get('hide') ? { key: 'hide', label: `hiding ${params.get('hide') ?? ''}` } : null,
+    params.get('kinds')
+      ? { key: 'kinds', label: (params.get('kinds') ?? '').split(',').join(' + ') }
+      : null,
+    params.get('since') ? { key: 'since', label: `last ${params.get('since') ?? ''}` } : null,
+  ].filter((chip): chip is { key: string; label: string } => chip !== null);
+
+  const isFiltered = activeFilters.length > 0;
+
+  const dropFilter = (key: string) => {
+    const next = new URLSearchParams(window.location.search);
+    next.delete(key);
+    navigate(next);
+  };
   const empty = view !== undefined && view.nodes.length === 0;
   /**
    * Nothing to draw is the moment to say what the app is for — unless a filter
@@ -1306,9 +1329,21 @@ export function App() {
           </div>
         )}
 
-        {isFiltered && (
-          <button type="button" className="filter-chip" onClick={clearFilters} title="Clear all filters">
-            filtered ✕
+        {activeFilters.map((chip) => (
+          <button
+            key={chip.key}
+            type="button"
+            className="filter-chip"
+            onClick={() => dropFilter(chip.key)}
+            title={`Stop filtering by ${chip.label}`}
+          >
+            {chip.label} <span aria-hidden="true">✕</span>
+          </button>
+        ))}
+
+        {activeFilters.length > 1 && (
+          <button type="button" className="filter-clear" onClick={clearFilters} title="Clear every filter">
+            clear all
           </button>
         )}
 
