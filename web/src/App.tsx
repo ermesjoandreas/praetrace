@@ -24,6 +24,7 @@ import {
   fetchExplanations,
   cancelExplanations,
   fetchGit,
+  fetchSuggestions,
   fetchSymbol,
   forgetExplanation,
   fetchAgentCalls,
@@ -39,6 +40,7 @@ import {
   openInEditor,
   rememberProject,
   requestExplanations,
+  requestSuggestions,
   setGitBase,
   switchProject,
   type AgentCall,
@@ -52,6 +54,7 @@ import {
   type LogResponse,
   type RepoInfo,
   type StoredExplanation,
+  type Suggestion,
   type SymbolLinks,
   type GroupSuggestion,
   type LanguageReport,
@@ -64,7 +67,8 @@ import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
-import { Sidebar, type GroupEditor } from './Sidebar';
+import { Sidebar } from './Sidebar';
+import { Categories, type GroupEditor } from './Categories';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { Activity } from './Activity';
@@ -92,6 +96,9 @@ function edgeParam(calls: boolean, associates: boolean): string | null {
   const extra = [calls ? 'calls' : '', associates ? 'associates' : ''].filter(Boolean);
   return extra.length === 0 ? null : [...BASE_EDGES, ...extra].join(',');
 }
+
+/** What a frozen page shows under its categories: a name is for the live ones. */
+const NO_SUGGESTIONS: ReadonlyMap<string, Suggestion> = new Map();
 
 /** How often to ask a run in flight whether it has finished. */
 const EXPLAIN_POLL_MS = 3000;
@@ -131,6 +138,16 @@ interface ExplainDeltaMessage {
   text: string;
 }
 
+/**
+ * Names were written, by anybody — a press here, or the agent through MCP.
+ * Carries nothing: the page refetches the clusters, which is the only reader
+ * that knows how to merge a name with the cluster it now belongs to. Sent to
+ * every socket, frozen ones too, because a name lives outside the commit.
+ */
+interface GroupsMessage {
+  type: 'groups';
+}
+
 interface ExplainMessage {
   type: 'explain';
   run: ExplainRun;
@@ -163,7 +180,7 @@ export function App() {
    * are what a group gets drawn around.
    */
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
-  /** The name field for a group about to be drawn, in the panel. */
+  /** The name field for a category about to be drawn, in the Categories section. */
   const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -313,6 +330,30 @@ export function App() {
   const [agentLooking, setAgentLooking] = useState<string[]>([]);
   const flow = useReactFlow();
   const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
+  /**
+   * Bumped when the server says groups.json changed under it — the agent named
+   * a category through MCP, or another tab did. Its own counter rather than
+   * `revision`: a name moves no file the graph reads, so nothing else on the
+   * page has to be re-read for it, and it arrives while frozen too, because a
+   * name lives outside the commit.
+   */
+  const [groupsRevision, setGroupsRevision] = useState(0);
+  /**
+   * What a model guessed the unnamed categories are called, by cluster id.
+   *
+   * Session state on both sides. Decision 5: nothing here reaches groups.json
+   * until a person presses accept, which goes through `decide` like a name
+   * typed by hand. A cluster id embeds its member count, so a guess simply
+   * stops matching anything the moment membership drifts — which is right,
+   * because it was a guess about a different set of files.
+   */
+  const [suggestions, setSuggestions] = useState<ReadonlyMap<string, Suggestion>>(() => new Map());
+  /** A run is in flight. It is a minute of subprocess, so it is said out loud. */
+  const [suggesting, setSuggesting] = useState(false);
+  /** Why the last press produced no names, in the server's own wording. */
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  /** What the last run that produced names cost. Shown in the lightbulb's tooltip, not on the section. */
+  const [suggestCost, setSuggestCost] = useState<{ costUsd: number; ms: number } | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   /** Files the view covered before the update now being processed. */
@@ -413,7 +454,15 @@ export function App() {
           | LiveMessage
           | AgentMessage
           | ExplainMessage
-          | ExplainDeltaMessage;
+          | ExplainDeltaMessage
+          | GroupsMessage;
+
+        // Names were written, by whoever. The clusters effect below re-reads
+        // them for the commit on screen; nothing else needs to move.
+        if (parsed.type === 'groups') {
+          setGroupsRevision((n) => n + 1);
+          return;
+        }
 
         // The run that ended is the one the poll below would have found three
         // seconds later; the poll stays, because it is the only thing that
@@ -430,8 +479,9 @@ export function App() {
 
         if (parsed.type === 'agent') {
           setAgentCalls((previous) => [parsed.call, ...previous].slice(0, 200));
-          // Naming changes what is on screen; the other tools only read.
-          if (parsed.call.tool === 'name_group') setRevision((n) => n + 1);
+          // Naming changes what is on screen, but this message arrives before
+          // the name is written; the `groups` message above is the one that
+          // arrives after, so nothing is refetched here.
           // A path target is a box on screen; a search term is not.
           if (parsed.call.target?.includes('/')) setAgentLooking([parsed.call.target]);
           return;
@@ -451,6 +501,11 @@ export function App() {
           setError(null);
           // A path from the previous project means nothing here.
           setSelected(null);
+          // Nor does a name guessed for one of its clusters. The effect keyed
+          // on the root asks the new session for its own, which is none.
+          setSuggestions(new Map());
+          setSuggestError(null);
+          setSuggestCost(null);
           setRevision((n) => n + 1);
           return;
         }
@@ -568,7 +623,19 @@ export function App() {
   const decide = useCallback(
     (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => {
       decideCluster(group.files, name, state).then(
-        () => setRevision((n) => n + 1),
+        () => {
+          setRevision((n) => n + 1);
+          // A decision is what a guess was waiting for, and either way it is
+          // spent: accepted, the name is the user's now; rejected, the row is
+          // gone. Left in the map it would come back if the group were ever
+          // un-rejected, as advice about a decision already made.
+          setSuggestions((was) => {
+            if (!was.has(group.id)) return was;
+            const next = new Map(was);
+            next.delete(group.id);
+            return next;
+          });
+        },
         (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
       );
     },
@@ -658,7 +725,88 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [revision, data?.root, at]);
+  }, [revision, groupsRevision, data?.root, at]);
+
+  // Per project: the server keeps the last run's names with the session, so a
+  // reload — or a second tab — is shown what was already paid for rather than
+  // asked to pay again. A fresh session answers null, which empties the list.
+  useEffect(() => {
+    let cancelled = false;
+    fetchSuggestions().then(
+      (result) => {
+        if (cancelled) return;
+        setSuggestions(new Map(result?.ok ? result.suggestions.map((s) => [s.id, s]) : []));
+        setSuggestCost(result?.ok ? { costUsd: result.costUsd, ms: result.ms } : null);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.root]);
+
+  /** How many categories a press would name. Counted from what is on screen. */
+  const unnamed = useMemo(
+    () => clusters.filter((group) => group.state === 'suggested').length,
+    [clusters],
+  );
+
+  /**
+   * Why a press would do nothing, or null when it would run. One answer for
+   * the section's button and the menu item, so the two never disagree about
+   * whether the user may spend the money.
+   */
+  const suggestBlocked = suggesting
+    ? 'A run is in flight. It takes a minute, sometimes several.'
+    : frozen
+      ? 'Leave the commit first: names are suggested for the live categories'
+      : clusters.length === 0
+        ? 'No categories found yet'
+        : unnamed === 0
+          ? 'Every category already has a name'
+          : null;
+
+  // The root the page shows, readable from inside a promise that outlives a
+  // project switch: the fetch is held for the whole run, and the old
+  // project's names must not land in the new project's section.
+  const rootRef = useRef<string | null>(null);
+  rootRef.current = data?.root ?? null;
+
+  /**
+   * Spend the user's money, on exactly the categories without a name. Nothing
+   * is ever suggested automatically; this only ever happens on a press. The
+   * fetch is held for the whole run, and a run that failed answers 200 with
+   * its reason in words, which is what the section shows verbatim.
+   */
+  const suggest = useCallback(() => {
+    if (suggestBlocked !== null) return;
+    setSuggesting(true);
+    setSuggestError(null);
+    const pressedFor = rootRef.current;
+    requestSuggestions()
+      .then(
+        (result) => {
+          if (rootRef.current !== pressedFor) return;
+          if (result.ok) {
+            setSuggestions(new Map(result.suggestions.map((s) => [s.id, s])));
+            setSuggestCost({ costUsd: result.costUsd, ms: result.ms });
+          } else {
+            setSuggestError(result.detail === '' ? result.reason : result.detail);
+          }
+        },
+        (cause: unknown) => setSuggestError(cause instanceof Error ? cause.message : String(cause)),
+      )
+      .finally(() => setSuggesting(false));
+  }, [suggestBlocked]);
+
+  /** Off the page, and nowhere else: a guess was never anywhere else. */
+  const dismissSuggestion = useCallback((id: string) => {
+    setSuggestions((was) => {
+      const next = new Map(was);
+      next.delete(id);
+      return next;
+    });
+  }, []);
 
   /**
    * null when the project is not a git work tree, which is normal, not a fault.
@@ -1616,9 +1764,9 @@ export function App() {
   const emptyProject = empty && !isFiltered;
 
   /**
-   * The panel edits every group, including the ones whose frames the overlap
+   * The section edits every group, including the ones whose frames the overlap
    * rule dropped. Passed as one object because it is one feature with one
-   * caller, and nine more props on `Sidebar` would say less about it.
+   * caller, and nine more props on `Categories` would say less about it.
    */
   const groupEditor: GroupEditor = {
     selection,
@@ -1668,11 +1816,18 @@ export function App() {
             : { run: () => void openInEditor(data.root, selected, 1) }),
         },
         {
-          label: 'Reject this group',
+          label: 'Reject this category',
           separatorBefore: true,
           ...(groupOfSelection === null
-            ? { disabledBecause: 'The selection is not in a group' }
+            ? { disabledBecause: 'The selection is not in a category' }
             : { run: () => decide(groupOfSelection, groupOfSelection.name ?? '', 'rejected') }),
+        },
+        {
+          // The same press as the lightbulb in the Categories section, and
+          // greyed for the same reasons: it spends money, so a menu must not
+          // offer it when the section would refuse it.
+          label: 'Suggest category names',
+          ...(suggestBlocked === null ? { run: suggest } : { disabledBecause: suggestBlocked }),
         },
       ],
     },
@@ -1684,24 +1839,14 @@ export function App() {
           ...(selected === null ? { disabledBecause: 'Nothing selected' } : { run: () => goTo(selected, 'file') }),
         },
         {
-          label: 'Show its group in the panel',
-          ...(groupOfSelection === null
-            ? { disabledBecause: 'The selection is not in a group' }
-            : { run: () => setShowSidebar(true) }),
-        },
-        {
-          label: 'Create group from selection…',
+          label: 'Create category from selection…',
           separatorBefore: true,
-          // The name is asked for in the panel, where the files it would cover
-          // are listed: a group is worth seeing before it is worth naming.
+          // The name is asked for in the Categories section, where the files
+          // it would cover are listed: a category is worth seeing before it is
+          // worth naming. The section unfolds itself for the form.
           ...(selection.boxes < 2
             ? { disabledBecause: 'Shift-click two or more boxes first' }
-            : {
-                run: () => {
-                  setShowSidebar(true);
-                  setCreating(true);
-                },
-              }),
+            : { run: () => setCreating(true) }),
         },
         { label: 'Clear selection', shortcut: '⎋', separatorBefore: true, run: clearSelection },
       ],
@@ -1811,22 +1956,11 @@ export function App() {
         },
         { label: 'Copy path', shortcut: '⌘C', run: () => void navigator.clipboard.writeText(box.id) },
         {
-          label: `Create group from selection…`,
+          label: `Create category from selection…`,
           separatorBefore: true,
           ...(selection.boxes < 2
             ? { disabledBecause: 'Shift-click two or more boxes first' }
-            : {
-                run: () => {
-                  setShowSidebar(true);
-                  setCreating(true);
-                },
-              }),
-        },
-        {
-          label: 'Show its group in the panel',
-          ...(groupOfSelection === null
-            ? { disabledBecause: 'This is not in a group' }
-            : { run: () => setShowSidebar(true) }),
+            : { run: () => setCreating(true) }),
         },
         {
           label: 'Only this folder',
@@ -1839,16 +1973,11 @@ export function App() {
       {
         label:
           selection.boxes < 2
-            ? 'Create group from selection…'
-            : `Create group from ${selection.boxes} boxes…`,
+            ? 'Create category from selection…'
+            : `Create category from ${selection.boxes} boxes…`,
         ...(selection.boxes < 2
           ? { disabledBecause: 'Shift-click two or more boxes first' }
-          : {
-              run: () => {
-                setShowSidebar(true);
-                setCreating(true);
-              },
-            }),
+          : { run: () => setCreating(true) }),
       },
       {
         label: 'Clear selection',
@@ -2087,6 +2216,25 @@ export function App() {
               onSelect={setSelected}
               onFocus={goTo}
             />
+            {/* The architecture, on the same footing as the repository and its
+                history. Names are the user's; the lightbulb only asks for
+                guesses, and a guess stays on this page until accepted. */}
+            <Categories
+              groups={clusters}
+              onDecide={decide}
+              groupEditor={groupEditor}
+              onSelect={setSelected}
+              suggestBlocked={suggestBlocked}
+              // A commit's cluster can share an id with today's, and an Accept
+              // under it would write the commit's file list. The lightbulb is
+              // already greyed while frozen; the rows follow it.
+              suggestions={frozen ? NO_SUGGESTIONS : suggestions}
+              suggesting={suggesting}
+              suggestError={suggestError}
+              lastRun={suggestCost}
+              onSuggest={suggest}
+              onDismissSuggestion={dismissSuggestion}
+            />
             <Activity
               changes={changes}
               agentCalls={agentCalls}
@@ -2170,9 +2318,6 @@ export function App() {
             at={at}
             onSelect={setSelected}
             onFocus={goTo}
-            groups={clusters}
-            onDecide={decide}
-            groupEditor={groupEditor}
             following={{
               links: reach.found,
               gone: reach.gone,

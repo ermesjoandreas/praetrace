@@ -1,53 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Section } from './Section';
-import {
-  fetchDetail,
+import { money, fetchDetail,
   openInEditor,
   type Detail,
   type ExplainFailure,
   type ExplainState,
-  type GroupColor,
-  type GroupSuggestion,
   type StoredExplanation,
   type SymbolLinks,
   type SymbolRelation,
 } from './api';
-
-/**
- * What the panel can do to a group. The frame on the canvas offers the same
- * decisions, but a frame that loses the overlap contest is never drawn — so
- * everything a group can be asked has to be reachable from here too, or naming
- * one could be the last anybody ever does to it.
- */
-export interface GroupEditor {
-  /** The boxes picked on the canvas, and the files those boxes stand for. */
-  selection: { boxes: number; files: string[] };
-  creating: boolean;
-  onCreating: (open: boolean) => void;
-  onCreate: (name: string) => void;
-  onRename: (group: GroupSuggestion, name: string) => void;
-  onColor: (group: GroupSuggestion, color: GroupColor) => void;
-  /** Only a hand-drawn group may be given members; the rest come from imports. */
-  onMembers: (group: GroupSuggestion, files: string[]) => void;
-  onDelete: (group: GroupSuggestion) => void;
-}
-
-/**
- * The palette, spelled out here as well as in `GroupNode`: `project/groups.ts`
- * owns the union but reaches for node:fs, so nothing may import a value from it
- * into the browser. A Record keyed by GroupColor is what keeps them in step — a
- * colour added to the union fails to compile here until it is listed.
- */
-const COLOR_LABELS: Record<GroupColor, string> = {
-  slate: 'Slate',
-  blue: 'Blue',
-  teal: 'Teal',
-  green: 'Green',
-  amber: 'Amber',
-  orange: 'Orange',
-  red: 'Red',
-  violet: 'Violet',
-};
 
 export interface Following {
   /** One entry per followed symbol the graph still knows, in pick order. */
@@ -108,9 +69,6 @@ interface SidebarProps {
   onSelect: (target: string) => void;
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
-  groups: GroupSuggestion[];
-  onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
-  groupEditor: GroupEditor;
   following: Following;
 }
 
@@ -127,9 +85,6 @@ export function Sidebar({
   at,
   onSelect,
   onFocus,
-  groups,
-  onDecide,
-  groupEditor,
   following,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -193,8 +148,6 @@ export function Sidebar({
           <FolderView detail={detail} onSelect={onSelect} />
         )}
       </Section>
-
-      <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} editor={groupEditor} />
     </aside>
   );
 }
@@ -296,250 +249,9 @@ function PathList({
 }
 
 /**
- * Every group the graph found and every one somebody drew, including the ones
- * whose frames were dropped for overlapping. A group that cannot be drawn can
- * still be named, coloured and — where a person drew it — taken apart.
- */
-function GroupList({
-  groups,
-  onDecide,
-  onSelect,
-  editor,
-}: {
-  groups: GroupSuggestion[];
-  onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
-  onSelect: (target: string) => void;
-  editor: GroupEditor;
-}) {
-  const [naming, setNaming] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  /** The row whose palette and membership are open. One at a time. */
-  const [editing, setEditing] = useState<string | null>(null);
-  const [newName, setNewName] = useState('');
-
-  const live = groups.filter((group) => group.state !== 'rejected');
-  // Drawing the first group has to be possible before there is a list to add
-  // it to, so the section outlives an empty one.
-  const canCreate = editor.selection.boxes >= 2;
-  if (live.length === 0 && !canCreate) return null;
-
-  return (
-    <Section
-      title="Groups"
-      className="groups"
-      // "Group selection" from a menu puts a form in this body; a folded body
-      // would swallow it.
-      expandWhen={editor.creating}
-      actions={
-        // Greyed with the reason rather than absent: a header action that comes
-        // and goes with the selection would never be found.
-        <button
-          type="button"
-          disabled={!canCreate}
-          title={
-            canCreate
-              ? `Group the ${editor.selection.boxes} selected boxes`
-              : 'Select two or more boxes on the diagram to draw a group'
-          }
-          aria-label="Group the selected boxes"
-          onClick={() => editor.onCreating(true)}
-        >
-          <i className="codicon codicon-add" aria-hidden="true" />
-        </button>
-      }
-    >
-      {canCreate && editor.creating && (
-        <input
-          autoFocus
-          value={newName}
-          placeholder={`Name a group of ${editor.selection.files.length} files`}
-          onChange={(event) => setNewName(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && newName.trim() !== '') {
-              editor.onCreate(newName.trim());
-              setNewName('');
-            } else if (event.key === 'Escape') editor.onCreating(false);
-          }}
-          onBlur={() => editor.onCreating(false)}
-        />
-      )}
-
-      <ul>
-        {live.map((group) => {
-          const manual = group.origin === 'manual';
-          const decided = manual || group.state === 'accepted';
-          const open = decided && editing === group.id;
-
-          return (
-            <li key={group.id}>
-              {naming === group.id ? (
-                <input
-                  autoFocus
-                  value={draft}
-                  placeholder="Name this group"
-                  onChange={(event) => setDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' && draft.trim() !== '') {
-                      editor.onRename(group, draft.trim());
-                      setNaming(null);
-                    } else if (event.key === 'Escape') setNaming(null);
-                  }}
-                  onBlur={() => setNaming(null)}
-                />
-              ) : (
-                <div className="group-row">
-                  {/* The swatch is the way in: it shows the colour the frame is
-                      drawn in and opens the palette that changes it. A group
-                      with no colour of its own is drawn in the default grey,
-                      which is what slate is.
-
-                      Only a group that has been decided has an entry in
-                      groups.json to hang a colour on, so a suggestion is not
-                      offered a palette that would have nowhere to land. Naming
-                      it accepts it, and it can be dressed after that. */}
-                  {decided && (
-                    <button
-                      type="button"
-                      className="group-swatch"
-                      data-color={group.color ?? 'slate'}
-                      aria-pressed={open}
-                      title={open ? 'Close' : manual ? 'Colour and members' : 'Colour'}
-                      onClick={() => setEditing(open ? null : group.id)}
-                    />
-                  )}
-                  <button
-                    type="button"
-                    className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
-                    onClick={() => {
-                      setDraft(group.name ?? '');
-                      setNaming(group.id);
-                    }}
-                  >
-                    {group.name ?? `${group.files.length} files`}
-                  </button>
-                  {/* A drawn group carries a cohesion of 0 — the import graph
-                      was never asked to find it — and 0% would read as a
-                      terrible group rather than as somebody's decision. */}
-                  <span className="group-cohesion">
-                    {manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`}
-                  </span>
-                  {/* Rejecting is remembering that this is not a group, so the
-                      next scan stops proposing it. Nothing proposed a drawn
-                      group, so there is nothing to remember: it is deleted. */}
-                  <span className="row-actions">
-                    <button
-                      type="button"
-                      className="group-drop"
-                      title={manual ? 'Delete this group' : 'Not a group'}
-                      aria-label={manual ? 'Delete this group' : 'Not a group'}
-                      onClick={() =>
-                        manual ? editor.onDelete(group) : onDecide(group, group.name ?? '', 'rejected')
-                      }
-                    >
-                      <i
-                        className={`codicon codicon-${manual ? 'trash' : 'close'}`}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                </div>
-              )}
-
-              {open && (
-                // Its own class, not the canvas popover's: that one is a panel
-                // floating over the diagram, this one is a strip inside a list,
-                // and they were sharing a name and therefore a stylesheet.
-                <div className="group-palette">
-                  {/* The only other way out is the swatch that opened it, and
-                      the drop button next to it rejects or deletes the group.
-                      Two ways out that far apart in meaning need the harmless
-                      one to be the near one. */}
-                  <span className="group-palette-label">Colour</span>
-                  <div className="group-swatches">
-                    {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        data-color={color}
-                        className={`group-swatch${group.color === color ? ' group-swatch-active' : ''}`}
-                        title={COLOR_LABELS[color]}
-                        onClick={() => editor.onColor(group, color)}
-                      />
-                    ))}
-                  </div>
-                  <button
-                    type="button"
-                    className="group-palette-close"
-                    title="Done"
-                    aria-label="Done"
-                    onClick={() => setEditing(null)}
-                  >
-                    <i className="codicon codicon-close" aria-hidden="true" />
-                  </button>
-                </div>
-              )}
-
-              <div className="group-files">
-                {group.files.map((file) =>
-                  open && manual ? (
-                    <span className="group-row" key={file}>
-                      <button type="button" title={file} onClick={() => onSelect(file)}>
-                        {file}
-                      </button>
-                      <span className="row-actions">
-                        <button
-                          type="button"
-                          className="group-drop"
-                          disabled={group.files.length <= 2}
-                          title={
-                            group.files.length <= 2
-                              ? 'A group needs at least two files'
-                              : `Take ${file} out of this group`
-                          }
-                          aria-label={`Take ${file} out of this group`}
-                          onClick={() =>
-                            editor.onMembers(
-                              group,
-                              group.files.filter((member) => member !== file),
-                            )
-                          }
-                        >
-                          <i className="codicon codicon-close" aria-hidden="true" />
-                        </button>
-                      </span>
-                    </span>
-                  ) : (
-                    <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
-                      {file}
-                    </button>
-                  ),
-                )}
-                {open && manual && editor.selection.files.length > 0 && (
-                  <button
-                    type="button"
-                    title="Add what is selected on the diagram"
-                    onClick={() =>
-                      editor.onMembers(group, [
-                        ...new Set([...group.files, ...editor.selection.files]),
-                      ])
-                    }
-                  >
-                    add {editor.selection.files.length} selected
-                  </button>
-                )}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </Section>
-  );
-}
-
-/**
  * Every state a stored reading can be in, said in words.
  *
- * A Record keyed by the union for the same reason COLOR_LABELS is one: a state
+ * A Record keyed by the union for the same reason Categories' COLOR_LABELS is one: a state
  * the server learns to send fails to compile here until this file has something
  * to say about it, and an unnamed state is exactly the silence that makes a
  * reading get believed after it stopped being true.
@@ -900,10 +612,6 @@ function Reading({
 }
 
 /** Cents are the unit here: a run is two or three of them, not two dollars. */
-function money(usd: number): string {
-  return `$${usd < 1 ? usd.toFixed(3) : usd.toFixed(2)}`;
-}
-
 function Relations({
   title,
   rows,

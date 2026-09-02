@@ -122,7 +122,7 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
           type="button"
           className={editing ? 'group-name group-name-open' : 'group-name'}
           aria-expanded={editing}
-          title={editing ? 'Done' : 'Edit this group'}
+          title={editing ? 'Done' : 'Edit this category'}
           onClick={() => setEditing(!editing)}
         >
           {data.name ?? `${data.fileCount} files together`}
@@ -160,7 +160,7 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
         {/* A locked frame is where someone put it, which means it can stop
             containing what it names. Saying so is the price of the lock. */}
         {data.locked && data.outside > 0 && (
-          <span className="group-outside" title={`${data.outside} of this group's files sit outside the frame`}>
+          <span className="group-outside" title={`${data.outside} of this category's files sit outside the frame`}>
             <i className="codicon codicon-warning" aria-hidden="true" /> {data.outside} outside
           </span>
         )}
@@ -169,8 +169,8 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
           <button
             type="button"
             className="group-reject"
-            title="Not a group"
-            aria-label="Not a group"
+            title="Not a category"
+            aria-label="Not a category"
             onClick={data.onReject}
           >
             <i className="codicon codicon-close" aria-hidden="true" />
@@ -190,7 +190,7 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
                 autoFocus
                 className="group-editor-name"
                 value={draft}
-                placeholder="Name this group"
+                placeholder="Name this category"
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter' && draft.trim() !== '') {
@@ -238,7 +238,7 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
                     <button
                       type="button"
                       className="group-delete"
-                      title="Delete this group"
+                      title="Delete this category"
                       onClick={data.onDelete}
                     >
                       Delete

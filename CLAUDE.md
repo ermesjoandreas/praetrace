@@ -33,7 +33,8 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 - The graph engine, incremental, parsed off the main thread
 - The browser page: React Flow, a view layer, live updates from hook and watcher
 - The Claude Code hook, and a Tauri desktop app that packages the whole thing
-- Architectural groups, named by a person or an agent, committed to the project
+- Architectural groups, named by a person or an agent — or suggested by a model
+  and accepted by a person — committed to the project
 - An MCP server, so the agent working in the project can query the graph
 - Search, call edges, a side panel, a menu bar, a welcome screen
 - Git status against a chosen base, and a group editor
@@ -271,6 +272,8 @@ src/
                   through the session's pool. Never throws, never leaves the dir
     groups.ts     named groups, their colours and sizes, .codemap/groups.json
     explain.ts    spawns `claude -p` for a reading of a symbol. Never throws
+    suggest.ts    spawns `claude -p` for names for the unnamed groups. Never
+                  throws, never writes; a person accepts, and that is the write
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
     hook-install.ts  detect, preview and merge the hook into settings.json
     port-file.ts  leaves the port where the hook can read it
@@ -287,16 +290,21 @@ src/
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    session.ts    one project: store, pool, watcher, updater, git, and an LRU of
-                  16 past commits' graphs. Swapped whole
+    session.ts    one project: store, pool, watcher, updater, git, an LRU of
+                  16 past commits' graphs, and the last suggest run. Swapped whole
     app.ts        Fastify: static web build, and the API below
-    live.ts       connected clients and their view specs; pushes per client
+    live.ts       connected clients and their view specs; pushes per client,
+                  and `groups` to every client after a groups.json write
     main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus, depth, selection
   src/BoxNode.tsx one box: a file with its symbols, or a folder
   src/GroupNode.tsx a group frame: name, colour, size, membership
-  src/Sidebar.tsx the side panel: detail, change feed, group list and editor
+  src/Sidebar.tsx the right side bar: Following (with its readings) and Detail
+  src/Categories.tsx   the left bar's third section: every group with its
+                       cohesion or "by hand", the editor (name, colour, members,
+                       delete), the create-from-selection form, and the model's
+                       suggested names with accept / dismiss
   src/Repository.tsx   the left bar's first section: project, remote, the Claude
                        Code hook and MCP, and the buttons that act on them
   src/SourceControl.tsx  Changes (the per-file list, the base picker) and Graph
@@ -340,6 +348,11 @@ GET  /api/agent         what the agent has asked, and when
 GET  /api/clusters      the groups, named and unnamed                (?at=)
 POST /api/clusters      accept or reject one, by membership
 POST /api/groups        create, update or delete one, by storedId
+GET  /api/suggest       the last run's suggested names, or null. Session state,
+                        never disk
+POST /api/suggest       ask a model for names for the unnamed groups. Awaited,
+                        not 202: 400 when nothing is unnamed, 409 while a run is
+                        in flight. Spends money, writes nothing
 GET  /api/explain       the readings for the ids asked for, and the run
 POST /api/explain       run (202), cancel, or forget one. Spends money
 GET  /api/git           the current git status
@@ -347,7 +360,11 @@ POST /api/git-base      change the base the working tree is compared against
 GET  /api/hook-status   is a working hook installed
 POST /api/hook-install  merge ours into whatever is there
 POST /api/hook          the PostToolUse payload. Always 200
-     /live              the websocket
+     /live              the websocket. Besides views it carries `agent`,
+                        `explain`, `explain-delta`, and `{ type: 'groups' }` after
+                        every groups.json write — to every client, frozen ones
+                        too, because a name lives outside the commit; the page
+                        refetches /api/clusters on it
 ```
 
 ---
@@ -452,7 +469,7 @@ error, and every caller treats `null` as "no git here".
 
 The graph finds groups of files that lean on each other more than on anything else —
 label propagation over the import graph, deterministic, no model involved. A person,
-or an agent, gives them names. See non-negotiable decision 5 for the rule that
+or an agent, gives them names — or a model suggests one and a person accepts it. See non-negotiable decision 5 for the rule that
 governs membership.
 
 - Frames are drawn tight around where members actually landed, not around dagre's
@@ -469,10 +486,16 @@ governs membership.
 
 ## The rest of the page
 
-- **The left bar** is Repository › Source Control › Activity, 300px. The Repository
-  panel absorbed the hook banner: hook, MCP and port file are rows, and "Install
-  hook" is a button under them, hidden once installed. Activity describes *now*
-  even while the diagram is frozen: the agent is still working in the working tree.
+- **The left bar** is Repository › Source Control › Categories › Activity, 300px.
+  The Repository panel absorbed the hook banner: hook, MCP and port file are rows,
+  and "Install hook" is a button under them, hidden once installed. Activity
+  describes *now* even while the diagram is frozen: the agent is still working in
+  the working tree.
+- **A category on the page is a group in the code.** The section, its menu items
+  and the frame on the canvas say "category" — the user's word. The file stays
+  `.codemap/groups.json`, the API stays `/api/clusters` and `/api/groups`, the MCP
+  tools stay `list_groups` / `name_group`, the CSS classes stay `.group-*`. Do not
+  "fix" either side toward the other.
 - **The status bar.** 22px at the bottom: branch, ahead/behind, the "Changes" count
   that toggles the filter, then boxes and files, the language summary and the
   agent's connection. Every item is information or runs something.
@@ -536,18 +559,21 @@ asked about it), and a status that names the tool and how long ago.
 `.mcp.json` wires it up.
 
 The direction is the point. An MCP server is called **by** an agent and can never
-call one, so the app cannot ask a model to name a group. Instead it offers the
-unnamed groups to the agent already running — no API key, no cost, nothing leaving
-the machine.
+call one, so the app cannot reach the agent already working in the project — not
+to ask it anything, not to hand it a task. What it can do is offer that agent the
+unnamed groups, and `name_group` is how the agent names them: for free,
+unprompted, whenever it chooses to.
 
-**That still holds, and it is about deciding, not about asking.** Since the explain
-feature the app *can* reach a model — it spawns `claude -p` itself, which is not
-MCP and does not change MCP's direction. What has not moved is decision 5: a name
-that goes in `groups.json` is a claim about the architecture and stays the user's,
-offered through MCP to the agent already running. The model's new job is to *read* —
-to say what a symbol is for, into a panel, where being wrong is visible and one ✕
-away. Naming through `claude -p` would be the same money buying a worse version of
-something that already works for free.
+**Since 2026-09-02 the app can also ask a Claude of its own.** `src/project/suggest.ts`
+spawns `claude -p` — not MCP, and MCP's direction is unchanged — for names for
+the unnamed groups, on a press of the lightbulb in the Categories section and
+never otherwise. What comes back is a *proposal*, held in session memory. Decision
+5 is what has not moved: the model suggests, the person decides, and accepting a
+suggestion is the same `POST /api/clusters` write `name_group` makes, so
+`groups.json` is written by a decision and nothing else. The two paths are for
+different moments: the agent already running names for free while it works; the
+lightbulb is for when no agent is running, costs about five cents a press, and
+never decides who belongs.
 
 ```
 list_groups     the clusters, named and unnamed
@@ -564,7 +590,8 @@ through the same `.claude/codemap.port` file the hook reads.
 The graph says a symbol is called by four things. It cannot say what it is *for*.
 `src/project/explain.ts` spawns `claude -p` with the source and the graph's own
 relations, and asks for a role rather than a walkthrough. Answers land in
-`.codemap/explain.json`, committed like `groups.json`.
+`.codemap/explain.json`, beside `groups.json` — for the user to commit when they
+choose; this repository's copy is untracked today.
 
 **It spends the user's money, so nothing is implicit.** A run happens only on a
 press, its price is measured and shown, and the panel says what a reading now
@@ -595,11 +622,23 @@ answers **202** and the outcome arrives on the socket — `{ type: 'explain', ru
 — with a 3 s poll as the fallback that also notices a run another tab started.
 `explain()` never throws and never rejects: every failure is a named reason
 (`missing` carries the list of places searched, which is the fixable one).
-`CODEMAP_CLAUDE_BIN` overrides the search.
+`CODEMAP_CLAUDE_BIN`, when set, is the only place looked; an override that is not
+executable is `missing`, never a fallback to PATH — the fallback was how a test
+meant to cost nothing ran the real binary.
 
 `GET /api/explain` takes ids on purpose — computing `state` re-reads every
 described file off disk, so an unfiltered answer would read the whole project to
 render a panel showing four.
+
+**Suggesting names is the same invocation.** `suggest.ts` reuses explain's exported
+helpers — `resolveClaude`, `failureOf`, `parseJsonish`, `timeoutFor`,
+`MAX_OUTPUT_BYTES` — so a change to how explain classifies a failure changes
+suggest too. `--json-schema` is kept because nobody watches a name stream in.
+Measured on this repository's three unnamed groups (62 files in the largest):
+**$0.044 and 62.6 seconds** with haiku; a flat 60 s timeout timed out on exactly
+that run after the money was spent, which is why the timeout is `timeoutFor(n)`
+(60 s + 45 s per group) and the fetch is held for all of it. The pure half,
+`readAnswer`, has its test beside it.
 
 ## Desktop shell and packaging
 
@@ -737,7 +776,17 @@ the graph can be trusted at a glance on a project that is not this one:
   the "last run cost" line survives one too. Ids from the old project sit there until
   dropped; pressing Explain on them gets a 400 with the server's own words.
 - `cancel` abandons a run, it does not kill the subprocess: the money is already
-  spent, and what it buys is that the answer is refused and never written.
+  spent, and what it buys is that the answer is refused and never written. A
+  suggest run has no cancel at all; a project switch during one answers "the
+  project was switched" and the money is spent.
+- A suggestion is session state on both sides: a project switch or a restart
+  discards names that were paid for and not accepted.
+- Dismiss removes a suggestion from this page only. The server keeps the whole
+  last run, so a reload or a second tab shows the dismissed name again.
+- A suggestion is keyed by cluster id, which is the first file plus the member
+  count, so a save that moves one file in or out hides its suggestion without
+  saying so — and a swap that keeps both keeps a suggestion whose reason may
+  name a file that left.
 - **⌘K searches the live graph while the diagram is frozen**; detail, symbols and
   groups follow the commit, search does not yet.
 - A commit's graph is built through the same FIFO parser pool as the live updater,

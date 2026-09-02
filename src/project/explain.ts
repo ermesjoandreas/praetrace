@@ -106,7 +106,7 @@ export function timeoutFor(targets: number): number {
   return Math.min(MAX_TIMEOUT_MS, BASE_TIMEOUT_MS + Math.max(1, targets) * TIMEOUT_PER_TARGET_MS);
 }
 
-const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+export const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /** Where to look for `claude`, after the env override and the login shell. */
 const CLAUDE_ENV_OVERRIDE = 'CODEMAP_CLAUDE_BIN';
@@ -409,7 +409,7 @@ function clip(source: string): string {
  * Node reports all of these as one Error, so the discrimination is on its
  * fields and, for auth, on what the CLI actually said.
  */
-function failureOf(error: unknown, looked: readonly string[]): ExplainOutcome {
+export function failureOf(error: unknown, looked: readonly string[]): Extract<ExplainOutcome, { ok: false }> {
   const detail = messageOf(error);
 
   if (hasCode(error, 'ENOENT')) {
@@ -426,7 +426,7 @@ function failureOf(error: unknown, looked: readonly string[]): ExplainOutcome {
  * "you are logged out" from any other failure, and it is the one failure whose
  * fix the user can act on immediately.
  */
-function looksLikeAuth(text: string): boolean {
+export function looksLikeAuth(text: string): boolean {
   return /log ?in|login|logged out|authenticat|unauthorized|api key|credential|\b401\b/i.test(text);
 }
 
@@ -447,7 +447,7 @@ function messageOf(error: unknown): string {
   return (typeof text === 'string' ? text : String(error)).trim().slice(0, 2000);
 }
 
-interface CliResult {
+export interface CliResult {
   /**
    * Where `--json-schema` puts the validated object. The CLI satisfies the
    * schema by making the model call a StructuredOutput tool, so `result` holds
@@ -571,7 +571,7 @@ function parseAnswers(text: string): Answer[] {
 
 
 /** Text that is meant to be JSON, possibly wearing a code fence or a preamble. */
-function parseJsonish(text: string): unknown {
+export function parseJsonish(text: string): unknown {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
   const candidates = [text, fenced?.[1] ?? '', sliceBraces(text)];
   for (const candidate of candidates) {
@@ -600,13 +600,16 @@ function sliceBraces(text: string): string {
  * Not cached. The one saved login-shell spawn is nothing against the model
  * call, and a stale cached path would survive an upgrade that moved it.
  */
-async function resolveClaude(): Promise<{ path: string | null; looked: string[] }> {
+export async function resolveClaude(): Promise<{ path: string | null; looked: string[] }> {
   const looked: string[] = [];
 
   const override = process.env[CLAUDE_ENV_OVERRIDE];
   if (override !== undefined && override !== '') {
     looked.push(`$${CLAUDE_ENV_OVERRIDE}=${override}`);
-    if (await isExecutable(override)) return { path: override, looked };
+    // An override is the only place looked. Falling through to the login shell
+    // when it names nothing executable ran the real binary — and spent — on a
+    // machine where the variable had been set precisely so that it would not.
+    return { path: (await isExecutable(override)) ? override : null, looked };
   }
 
   const shell = process.env['SHELL'];

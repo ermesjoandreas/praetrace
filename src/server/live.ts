@@ -55,6 +55,18 @@ export interface LiveHub {
    * every client re-render its whole panel for three letters.
    */
   explainDelta(runId: string, text: string): void;
+  /**
+   * groups.json was written — by the page, or by the agent through MCP, which
+   * is the one the page could not see: nothing watches `.codemap/`, so a name
+   * given over MCP stood in the list unchanged until the next file save.
+   *
+   * Sent to every client, frozen ones included. A name lives outside the
+   * commit — `/api/clusters?at=` pairs that commit's clusters with the names
+   * as they are now — so a frame on last week's diagram wears the name it was
+   * given today. Its own message rather than a view update: the graph did not
+   * change, and the page refetches the clusters itself.
+   */
+  groupsChanged(): void;
   clientCount(): number;
 }
 
@@ -125,6 +137,13 @@ export function createLiveHub(
 
     explainDelta(runId, text) {
       const payload = JSON.stringify({ type: 'explain-delta', runId, text });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
+    },
+
+    groupsChanged() {
+      const payload = JSON.stringify({ type: 'groups' });
       for (const socket of clients.keys()) {
         if (socket.readyState === OPEN) socket.send(payload);
       }

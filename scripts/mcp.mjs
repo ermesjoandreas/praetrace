@@ -2,10 +2,11 @@
 // Codemap as tools an agent can call.
 //
 // The direction matters: MCP servers are called *by* an agent, never the other
-// way round. That is why this exists — the app cannot ask a model to name a
-// group, so instead it offers the unnamed groups to whichever agent is already
-// working in the project, along with the parts of the graph that agent has no
-// other way to see.
+// way round. The app cannot reach the agent already working in the project, so
+// this is how that agent names groups — for free, unprompted, whenever it
+// chooses to — along with the parts of the graph it has no other way to see.
+// The app's own `claude -p` (src/project/suggest.ts) can only propose a name;
+// a person accepts it, through the same write name_group makes.
 //
 // It speaks to a running codemap over HTTP rather than holding a graph of its
 // own, and finds it through the same port file the Claude Code hook uses, since
@@ -124,6 +125,8 @@ server.registerTool(
   'name_group',
   {
     title: 'Name an architectural group',
+    // The same brief as buildPrompt in src/project/suggest.ts — change both, or
+    // a name from one source stops reading like one from the other.
     description:
       'Give a group a short name describing what it is — two or three words, the kind a developer would use in conversation. Pass the exact file list from list_groups.',
     inputSchema: {

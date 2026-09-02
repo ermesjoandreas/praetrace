@@ -231,3 +231,12 @@ crashed, the symptom is a hang rather than an error.
 **The app is not signed or notarised.** macOS will refuse it on first launch;
 right-click and Open. Signing is out of scope for phase D.
 
+
+## The status bar was a pixel too tall (2026-09-02)
+
+DESIGN.md's checklist asks that `document.body.scrollHeight === innerHeight`. It
+read false by one pixel in every state. The status bar is 22px *including* its
+1px top line, so a 22px item inside it stood half a pixel proud above and below
+and the document scrolled by one. `.status-item` and `.agent-status` are 21px
+now, the same sum the breadcrumb row's search box already makes. Measured true in
+all four fold states of the left bar afterwards.

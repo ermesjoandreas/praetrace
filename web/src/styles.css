@@ -991,10 +991,10 @@ main { display: flex; flex: 1; min-height: 0; }
 
 /* --- the left column ------------------------------------------------------- */
 
-/* Left is the repository and time, right is structure. Three sections:
-   what the repository is, what source control says about it, and what the
-   agent has done to it — in that order, because it is the order the
-   questions come in. 300px is VS Code's own side bar width. */
+/* Left is the repository and time, right is structure. Four sections:
+   what the repository is, what source control says about it, what its parts
+   are called, and what the agent has done to it — in that order, because it
+   is the order the questions come in. 300px is VS Code's own side bar width. */
 .leftbar {
   display: flex;
   flex-direction: column;
@@ -1005,16 +1005,36 @@ main { display: flex; flex: 1; min-height: 0; }
   overflow: hidden;
 }
 
-/* The facts keep their height up to half the column and scroll past that;
-   the feed takes what it has to show up to a third; the log gets the rest,
-   because it is the one list that is always long. Sized like the right-hand
-   sections, and not in proportion to content: a 300-commit log would have
-   shrunk an empty feed to nothing. When the log is folded away the feed
-   takes its space, the way a pane does when the one above it collapses. */
-.repository { max-height: 50%; }
+/* Four sections, and none may push another off the bottom — which is what
+   happened when Categories arrived uncapped: it lists a file under every
+   group, so it stood 3000px tall, Source Control shrank to nothing beneath it
+   and Activity left the window. So every cap is a share of the column and the
+   shares add up to less than the whole; the rest is Source Control's, the one
+   list that is always long. The column is 1004px on a 1083px screen. The facts
+   are a fixed 410px, so 45% shows them whole there and scrolls them on a
+   shorter screen; Categories at 15% is a header and five rows, Activity at
+   20% a header and eight — the feed over the list, because watching the agent
+   is what the page is for and a group's files are already on the canvas; and
+   Source Control keeps a fifth at the least — its two nested headers, the base
+   row and five commits — plus whatever a short Categories or an empty Activity
+   leaves. Shares, not content: a 300-commit log would have shrunk an empty
+   feed to nothing. */
+.repository { max-height: 45%; }
 .source-control { flex: 1; }
-.activity { max-height: 35%; }
-.source-control:has(> .section-head > [aria-expanded='false']) ~ .activity { flex: 1; max-height: none; }
+.categories { max-height: 15%; }
+.activity { max-height: 20%; }
+
+/* A folded section hands its space to the one below it, the way a pane does
+   when the one above it collapses: Source Control's to Categories, and both
+   of theirs to Activity. Folded, a section is its header and nothing else,
+   so it may not stay flexible — Source Control kept its share while folded
+   and split the column with the pane it was meant to be giving it to, a
+   header over a hundred pixels of nothing. Last, so it wins the tie. */
+.source-control:has(> .section-head > [aria-expanded='false']) ~ .categories { flex: 1; max-height: none; }
+.source-control:has(> .section-head > [aria-expanded='false'])
+  ~ .categories:has(> .section-head > [aria-expanded='false'])
+  ~ .activity { flex: 1; max-height: none; }
+.leftbar > .sidebar-section:has(> .section-head > [aria-expanded='false']) { flex: none; }
 .source-control > .section-body { display: flex; flex-direction: column; }
 .scm-section-changes { max-height: 50%; }
 .scm-section-graph { flex: 1; }
@@ -1403,6 +1423,95 @@ main { display: flex; flex: 1; min-height: 0; }
   font-size: var(--vsc-font-size-sm);
 }
 
+/* --- categories ------------------------------------------------------------ */
+
+.categories input { display: block; width: calc(100% - 16px); margin: 4px 8px; }
+.categories ul { margin: 0; padding: 0; list-style: none; }
+
+/* A run in flight, beside the title. A status, not an action, so it does not
+   wait for the hover. */
+.categories-status {
+  flex: none;
+  padding-right: 4px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+}
+
+/* A failed run names its reason in full, as the explain panel does:
+   `missing` carries the list of places searched, which is the fixable part,
+   and a line cut short would cut exactly that. */
+
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 8px;
+}
+.group-row:hover { background: var(--vsc-list-hover); }
+
+.group-title {
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-title.named, .group-title:hover { color: var(--vsc-fg); }
+.group-cohesion { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+
+/* A model's guess at a name: the row under the group it is for, one indent
+   in like the palette, so it reads as belonging to the row above and not as
+   a group of its own. Muted, because nothing has been decided — it turns
+   into the title's text the moment a person accepts it, by the same write
+   typing it would have made. The reason is in its title. */
+.category-suggestion { padding-left: 24px; }
+.category-suggestion > .codicon { flex: none; color: var(--vsc-fg-muted); }
+.category-suggested {
+  flex: 1;
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The palette inside the list: one row under the group, indented like its
+   files. Distinct from .group-editor, the popover over the diagram. */
+.group-palette {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 24px;
+}
+.group-palette .group-swatches { flex: 1; }
+.group-palette-label { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+
+/* A group's files: child rows, one indent in. Direct children only — the row
+   actions inside a member row are icon buttons and must not become rows. */
+.group-files { display: flex; flex-direction: column; }
+.group-files > button,
+.group-files .group-row > button {
+  display: block;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px 0 24px;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  line-height: 22px;
+  direction: rtl;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
+.group-files > button:focus-visible { outline-offset: -1px; }
+.group-files .group-row { padding-left: 0; }
+.group-files .group-row > button { flex: 1; min-width: 0; }
+.group-files .group-row:hover > button { color: var(--vsc-fg); }
+
 /* --- the side bar (right) -------------------------------------------------- */
 
 .sidebar {
@@ -1416,10 +1525,9 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 
 /* What is being held sits above the detail, because it is the thing you are
-   actively holding; groups sit below. The detail takes whatever is left. */
+   actively holding. The detail takes whatever is left. */
 .followed { max-height: 45%; }
 .panel { flex: 1; }
-.groups { max-height: 30%; }
 
 /* --- detail ---------------------------------------------------------------- */
 
@@ -1637,7 +1745,7 @@ main { display: flex; flex: 1; min-height: 0; }
 
 /* A failed run names its reason, in full: the useful ones are a path or a line
    of stderr, and long. */
-.explain-failed {
+.explain-failed, .categories-error {
   margin: 0;
   padding: 2px 8px;
   color: var(--vsc-error);
@@ -1646,66 +1754,6 @@ main { display: flex; flex: 1; min-height: 0; }
   line-height: 1.5;
   word-break: break-word;
 }
-
-/* --- groups ---------------------------------------------------------------- */
-
-.groups input { display: block; width: calc(100% - 16px); margin: 4px 8px; }
-.groups ul { margin: 0; padding: 0; list-style: none; }
-
-.group-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: var(--vsc-row-h);
-  padding: 0 2px 0 8px;
-}
-.group-row:hover { background: var(--vsc-list-hover); }
-
-.group-title {
-  min-width: 0;
-  color: var(--vsc-fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.group-title.named, .group-title:hover { color: var(--vsc-fg); }
-.group-cohesion { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
-
-/* The palette inside the list: one row under the group, indented like its
-   files. Distinct from .group-editor, the popover over the diagram. */
-.group-palette {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: var(--vsc-row-h);
-  padding: 0 2px 0 24px;
-}
-.group-palette .group-swatches { flex: 1; }
-.group-palette-label { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
-
-/* A group's files: child rows, one indent in. Direct children only — the row
-   actions inside a member row are icon buttons and must not become rows. */
-.group-files { display: flex; flex-direction: column; }
-.group-files > button,
-.group-files .group-row > button {
-  display: block;
-  width: 100%;
-  height: var(--vsc-row-h);
-  padding: 0 8px 0 24px;
-  color: var(--vsc-fg-muted);
-  font-family: var(--vsc-font-mono);
-  font-size: var(--vsc-font-size-status);
-  line-height: 22px;
-  direction: rtl;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.group-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
-.group-files > button:focus-visible { outline-offset: -1px; }
-.group-files .group-row { padding-left: 0; }
-.group-files .group-row > button { flex: 1; min-width: 0; }
-.group-files .group-row:hover > button { color: var(--vsc-fg); }
 
 /* --- status bar ------------------------------------------------------------ */
 

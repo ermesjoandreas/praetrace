@@ -134,7 +134,8 @@ border. Those are the user's own meaning and are not subject to rule 4.
 │ chrome   │                                      │ chrome        │
 │ ▾ <repo> │                                      │  ▾ Following  │
 │ ▾ Source │                                      │  ▾ Detail     │
-│   Control│                                      │  ▾ Groups     │
+│   Control│                                      │               │
+│ ▾ Categories                                    │               │
 │ ▾ Activity                                      │               │
 ├──────────┴──────────────────────────────────────┴───────────────┤
 │ STATUS BAR 22px  ⎇ main ↑2 ↓0 · Changes [4]     55 boxes · TS 55 │ chrome
@@ -147,7 +148,9 @@ border. Those are the user's own meaning and are not subject to rule 4.
 - The left bar and the side bar are side bars in VS Code's sense: `#181818`,
   edged by a 1px line, made of 22px sections with a chevron that really folds. The
   left bar is Repository (titled with the repository's own name), Source Control
-  (Changes and Graph as nested 22px headers, indented 8px) and Activity.
+  (Changes and Graph as nested 22px headers, indented 8px), Categories (the
+  groups, called categories on the page) and Activity. The side bar is Following
+  and Detail.
 - The status bar holds what the project *is*: branch, ahead/behind, the changed
   count, boxes and files, languages, the agent's connection. Every item is either
   information or runs something. The vocabulary is VS Code's — "Changes", "Diff
@@ -160,9 +163,11 @@ border. Those are the user's own meaning and are not subject to rule 4.
 ## Components
 
 **Section header** — 22px, a `codicon-chevron-down` that folds the section, the
-title in **title case** at 11px bold (`Following`, `Detail`, `Groups`, `Activity` —
+title in **title case** at 11px bold (`Following`, `Detail`, `Categories`, `Activity` —
 not uppercase; the user's VS Code does not uppercase them), and `.section-actions`
-at the right edge, hidden until hovered and not rendered while folded.
+at the right edge, hidden until hovered and not rendered while folded. Between the
+title and the actions sits `status`, always shown: a count, a short sha,
+"Suggesting…" — information, never a control.
 
 **List row** — 22px, 8px left padding, full width to the edge, no radius. Hover
 `#2A2D2E`. Selected `#04395E`. Per-row actions in `.row-actions`, hidden until the

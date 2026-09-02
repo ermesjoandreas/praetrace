@@ -15,6 +15,12 @@ import {
 import { readGitStatus, resolveCommit } from '../project/git.js';
 import { graphAt as buildGraphAt } from '../project/history.js';
 import { scanProject } from '../project/scan.js';
+import {
+  suggestNames,
+  type SuggestOutcome,
+  type SuggestTarget,
+  type Suggestion,
+} from '../project/suggest.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
 
@@ -68,6 +74,24 @@ export interface ExplainRun {
   ms?: number;
   reason?: ExplainFailure;
   detail?: string;
+}
+
+/**
+ * What the last press of Suggest produced, when it produced anything.
+ *
+ * Session state and nothing more. A suggestion is a model's guess at what a
+ * group is called, and decision 5 says it stays a guess until a person accepts
+ * it — accepting is what writes groups.json, and nothing here does. It is kept
+ * at all so a reload, or a second tab, is shown the list that was paid for
+ * rather than asked to pay again; it goes with the session, never to disk.
+ */
+export interface SuggestResult {
+  ok: true;
+  /** When the button was pressed, as `ExplainRun.at` is. */
+  at: number;
+  suggestions: Suggestion[];
+  costUsd: number;
+  ms: number;
 }
 
 /**
@@ -143,6 +167,18 @@ export interface Session {
   cancelExplain(): boolean;
   /** Drop one stored explanation. True when it was there to drop. */
   forgetExplanation(id: string): Promise<boolean>;
+  /** The last suggest run that produced names. Null until one does. */
+  lastSuggest(): SuggestResult | null;
+  /**
+   * Ask a model what the unnamed groups are called, or refuse: one press, one
+   * subprocess, so null while a run is in flight. Awaited rather than reported
+   * later, unlike explain — a single call fits inside a held fetch, and the
+   * outcome is the answer to the request that asked.
+   */
+  suggest(
+    targets: SuggestTarget[],
+    named: { name: string; files: string[] }[],
+  ): Promise<SuggestResult | Extract<SuggestOutcome, { ok: false }>> | null;
   close(): Promise<void>;
 }
 
@@ -182,6 +218,9 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   // never a failure to open.
   let explanations = await readExplanations(root);
   let run: ExplainRun | null = null;
+
+  let lastSuggest: SuggestResult | null = null;
+  let suggesting = false;
 
   /**
    * Reads are queued behind one another rather than sharing the one in flight:
@@ -389,6 +428,33 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       return true;
     },
 
+    lastSuggest: () => lastSuggest,
+
+    suggest(targets, named) {
+      if (suggesting) return null;
+      suggesting = true;
+      const at = Date.now();
+
+      return suggestNames(targets, named).then((outcome) => {
+        suggesting = false;
+        // The project was switched while the model was thinking. The names
+        // describe clusters nobody is looking at, and a held fetch that
+        // answered them would land them in the next project's section.
+        if (closed) return { ok: false, reason: 'failed', detail: 'the project was switched during the run' };
+        if (!outcome.ok) return outcome;
+
+        const result: SuggestResult = {
+          ok: true,
+          at,
+          suggestions: outcome.suggestions,
+          costUsd: outcome.costUsd,
+          ms: outcome.ms,
+        };
+        lastSuggest = result;
+        return result;
+      });
+    },
+
     async close() {
       closed = true;
       // What aborting a run amounts to here: the answer is refused, and the run
@@ -397,6 +463,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
         run.state = 'cancelled';
         run.finishedAt = Date.now();
       }
+      // The names describe the project being switched away from. A run still
+      // in flight is abandoned rather than killed, as explain's is, and its
+      // answer is refused by the `closed` check where it would have been kept.
+      lastSuggest = null;
+      suggesting = false;
       clearInterval(poll);
       // A build still running settles into nothing: `closed` is checked before
       // it stores, so clearing here cannot be undone by a late arrival.

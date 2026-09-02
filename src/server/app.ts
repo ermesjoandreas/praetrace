@@ -48,7 +48,7 @@ import { search } from '../view/search.js';
 import { projectLanguages, selectView } from '../view/select.js';
 import type { LanguageCount, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
-import type { ExplainRun, SessionHost } from './session.js';
+import type { ExplainRun, SessionHost, SuggestResult } from './session.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -173,6 +173,14 @@ export interface FetchResponse {
   /** Re-read after the fetch, so ahead/behind describe what just arrived. */
   remote: RemoteStatus | null;
 }
+
+/**
+ * What one press of Suggest answers. A failure is in the body and not in a
+ * status code, for the same reason an explain run's is: the request was fine,
+ * the run was not, and only one of those is an HTTP error. The 400 and 409 are
+ * about the request — nothing to name, or a run already spending.
+ */
+export type SuggestResponse = SuggestResult | { ok: false; reason: string; detail: string };
 
 export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
@@ -402,6 +410,9 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       root,
       applyDecision(await readGroups(root), files, { name, state, id }),
     );
+    // This is the route the MCP proxy's name_group takes, and the browser has
+    // no other way to learn a name the agent gave: nothing watches .codemap/.
+    hub.groupsChanged();
     return { ok: true };
   });
 
@@ -416,12 +427,48 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
     await writeGroups(root, next);
+    hub.groupsChanged();
 
     // Merged rather than returned raw: `mergeGroups` is what pairs a stored name
     // with the cluster the graph currently finds, and it is the only shape the
     // page has a state setter for.
     const session = host.current();
     return { clusters: mergeGroups(clusterFiles(session.store.graph), next) };
+  });
+
+  app.get('/api/suggest', async () => ({ result: host.current().lastSuggest() }));
+
+  /**
+   * Ask a model what the unnamed groups are called. Spends the user's money, so
+   * only ever on a press; and what comes back is a list of guesses the page
+   * holds until someone accepts one — that press goes through POST /api/clusters
+   * like any other name, and this route writes nothing.
+   *
+   * Awaited, unlike explain: one call, a minute at most, which a fetch holds.
+   */
+  app.post('/api/suggest', async (_request, reply) => {
+    const session = host.current();
+    const groups = mergeGroups(clusterFiles(session.store.graph), await readGroups(session.root));
+
+    const targets = groups
+      .filter((group) => group.state === 'suggested')
+      .map(({ id, files, cohesion }) => ({ id, files, cohesion }));
+    // The names already given, so the model matches their style and does not
+    // hand out one that is taken. A hand-drawn group counts: it is a name in
+    // this project whether or not the imports found it.
+    const named = groups.flatMap((group) =>
+      group.state === 'accepted' && group.name !== null ? [{ name: group.name, files: group.files }] : [],
+    );
+
+    // Not a failed run — nothing was asked. Telling that apart from a run that
+    // answered nothing is what keeps the button from showing a spinner for it.
+    if (targets.length === 0) {
+      return reply.code(400).send({ error: 'every category already has a name' });
+    }
+
+    const run = session.suggest(targets, named);
+    if (run === null) return reply.code(409).send({ error: 'a run is already in flight' });
+    return run;
   });
 
   app.get('/api/git', async () => host.current().gitStatus() ?? { available: false });

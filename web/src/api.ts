@@ -1,6 +1,7 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { GitFileStatus, GitStatus } from '../../src/git/types.js';
 import type { LanguageId } from '../../src/lang/types.js';
+import type { Suggestion } from '../../src/project/suggest.js';
 import type { Commit, RemoteStatus } from '../../src/project/git.js';
 import type { GroupColor } from '../../src/project/groups.js';
 import type {
@@ -9,6 +10,7 @@ import type {
   FetchResponse,
   LogResponse,
   RepoInfo,
+  SuggestResponse,
 } from '../../src/server/app.js';
 import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { ViewGraph } from '../../src/view/types.js';
@@ -353,6 +355,43 @@ export async function groupAction(body: unknown): Promise<GroupSuggestion[]> {
   const result = (await response.json()) as { clusters?: GroupSuggestion[]; error?: string };
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
   return result.clusters ?? [];
+}
+
+/**
+ * A name a model proposed for a group, and what one press of Suggest came back
+ * with. Decision 5: the model suggests, a person accepts, and accepting goes
+ * through `decideCluster` like any other name — nothing here writes.
+ */
+export type { SuggestResponse, Suggestion };
+
+/** A price the way both tooltips say it: three decimals under a dollar, two above. */
+export function money(usd: number): string {
+  return `$${usd < 1 ? usd.toFixed(3) : usd.toFixed(2)}`;
+}
+
+/**
+ * Ask a model what the unnamed categories are called. Spends the user's money,
+ * so only ever from a press, and the fetch is held for the whole run — a
+ * minute, sometimes more. A run that failed is an ordinary 200 with `ok: false`
+ * and its reason in words; only a request that could not start is thrown:
+ * nothing unnamed (400), or a run already spending (409).
+ */
+export async function requestSuggestions(): Promise<SuggestResponse> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/suggest`, { method: 'POST' });
+  const body = (await response.json()) as SuggestResponse | { error?: string };
+  if (!response.ok) {
+    throw new Error(('error' in body && body.error) || `HTTP ${response.status}`);
+  }
+  return body as SuggestResponse;
+}
+
+/** The last run that produced names, if this session has had one. Survives a reload. */
+export async function fetchSuggestions(): Promise<SuggestResponse | null> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/suggest`);
+  if (!response.ok) throw new Error(`suggestions failed: HTTP ${response.status}`);
+  return ((await response.json()) as { result: SuggestResponse | null }).result;
 }
 
 export interface AgentCall {
