@@ -36,6 +36,8 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 - An MCP server, so the agent working in the project can query the graph
 - Search, call edges, a side panel, a menu bar, a welcome screen
 - Git status against a chosen base, and a group editor
+- Explain: a paid, on-request reading of what a symbol is for, and whether it still
+  matches the code it described
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
@@ -147,8 +149,11 @@ These were decided deliberately. Do not change them without asking.
    structure from raw source files.
 
 4. **Static analysis first, LLM second.** Class structure, imports, and call edges
-   come from the AST — deterministic and fast. LLM inference is reserved for
-   cross-file semantic dataflow, and is not built.
+   come from the AST — deterministic and fast. **Nothing in the graph comes from a
+   model**, and that is the part that must not change. A model has exactly one job
+   here, and it is reading, not deciding: saying what a symbol the graph already
+   found is *for*, on request, into a panel — see "Explaining what the graph found".
+   Cross-file semantic dataflow inference is still reserved and still not built.
 
 5. **Group membership is graph-derived by default, and a hand-drawn group says so.**
    A tidy grouping that does not match the imports is worse than none, because it is
@@ -259,6 +264,7 @@ src/
     watch.ts      chokidar; emits raw changes, does not batch
     git.ts        git status against a base -> GitStatus. Never throws
     groups.ts     named groups, their colours and sizes, .codemap/groups.json
+    explain.ts    spawns `claude -p` for a reading of a symbol. Never throws
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
     hook-install.ts  detect, preview and merge the hook into settings.json
     port-file.ts  leaves the port where the hook can read it
@@ -294,6 +300,7 @@ web/              the browser page (Vite, built into dist/web)
   settings.json   the PostToolUse hook, committed so the repo dogfoods itself
 .codemap/
   groups.json     accepted group names, committed on purpose
+  explain.json    what a model said each symbol is for, and of which source
 ```
 
 **The API surface**, all served by `server/app.ts`:
@@ -310,6 +317,8 @@ GET  /api/agent         what the agent has asked, and when
 GET  /api/clusters      the groups, named and unnamed
 POST /api/clusters      accept or reject one, by membership
 POST /api/groups        create, update or delete one, by storedId
+GET  /api/explain       the readings for the ids asked for, and the run
+POST /api/explain       run (202), cancel, or forget one. Spends money
 GET  /api/git           the current git status
 POST /api/git-base      change the base the working tree is compared against
 GET  /api/hook-status   is a working hook installed
@@ -470,6 +479,15 @@ call one, so the app cannot ask a model to name a group. Instead it offers the
 unnamed groups to the agent already running — no API key, no cost, nothing leaving
 the machine.
 
+**That still holds, and it is about deciding, not about asking.** Since the explain
+feature the app *can* reach a model — it spawns `claude -p` itself, which is not
+MCP and does not change MCP's direction. What has not moved is decision 5: a name
+that goes in `groups.json` is a claim about the architecture and stays the user's,
+offered through MCP to the agent already running. The model's new job is to *read* —
+to say what a symbol is for, into a panel, where being wrong is visible and one ✕
+away. Naming through `claude -p` would be the same money buying a worse version of
+something that already works for free.
+
 ```
 list_groups     the clusters, named and unnamed
 name_group      accept one with a name
@@ -479,6 +497,48 @@ search_symbols  subsequence search over the whole project
 
 It holds no graph of its own; it talks to a running codemap over HTTP and finds it
 through the same `.claude/codemap.port` file the hook reads.
+
+## Explaining what the graph found
+
+The graph says a symbol is called by four things. It cannot say what it is *for*.
+`src/project/explain.ts` spawns `claude -p` with the source and the graph's own
+relations, and asks for a role rather than a walkthrough. Answers land in
+`.codemap/explain.json`, committed like `groups.json`.
+
+**It spends the user's money, so nothing is implicit.** A run happens only on a
+press, its price is measured and shown, and the panel says what a reading now
+stands to: `current`, `stale` (the source was rewritten — the fingerprint is
+`sha256`-prefixed and a consumer that cannot compute the prefix answers `unknown`
+rather than guessing), `drifted` (something related moved), `orphaned` (the code is
+gone). A stale reading is kept, because it is usually still most of the answer.
+
+**The invocation is measured, and four flags are load-bearing.** Two real symbols
+of this repo cost **$0.0255 and took 27 seconds**. Left to sit in the project
+instead, a *trivial* prompt costs **$0.217**, because the child loads the project's
+CLAUDE.md and tool definitions on every run — hence `cwd: os.tmpdir()` and:
+
+- `--strict-mcp-config`, or the child starts a second codemap MCP server and its
+  queries come back through the request hook as *the agent* asking. codemap would
+  report itself in the one timeline it exists to keep honest. (Verified: a real run
+  against this repo recorded zero agent calls.)
+- `--setting-sources ''`, so the project's PostToolUse hook is never loaded by the
+  child. **Not `--restricted`**, which says the same in one flag and is rejected
+  outright by CLIs people still have installed — 2.1.167 on this machine.
+- `--allowed-tools ''`, so every tool call is denied and only the prompt leaves.
+- `--json-schema`, which makes "the model answered in prose" impossible. The CLI
+  satisfies it with a StructuredOutput tool call, so the answer is in the envelope's
+  `structured_output` and **not** in `result`, which holds only a closing remark.
+
+A run is far longer than a browser holds a fetch open, so `POST /api/explain`
+answers **202** and the outcome arrives on the socket — `{ type: 'explain', run }`
+— with a 3 s poll as the fallback that also notices a run another tab started.
+`explain()` never throws and never rejects: every failure is a named reason
+(`missing` carries the list of places searched, which is the fixable one).
+`CODEMAP_CLAUDE_BIN` overrides the search.
+
+`GET /api/explain` takes ids on purpose — computing `state` re-reads every
+described file off disk, so an unfiltered answer would read the whole project to
+render a panel showing four.
 
 ## Desktop shell and packaging
 
@@ -599,6 +659,22 @@ the graph can be trusted at a glance on a project that is not this one:
 - A group with no `id` in `groups.json` — written before ids existed — cannot be
   given a colour or a size until it is renamed, which heals the id. Nothing in this
   repo's file is in that state.
+- **An explanation can be confidently wrong, and nothing checks it.** The measured
+  run described `explain()` as "called during session initialization to populate the
+  client", which it is not — it runs on a press. The model is given one symbol's
+  source and the graph's relations, so it reasons about *when* something runs by
+  guessing. The fingerprint proves the reading matches the code it described; it
+  proves nothing about whether the reading is true. This is the exact failure mode
+  this project cares most about, which is why a reading is one ✕ from being
+  forgotten and never feeds the graph.
+- `GET /api/explain` packs ids into one comma-separated parameter and splits on
+  commas, so a path containing a comma — legal on every OS this runs on — becomes
+  two ids that resolve to nothing. Silent wrong answer, nobody has hit it.
+- Neither the followed list nor the reading list is cleared on a project switch, and
+  the "last run cost" line survives one too. Ids from the old project sit there until
+  dropped; pressing Explain on them gets a 400 with the server's own words.
+- `cancel` abandons a run, it does not kill the subprocess: the money is already
+  spent, and what it buys is that the answer is refused and never written.
 - `/api/hook` can still answer 413/400/415: Fastify's 1 MiB body limit and its
   content-type parser reject before the route handler's deliberate 200.
 - A failed view fetch leaves the previous graph rendered under the error banner, and

@@ -21,8 +21,11 @@ import {
   decideCluster,
   fetchChanges,
   fetchClusters,
+  fetchExplanations,
+  cancelExplanations,
   fetchGit,
   fetchSymbol,
+  forgetExplanation,
   fetchAgentCalls,
   fetchHookStatus,
   fetchLanguages,
@@ -34,12 +37,16 @@ import {
   pickProject,
   openInEditor,
   rememberProject,
+  requestExplanations,
   setGitBase,
   switchProject,
   type AgentCall,
   type GroupColor,
   type ChangeEntry,
+  type ExplainFailure,
+  type ExplainRun,
   type GitStatus,
+  type StoredExplanation,
   type SymbolLinks,
   type GroupSuggestion,
   type LanguageReport,
@@ -77,6 +84,18 @@ const BASE_EDGES = ['imports', 'extends', 'implements'] as const;
 function edgeParam(calls: boolean, associates: boolean): string | null {
   const extra = [calls ? 'calls' : '', associates ? 'associates' : ''].filter(Boolean);
   return extra.length === 0 ? null : [...BASE_EDGES, ...extra].join(',');
+}
+
+/** How often to ask a run in flight whether it has finished. */
+const EXPLAIN_POLL_MS = 3000;
+
+/**
+ * What one followed symbol reaches, when that is known. A symbol the graph has
+ * lost reaches nothing, and neither does one nobody has asked about yet — the
+ * difference between those two is a row in the panel, never a lit edge.
+ */
+function linksOf(entry: SymbolLinks | 'gone' | undefined): SymbolLinks | null {
+  return entry === undefined || entry === 'gone' ? null : entry;
 }
 
 /**
@@ -117,6 +136,11 @@ function BranchIcon() {
 interface AgentMessage {
   type: 'agent';
   call: AgentCall;
+}
+
+interface ExplainMessage {
+  type: 'explain';
+  run: ExplainRun;
 }
 
 interface LiveMessage {
@@ -185,10 +209,29 @@ export function App() {
 
   const [following, setFollowing] = useState<ReadonlySet<string>>(() => new Set());
   /**
-   * One entry per followed symbol; null once the server has said it knows
-   * nothing about it, which is different from not having asked yet.
+   * Whole files being held on to, to be explained. A second set rather than
+   * more entries in `following`, and it has to stay that way.
+   *
+   * `following` is a lens: every id in it drives `relatedIds` and
+   * `relatedFiles`, which is what dims the rest of the diagram, and what the
+   * chip counts when it says "N in, N out". A file joins the explain list
+   * without dimming anything, so putting it in that set would make one gesture
+   * mean two things and turn the chip's counts into a lie. Nothing here ever
+   * feeds `relatedIds` or `relatedFiles`.
+   *
+   * Two sets is also how a file path and a symbol id are told apart at all.
+   * Neither shape can be read off the string — `#` is legal in a filename, as
+   * `openInEditor` already has to allow for — so membership is the answer and
+   * no code has to guess.
    */
-  const [links, setLinks] = useState<ReadonlyMap<string, SymbolLinks | null>>(() => new Map());
+  const [reading, setReading] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * One entry per followed symbol: its links, or 'gone' once the server has
+   * said it knows nothing about that id. An id nobody has asked about yet, and
+   * one whose request never arrived, are both simply absent — see the effect
+   * below for why the second of those must not be recorded as an answer.
+   */
+  const [links, setLinks] = useState<ReadonlyMap<string, SymbolLinks | 'gone'>>(() => new Map());
 
   const toggleFollowing = useCallback((id: string, on: boolean) => {
     setFollowing((was) => {
@@ -198,6 +241,59 @@ export function App() {
       return next;
     });
   }, []);
+
+  const toggleReading = useCallback((filePath: string, on: boolean) => {
+    setReading((was) => {
+      const next = new Set(was);
+      if (on) next.add(filePath);
+      else next.delete(filePath);
+      return next;
+    });
+  }, []);
+
+  /**
+   * Dropping addresses an id and looks for it in both sets. Not a guess about
+   * which kind it is: a symbol id is never in `reading` and a path is never in
+   * `following`, so the removal it does not apply to is a no-op.
+   */
+  const dropFollowed = useCallback((id: string) => {
+    setFollowing((was) => {
+      if (!was.has(id)) return was;
+      const next = new Set(was);
+      next.delete(id);
+      return next;
+    });
+    setReading((was) => {
+      if (!was.has(id)) return was;
+      const next = new Set(was);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  /** What the project has had explained, by id, for the ids on show. */
+  const [explanations, setExplanations] = useState<ReadonlyMap<string, StoredExplanation>>(
+    () => new Map(),
+  );
+  /** The run in flight, or the last one to end. */
+  const [run, setRun] = useState<ExplainRun | null>(null);
+  /**
+   * The last run that produced answers, kept across the next one.
+   *
+   * `run` alone would drop the price the moment a new run started, which is
+   * exactly when someone is deciding whether to spend it again.
+   */
+  const [lastRun, setLastRun] = useState<{ costUsd: number; ms: number } | null>(null);
+  /** A press that never became a run — no ids the graph knows, or no server. */
+  const [explainError, setExplainError] = useState<string | null>(null);
+
+  const takeRun = useCallback((next: ExplainRun | null) => {
+    setRun(next);
+    if (next?.state === 'done' && next.costUsd !== undefined) {
+      setLastRun({ costUsd: next.costUsd, ms: next.ms ?? 0 });
+    }
+  }, []);
+
   const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
@@ -293,7 +389,15 @@ export function App() {
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
-        const parsed = JSON.parse(event.data) as LiveMessage | AgentMessage;
+        const parsed = JSON.parse(event.data) as LiveMessage | AgentMessage | ExplainMessage;
+
+        // The run that ended is the one the poll below would have found three
+        // seconds later; the poll stays, because it is the only thing that
+        // notices a run another tab started.
+        if (parsed.type === 'explain') {
+          takeRun(parsed.run);
+          return;
+        }
 
         if (parsed.type === 'agent') {
           setAgentCalls((previous) => [parsed.call, ...previous].slice(0, 200));
@@ -513,15 +617,43 @@ export function App() {
     setLinks(new Map());
   }, [revision]);
 
+  /**
+   * Ask about everything followed that has no answer yet.
+   *
+   * A 404 and a failed request must not collapse into the same nothing. A 404
+   * is the graph saying that id is gone — a rename, or a file that would not
+   * parse this cycle — and it is recorded, because a gone symbol still needs a
+   * row with a ✕: without one it sits in the chip's count and can be removed
+   * nowhere, which is the defect this replaces. A failed request says nothing
+   * about the graph, so it is not recorded at all, and the effect above empties
+   * this map on the next revision so the symbol is asked about again.
+   *
+   * Nothing is dropped from `following` either way. A file saved mid-edit does
+   * not parse for a cycle and every symbol in it answers 404; pruning on that
+   * would silently unfollow the lot, permanently, exactly while the agent works.
+   */
   useEffect(() => {
     const missing = [...following].filter((id) => !links.has(id));
     if (missing.length === 0) return;
     let cancelled = false;
-    Promise.all(missing.map((id) => fetchSymbol(id).catch(() => null))).then((results) => {
+    Promise.all(
+      missing.map((id) =>
+        fetchSymbol(id).then(
+          (found) => found ?? ('gone' as const),
+          () => null,
+        ),
+      ),
+    ).then((results) => {
       if (cancelled) return;
+      // Recording nothing must re-render nothing. A map that only looks the same
+      // is still a new object, and would restart this effect into a retry loop.
+      if (results.every((result) => result === null)) return;
       setLinks((was) => {
         const next = new Map(was);
-        missing.forEach((id, index) => next.set(id, results[index] ?? null));
+        missing.forEach((id, index) => {
+          const result = results[index];
+          if (result != null) next.set(id, result);
+        });
         return next;
       });
     });
@@ -541,8 +673,8 @@ export function App() {
   const relatedIds = useMemo(() => {
     const found = new Set<string>();
     for (const id of following) {
-      const entry = links.get(id);
-      if (!entry) continue;
+      const entry = linksOf(links.get(id));
+      if (entry === null) continue;
       for (const relation of [...entry.uses, ...entry.usedBy]) found.add(relation.id);
     }
     return found;
@@ -565,8 +697,11 @@ export function App() {
     const ids = [...following];
     const settled = ids.every((id) => links.has(id));
     const found = ids
-      .map((id) => links.get(id))
-      .filter((entry): entry is SymbolLinks => entry != null);
+      .map((id) => linksOf(links.get(id)))
+      .filter((entry): entry is SymbolLinks => entry !== null);
+    // Followed, and no longer in the graph. The panel lists these rather than
+    // the page forgetting them, so there is something left to press ✕ on.
+    const gone = ids.filter((id) => links.get(id) === 'gone');
     const uses = found.reduce((total, entry) => total + entry.uses.length, 0);
     const usedBy = found.reduce((total, entry) => total + entry.usedBy.length, 0);
     const only = found.length === 1 ? found[0] : undefined;
@@ -577,6 +712,7 @@ export function App() {
       total: uses + usedBy,
       label: only === undefined ? ids.length + ' symbols' : only.name,
       found,
+      gone,
     };
   }, [following, links]);
 
@@ -584,13 +720,113 @@ export function App() {
     if (following.size === 0) return null;
     const found = new Set<string>();
     for (const id of following) {
-      const entry = links.get(id);
-      if (!entry) continue;
+      const entry = linksOf(links.get(id));
+      if (entry === null) continue;
       found.add(entry.filePath);
       for (const relation of [...entry.uses, ...entry.usedBy]) found.add(relation.filePath);
     }
     return found;
   }, [following, links]);
+
+  /** The held files as rows. The path is also the id they are explained under. */
+  const readingFiles = useMemo(
+    () => [...reading].map((path) => ({ path, name: path.split('/').pop() ?? path })),
+    [reading],
+  );
+
+  /**
+   * Everything the button would explain, as one list of ids.
+   *
+   * Which set an id came from stops mattering here: the server resolves each
+   * against the graph, and a file node's id *is* its path. So the two are kept
+   * apart for what they mean on the diagram, and joined for what they mean to
+   * the model.
+   */
+  const explainIds = useMemo(() => [...following, ...reading], [following, reading]);
+
+  /**
+   * What is stored for those ids, and how a run is getting on.
+   *
+   * A run is a minute of subprocess and outlives the request that started it,
+   * so its outcome is fetched rather than returned; while one is in flight this
+   * asks again on a timer. `revision` is a dependency because an explanation's
+   * state is computed against the file on disk — the same save that redraws a
+   * box is what can turn a reading false.
+   */
+  useEffect(() => {
+    if (explainIds.length === 0 && run === null) return;
+    let cancelled = false;
+    let timer = 0;
+
+    const ask = (): void => {
+      fetchExplanations(explainIds).then(
+        (summary) => {
+          if (cancelled) return;
+          setExplanations(new Map(summary.explanations.map((entry) => [entry.id, entry])));
+          takeRun(summary.run);
+          if (summary.run?.state === 'running') timer = window.setTimeout(ask, EXPLAIN_POLL_MS);
+        },
+        // Leave on screen what is on screen: a poll that did not arrive is not
+        // an answer that changed, and blanking the panel would claim it was.
+        () => undefined,
+      );
+    };
+    ask();
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [explainIds, revision, data?.root, run?.id, run?.state, takeRun]);
+
+  /**
+   * Spend the user's quota, on exactly what the list already holds. Nothing is
+   * ever explained automatically; this only ever happens on a press.
+   */
+  const explainFollowed = useCallback(() => {
+    if (explainIds.length === 0) return;
+    setExplainError(null);
+    requestExplanations(explainIds).then(
+      (result) => takeRun(result.run),
+      (cause: unknown) => setExplainError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, [explainIds, takeRun]);
+
+  const cancelExplain = useCallback(() => {
+    cancelExplanations().then(
+      (result) => takeRun(result.run),
+      () => undefined,
+    );
+  }, [takeRun]);
+
+  /**
+   * Forgetting is not unfollowing. The ✕ takes a row off the list; this takes the
+   * words out of a file that is committed to the project, which is a different
+   * act and needs its own control — the same reason groups have both a reject
+   * and a delete.
+   */
+  const forgetOne = useCallback((id: string) => {
+    forgetExplanation(id).then(
+      () =>
+        setExplanations((was) => {
+          const next = new Map(was);
+          next.delete(id);
+          return next;
+        }),
+      (cause: unknown) => setExplainError(cause instanceof Error ? cause.message : String(cause)),
+    );
+  }, []);
+
+  /**
+   * Why the last press produced no words. A request that never became a run is
+   * reported the same way, in the server's own wording — the useful half of a
+   * failure is always the detail, not the label.
+   */
+  const explainFailure = useMemo(() => {
+    if (explainError !== null) return { reason: 'failed' as ExplainFailure, detail: explainError };
+    if (run?.state !== 'failed') return null;
+    return { reason: run.reason ?? ('failed' as ExplainFailure), detail: run.detail ?? '' };
+  }, [explainError, run]);
 
   useEffect(() => {
     let cancelled = false;
@@ -749,6 +985,11 @@ export function App() {
         following,
         related: relatedIds,
         onFollow: toggleFollowing,
+        // Fed from `reading`, never from `following`: holding a file adds it to
+        // the explain list and dims nothing. Only a file box shows the control,
+        // and the path it hands back is files[0] — the one `.box-open` opens.
+        followed: node.kind === 'file' && reading.has(node.files[0] ?? ''),
+        onFollowFile: toggleReading,
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
         aside: relatedFiles !== null && !node.files.some((file) => relatedFiles.has(file)),
@@ -880,6 +1121,8 @@ export function App() {
     queriedBoxIds,
     following,
     toggleFollowing,
+    reading,
+    toggleReading,
     relatedIds,
     relatedFiles,
     expanded,
@@ -1082,6 +1325,9 @@ export function App() {
         fitRef.current?.();
       } else if (event.key === 'Escape') {
         clearSelection();
+        // The lens, and not the list. `reading` survives on purpose: a keystroke
+        // that means "stop dimming things" must not also empty a list the user
+        // built deliberately and may already have paid to have explained.
         setFollowing(new Set());
         setShowWelcome(false);
       }
@@ -1760,8 +2006,23 @@ export function App() {
             groupEditor={groupEditor}
             following={{
               links: reach.found,
+              gone: reach.gone,
+              // The reading list reaches the panel as its own field, so nothing
+              // there has to work out from the string which of the two kinds of
+              // id it is holding.
+              files: readingFiles,
               settled: reach.settled,
-              onDrop: (id: string) => toggleFollowing(id, false),
+              explanations,
+              running: run?.state === 'running',
+              // Only the ids this run asked about; the rest of the section is
+              // not waiting on anything.
+              runningIds: new Set(run?.state === 'running' ? run.ids : []),
+              lastRun,
+              failure: explainFailure,
+              onExplain: explainFollowed,
+              onDrop: dropFollowed,
+              onCancel: cancelExplain,
+              onForget: forgetOne,
             }}
           />
         )}

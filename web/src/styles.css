@@ -181,6 +181,49 @@ main { display: flex; flex: 1; min-height: 0; }
 .box:hover .box-open { opacity: 1; }
 .box-open:hover { color: var(--accent); background: var(--line); }
 
+/* Holding a whole file, to be explained later. It wears the square a member row
+   wears, because it is the same act on a bigger thing — one mark, one meaning,
+   wherever it appears. Hidden until the box is under the cursor, like the
+   editor link beside it: a field of squares across forty boxes would cost the
+   four signals this surface already carries.
+
+   Sized in fixed pixels and never in ems. HEADER_HEIGHT in layout.ts is what
+   dagre places every box from and what every group frame is drawn around, so a
+   control that grew this row would move frames on the other side of the
+   diagram. 15px sits inside the 18px the title text already occupies. */
+.box-follow {
+  flex: none;
+  position: relative;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+.box-follow::after {
+  content: '';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  opacity: 0;
+}
+.box:hover .box-follow::after { opacity: 1; }
+.box-follow:hover::after { border-color: var(--accent); }
+/* Once the file is on the list the mark stays, hover or not. Hiding it would
+   leave the list with no presence on the diagram at all, and this control is
+   deliberately the one that dims nothing — so the mark is all it has to say
+   with. */
+.box-follow[aria-pressed='true']::after {
+  opacity: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 .box-folder .box-title { color: var(--folder); }
 .box-folder { border-color: #6b5730; }
 
@@ -782,6 +825,144 @@ main { display: flex; flex: 1; min-height: 0; }
   text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* --- what the followed things are for ------------------------------------
+
+   A model's reading of the symbols and files being held, inside the followed
+   section rather than beside it: an explanation parted from the thing it
+   explains is how a rotted one gets believed. */
+
+/* It spends the user's quota, so it reads as a press you decided to make —
+   bordered, like the panel's other actions — never as a link you might hit
+   twice on the way past. */
+.explain-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 11px;
+}
+.explain-run:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.explain-run:disabled { border-color: var(--line); color: var(--line-strong); cursor: default; }
+/* A run is a minute long. The button holds its place and says so, because the
+   alternative is a screen where nothing happens and nothing to point at. */
+.explain-run[aria-busy='true'] { border-color: #4a6b8a; color: var(--accent); }
+
+/* What the last run cost. Information, not a warning — the weight of the file
+   path beside a symbol name, not of the symbol. It has to stay readable, though:
+   the whole case for showing a price instead of asking permission every time is
+   that the price is actually visible. */
+.explain-stop {
+  background: transparent;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  padding: 2px 7px;
+}
+.explain-stop:hover { border-color: var(--accent); color: var(--text); }
+
+.explain-cost {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* How much of the reading still holds, set from data-state. Two grades and they
+   are not shades of one thing: drifted is grey because the words are still true
+   and merely no longer complete, stale is amber because the source moved under
+   them and they may now be false. Amber is this stylesheet's colour for a gap
+   rather than an error, which is what both are — the run succeeded; the code
+   went on without it. Orphaned is dashed and grey, the way an out-of-scope box
+   and an unaccepted group already are: still here, no longer derived from
+   anything. */
+.explain-state {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  line-height: 14px;
+  padding: 0 5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+/* The only state worth no attention at all, so it is given none. The panel is
+   better off rendering nothing for it; this is what it costs if it does. */
+.explain-state[data-state='current']  { border-color: transparent; color: var(--line-strong); }
+.explain-state[data-state='drifted']  { color: var(--muted); }
+.explain-state[data-state='stale']    { border-color: #5c4c28; background: #241f14; color: var(--folder); }
+.explain-state[data-state='orphaned'] { border-style: dashed; color: var(--muted); }
+.explain-state[data-state='unknown']  { border-style: dashed; color: var(--muted); }
+
+/* The answer, and the only prose in this panel: not monospace, and a step
+   brighter than the metadata around it, because it is the thing you opened the
+   panel to read rather than something you scan past. */
+.explain-short {
+  margin: 5px 0 0;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* The fuller reading, folded away until asked for. The rule down the left is
+   the one a method wears under its class: it belongs to the line above it. */
+.explain-long {
+  margin: 6px 0 0;
+  padding-left: 8px;
+  border-left: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+/* Inline at the end of the short text, so it reads as the sentence carrying on
+   rather than as a control with business of its own. */
+.explain-more {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  padding: 0 0 0 4px;
+}
+.explain-more:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Dimmed, never deleted: a rewritten function is exactly when the old reading
+   is worth having, and most of it is usually still right. Put on the block that
+   holds the text — the state chip stays at full strength, since it is the part
+   that says why the rest is faded. */
+.explain-stale .explain-short,
+.explain-stale .explain-long { opacity: 0.55; }
+
+/* A failed run names its reason. 'claude' is not on the PATH and a login that
+   expired are both fixable and "failed" is not, so the detail is given room:
+   bordered like the canvas error, monospace because it is usually a path or a
+   line of stderr, and wrapping because the useful ones are long. */
+.explain-failed {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border: 1px solid #5a2b2b;
+  border-radius: 5px;
+  background: #241a1a;
+  color: #f2a2a2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .panel-empty {

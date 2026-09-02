@@ -1,5 +1,6 @@
 import type { GitStatus } from '../git/types.js';
 import type { GraphStore } from '../graph/store.js';
+import type { ExplainRun } from './session.js';
 import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -35,6 +36,12 @@ export interface LiveHub {
    * message rather than a view update nobody needs.
    */
   agentActed(call: { at: number; tool: string; target: string | null }): void;
+  /**
+   * An explain run ended. It starts a minute or so after the request that asked
+   * for it, so the page has no reply left open to learn the outcome on — and the
+   * graph did not change, so this is its own message rather than a view update.
+   */
+  explainChanged(run: ExplainRun): void;
   clientCount(): number;
 }
 
@@ -88,6 +95,13 @@ export function createLiveHub(
 
     agentActed(call) {
       const payload = JSON.stringify({ type: 'agent', call });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
+    },
+
+    explainChanged(run) {
+      const payload = JSON.stringify({ type: 'explain', run });
       for (const socket of clients.keys()) {
         if (socket.readyState === OPEN) socket.send(payload);
       }

@@ -118,6 +118,25 @@
       ],
       "state": "accepted",
       "id": "src/project/hook.ts~3"
+    },
+    {
+      "name": "Prog.lang decoder",
+      "files": [
+        "src/graph/resolve.ts",
+        "src/lang/csharp.ts",
+        "src/lang/go.ts",
+        "src/lang/java.ts",
+        "src/lang/javascript.ts",
+        "src/lang/registry.ts",
+        "src/lang/rust.ts",
+        "src/lang/types.ts",
+        "src/lang/typescript.ts",
+        "src/parser/extract.ts",
+        "src/parser/types.ts",
+        "src/parser/worker.ts"
+      ],
+      "state": "accepted",
+      "id": "src/graph/resolve.ts~12"
     }
   ]
 }

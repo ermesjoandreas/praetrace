@@ -3,6 +3,14 @@ import path from 'node:path';
 import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
 import { createParserPool } from '../parser/pool.js';
+import {
+  explain,
+  readExplanations,
+  writeExplanations,
+  type ExplainOutcome,
+  type ExplainTarget,
+  type Explanation,
+} from '../project/explain.js';
 import { readGitStatus } from '../project/git.js';
 import { scanProject } from '../project/scan.js';
 import { createUpdater } from '../project/updater.js';
@@ -24,6 +32,40 @@ export interface AgentCall {
 export interface ChangeEntry {
   at: number;
   files: string[];
+}
+
+/** Why a run ended with no answers, in the words `explain()` reports them. */
+/**
+ * Every way a run can end badly. 'unsaved' is the one the explainer itself
+ * cannot report: the answers arrived and were paid for, and then the project
+ * would not take them.
+ */
+export type ExplainFailure = Extract<ExplainOutcome, { ok: false }>['reason'] | 'unsaved';
+
+/**
+ * One press of the explain button.
+ *
+ * A run is a minute or more of subprocess, which is far longer than a browser
+ * will hold a fetch open, so it outlives the request that started it: the POST
+ * answers with this and the same object is pushed again when it ends. That is
+ * also why a failure lives *in* it rather than in a status code — the request
+ * was fine, the run was not, and only one of those is an HTTP error.
+ *
+ * Nothing here is stored. A run belongs to the session, like the change feed;
+ * the answers it produced are what gets written to the project.
+ */
+export interface ExplainRun {
+  id: string;
+  at: number;
+  /** What was asked about, so the panel can mark exactly those rows running. */
+  ids: string[];
+  state: 'running' | 'done' | 'failed' | 'cancelled';
+  finishedAt?: number;
+  /** What it cost the user. Present only on a run that produced answers. */
+  costUsd?: number;
+  ms?: number;
+  reason?: ExplainFailure;
+  detail?: string;
 }
 
 /**
@@ -68,6 +110,19 @@ export interface Session {
   setGitBase(base: string): Promise<GitStatus | null>;
   /** Re-reads git; true when the answer differs from the one being served. */
   refreshGit(): Promise<boolean>;
+  /** Everything this project has had explained, as last read or written. */
+  explanations(): readonly Explanation[];
+  /** The run in flight, or the last one to end. Null until the first press. */
+  explainRun(): ExplainRun | null;
+  /**
+   * Start one, or refuse: one press, one subprocess. `onEnded` fires once, with
+   * the same run object this returned, and not at all once the session is closed.
+   */
+  startExplain(targets: ExplainTarget[], onEnded: (run: ExplainRun) => void): ExplainRun | null;
+  /** Abandon the run in flight. True when there was one. */
+  cancelExplain(): boolean;
+  /** Drop one stored explanation. True when it was there to drop. */
+  forgetExplanation(id: string): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -100,6 +155,13 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   let status = await readGitStatus(root, requested);
   let key = statusKey(status);
   let closed = false;
+
+  // Read with the project for the same reason git is: the panel asks on its
+  // first render, and a project that has been explained before should not have
+  // to spend a run to say so. A missing or unparseable file is an empty list,
+  // never a failure to open.
+  let explanations = await readExplanations(root);
+  let run: ExplainRun | null = null;
 
   /**
    * Reads are queued behind one another rather than sharing the one in flight:
@@ -156,6 +218,44 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   });
   const watcher = watchProject({ root, onChange: (change) => updater.queue(change) });
 
+  /**
+   * Record what a finished run produced, and put it where it survives a restart.
+   *
+   * The answers are held in memory before they are written, and a write that
+   * fails is reported rather than raised: the user has already paid for these
+   * words, so a read-only project loses the file, not the answers.
+   */
+  async function settle(finished: ExplainRun, outcome: ExplainOutcome): Promise<void> {
+    finished.finishedAt = Date.now();
+
+    if (!outcome.ok) {
+      finished.state = 'failed';
+      finished.reason = outcome.reason;
+      finished.detail = outcome.detail;
+      return;
+    }
+
+    const merged = mergeExplanations(explanations, outcome.explanations);
+    finished.costUsd = outcome.costUsd;
+    finished.ms = outcome.ms;
+
+    try {
+      await writeExplanations(root, merged);
+      explanations = merged;
+      finished.state = 'done';
+    } catch (error) {
+      // The words arrived and the money is spent, but they are not on disk — so
+      // they will be gone at the next restart. Reporting 'done' here would show
+      // the reader a paid-for answer the project never kept. The answers are
+      // still held in memory so nothing is thrown away in the meantime.
+      explanations = merged;
+      finished.state = 'failed';
+      finished.reason = 'unsaved';
+      finished.detail = error instanceof Error ? error.message : String(error);
+      handlers.onError(`could not write .codemap/explain.json: ${finished.detail}`);
+    }
+  }
+
   return {
     root,
     store,
@@ -174,13 +274,79 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       return status;
     },
     refreshGit,
+
+    explanations: () => explanations,
+    explainRun: () => run,
+
+    startExplain(targets, onEnded) {
+      if (run?.state === 'running') return null;
+
+      const started: ExplainRun = {
+        id: `run-${Date.now().toString(36)}`,
+        at: Date.now(),
+        ids: targets.map((target) => target.id),
+        state: 'running',
+      };
+      run = started;
+
+      void explain(targets).then(async (outcome) => {
+        // A cancelled run, or one whose project has been switched away from,
+        // must not write: its answers describe a project nobody is looking at,
+        // and `.codemap/explain.json` would gain them behind the user's back.
+        if (closed || started.state !== 'running') return;
+        await settle(started, outcome);
+        if (!closed) onEnded(started);
+      });
+
+      return started;
+    },
+
+    cancelExplain() {
+      // The subprocess is abandoned rather than killed — `explain` takes no
+      // signal — so this stops the answer being used, not the money being spent.
+      if (run?.state !== 'running') return false;
+      run.state = 'cancelled';
+      run.finishedAt = Date.now();
+      return true;
+    },
+
+    async forgetExplanation(id) {
+      const next = explanations.filter((entry) => entry.id !== id);
+      if (next.length === explanations.length) return false;
+      explanations = next;
+      await writeExplanations(root, next);
+      return true;
+    },
+
     async close() {
       closed = true;
+      // What aborting a run amounts to here: the answer is refused, and the run
+      // says so rather than being left reading 'running' for ever.
+      if (run?.state === 'running') {
+        run.state = 'cancelled';
+        run.finishedAt = Date.now();
+      }
       clearInterval(poll);
       updater.close();
       await Promise.allSettled([watcher.close(), pool.close()]);
     },
   };
+}
+
+/**
+ * The stored list with a run's answers folded in, newest wins.
+ *
+ * Sorted by id so a file that is committed does not reorder itself according to
+ * which symbols happened to be explained together, which would put a diff in
+ * front of a reviewer for a run that added one line.
+ */
+function mergeExplanations(
+  stored: readonly Explanation[],
+  fresh: readonly Explanation[],
+): Explanation[] {
+  const byId = new Map(stored.map((entry) => [entry.id, entry]));
+  for (const entry of fresh) byId.set(entry.id, entry);
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /**

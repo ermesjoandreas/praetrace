@@ -2,6 +2,8 @@ import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { GitFileStatus, GitStatus } from '../../src/git/types.js';
 import type { LanguageId } from '../../src/lang/types.js';
 import type { GroupColor } from '../../src/project/groups.js';
+import type { ExplainState, ExplainedEntry } from '../../src/server/app.js';
+import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { ViewGraph } from '../../src/view/types.js';
 
 // Types only. `groups.ts` reaches for node:fs, so nothing may import a value
@@ -351,4 +353,96 @@ export async function fetchAgentCalls(): Promise<{ calls: AgentCall[]; lastAt: n
   const response = await fetch(`${base}/api/agent`);
   if (!response.ok) throw new Error(`agent log failed: HTTP ${response.status}`);
   return (await response.json()) as { calls: AgentCall[]; lastAt: number | null };
+}
+
+/**
+ * Reading, not deciding. The app spawns `claude -p` to say what a followed
+ * symbol is *for*; it may never let a model decide anything — a group's name
+ * stays the user's. See CLAUDE.md, and the run itself in src/project/explain.ts.
+ */
+export type { ExplainRun, ExplainFailure, ExplainState };
+
+/**
+ * A stored explanation, told how it now stands to the code it describes. The
+ * server calls this an ExplainedEntry; from the page it is what is stored.
+ */
+export type StoredExplanation = ExplainedEntry;
+
+export interface ExplainSummary {
+  explanations: StoredExplanation[];
+  /** How many the project holds, including ones these ids did not ask for. */
+  total: number;
+  /** The run in flight, or the last one to end. Null until the first press. */
+  run: ExplainRun | null;
+}
+
+/**
+ * What has been explained, for the ids the panel is showing.
+ *
+ * The ids are not a convenience. `state` is computed by re-reading each
+ * described file off disk, so an unfiltered answer would read every explained
+ * file in the project every time the panel renders.
+ */
+export async function fetchExplanations(ids: string[]): Promise<ExplainSummary> {
+  const base = await serverOrigin();
+  const query = ids.length === 0 ? '' : `?ids=${encodeURIComponent(ids.join(','))}`;
+  const response = await fetch(`${base}/api/explain${query}`);
+  if (!response.ok) throw new Error(`explanations failed: HTTP ${response.status}`);
+  return (await response.json()) as ExplainSummary;
+}
+
+export interface ExplainResult {
+  /** The run now in flight — the one just started, or one already going. */
+  run: ExplainRun | null;
+}
+
+/**
+ * Spend the user's quota on these ids, and return the moment it has started.
+ *
+ * A run is a minute of subprocess — far longer than a browser will hold a fetch
+ * open — so the answer is not here. It arrives in the run, which the caller
+ * reads back until it ends. 409 is that same non-failure from the other side:
+ * something is already spending the quota, so follow it rather than report it.
+ */
+/** Stop the run in flight. The server answers with whatever state it ended in. */
+export async function cancelExplanations(): Promise<ExplainResult> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/explain`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'cancel' }),
+  });
+  const body = (await response.json()) as { run?: ExplainRun };
+  return { run: body.run ?? null };
+}
+
+/**
+ * Drop one stored reading. A reading can simply be wrong, and .codemap/explain.json
+ * is committed — so there has to be a way to take one back that is not editing the
+ * file by hand.
+ */
+export async function forgetExplanation(id: string): Promise<void> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/explain`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'forget', id }),
+  });
+  if (!response.ok) {
+    const body = (await response.json()) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${response.status}`);
+  }
+}
+
+export async function requestExplanations(ids: string[]): Promise<ExplainResult> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/explain`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'run', ids }),
+  });
+  const body = (await response.json()) as { run?: ExplainRun; error?: string };
+  if (response.status === 409) return { run: body.run ?? null };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return { run: body.run ?? null };
 }

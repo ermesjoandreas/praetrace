@@ -47,6 +47,7 @@ async function main(): Promise<void> {
     onProjectChanged: async (changedRoot) => {
       await ports?.pointAt(changedRoot);
     },
+    onExplainRun: (run) => hub?.explainChanged(run),
   });
   await app.listen({ port, host: '127.0.0.1' });
 

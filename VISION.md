@@ -169,8 +169,12 @@ Kept here so the decision is not silently revisited later:
   mediocre parsers beat no parser at all — is answered by a rule rather than by a
   ban: a language ships only when its edges are verified against a real repository.
   See "Many languages" in CLAUDE.md.
-- **LLM-generated diagrams.** Too slow and too imprecise for a live view. The LLM's
-  role is semantic dataflow inference between files — a later capability, and never
-  the source of truth for structure.
+- **LLM-generated diagrams.** Still refused, and for the original reasons: too slow
+  and too imprecise for a live view, and never the source of truth for structure.
+  What changed on 2026-09-02 is that the LLM has a **second narrow role** beside the
+  planned dataflow inference — *explaining what the graph already found*. The
+  structure stays static analysis; the model says what a symbol is for, on request,
+  once the boxes are already on screen. It is asked to read, never to draw and never
+  to decide. See "Explaining what the graph found" in CLAUDE.md.
 - **Persistence and history beyond the session.** Interesting, but it turns an
   in-memory tool into a database product. Revisit after phase 4.

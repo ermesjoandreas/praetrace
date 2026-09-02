@@ -32,6 +32,15 @@ export type BoxData = {
   /** Symbol ids any of them relate to, so a row knows whether to light or fade. */
   related: ReadonlySet<string>;
   onFollow: (id: string, on: boolean) => void;
+  /**
+   * This whole file is being held on to, to be explained later. It is fed from
+   * a different set than `following`, and must stay that way: a followed symbol
+   * is a lens — it drives `related` and `aside` — while a held file is only a
+   * list entry. Routing it into the same set would make one gesture mean two
+   * things and make the chip's "N in, N out" count a lie.
+   */
+  followed: boolean;
+  onFollowFile: (path: string, on: boolean) => void;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
@@ -138,10 +147,32 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             {tag}
           </span>
         )}
+        {/* Wears the same mark a member row uses, because it is the same act on a
+            bigger thing. It deliberately does not light the file's symbols: a
+            click on a box already means "inspect this", and a second meaning
+            for one gesture is worse than a control you have to press. Only on a
+            file box — a folder stands for many paths, and quietly holding all
+            of them would be a different act than the one you asked for. */}
         {file !== undefined && (
-          <button type="button" className="box-open" title="Open in editor" onClick={open(1)}>
-            ↗
-          </button>
+          <>
+            <button
+              type="button"
+              className="box-follow"
+              aria-pressed={data.followed}
+              title={
+                data.followed
+                  ? 'Stop holding on to this file'
+                  : 'Hold on to this file, to explain later — nothing in the diagram dims'
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                data.onFollowFile(file, !data.followed);
+              }}
+            />
+            <button type="button" className="box-open" title="Open in editor" onClick={open(1)}>
+              ↗
+            </button>
+          </>
         )}
       </div>
 

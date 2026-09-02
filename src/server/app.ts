@@ -1,10 +1,17 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { Graph, GraphNode } from '../graph/types.js';
 import { LANGUAGES } from '../lang/registry.js';
+import {
+  fingerprintOf,
+  relationsFingerprint,
+  type ExplainTarget,
+  type Explanation,
+} from '../project/explain.js';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
 import { isIgnoredDirectoryName } from '../project/walk.js';
 import {
@@ -20,7 +27,7 @@ import {
   type NamedGroup,
 } from '../project/groups.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
-import { describe, describeSymbol } from '../view/detail.js';
+import { describe, describeSymbol, type FileDetail, type SymbolLinks } from '../view/detail.js';
 import {
   DEFAULT_EDGE_KINDS,
   parseDuration,
@@ -31,7 +38,7 @@ import { search } from '../view/search.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
-import type { SessionHost } from './session.js';
+import type { ExplainRun, SessionHost } from './session.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -64,6 +71,41 @@ const UNREADABLE_EXTENSIONS = new Set([
   '.ex', '.hs', '.elm', '.zig',
 ]);
 
+/**
+ * How a stored explanation stands to the code it describes.
+ *
+ * Two grades of "out of date" because they mean opposite things to a reader:
+ * only `stale` should stop you trusting the words. `none` is the vocabulary's
+ * fourth answer and is never sent — an id with nothing stored has no entry, and
+ * the panel calls that none.
+ */
+export type ExplainState = 'none' | 'current' | 'drifted' | 'stale' | 'orphaned' | 'unknown';
+
+export interface ExplainedEntry extends Explanation {
+  state: ExplainState;
+}
+
+/**
+ * The most of one target worth reading off disk. A 2000-line file is not a
+ * question, it is a bill.
+ *
+ * The cut is announced inside the text, because this string is both what the
+ * model is shown and what the fingerprint is taken over — a fingerprint of the
+ * whole file compared against an excerpt would read as stale for ever.
+ * `explain.ts` clips again, tighter, for the prompt itself; the effect is that a
+ * change past its cut still shows here as stale, which errs towards re-reading
+ * rather than towards trusting words nobody checked.
+ */
+const MAX_SOURCE_LINES = 400;
+const MAX_SOURCE_CHARS = 24_000;
+
+/**
+ * Relations per direction, and capped per direction: fifty callers must not
+ * push out everything the symbol uses, which is the half that says what it is
+ * for rather than who wanted it.
+ */
+const MAX_CONTEXT = 20;
+
 export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
   host: SessionHost;
@@ -73,9 +115,17 @@ export interface AppOptions {
    * port file can follow it. The hook reads that file to find this server.
    */
   onProjectChanged: (root: string) => Promise<void>;
+  /**
+   * An explain run ended, a minute or more after the request that started it.
+   * The graph did not change, so this belongs on the socket as its own message
+   * — the same reason `agentActed` is one — and the hub is outside this change,
+   * so it arrives as a callback. Unwired, the page learns the outcome from its
+   * next GET /api/explain instead of being told.
+   */
+  onExplainRun?: (run: ExplainRun) => void;
 }
 
-export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyInstance {
+export function buildApp({ host, hub, onProjectChanged, onExplainRun }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
   // The MCP proxy marks its own requests, which is the only way to tell an
@@ -146,6 +196,78 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const links = describeSymbol(host.current().store.graph, id);
     if (!links) return reply.code(404).send({ error: `no symbol ${id}` });
     return links;
+  });
+
+  /**
+   * What has been explained, for the ids the panel is showing.
+   *
+   * It takes ids on purpose. `state` is computed by re-reading each described
+   * file off disk, so an unfiltered answer would read every explained file in
+   * the project on every render of a panel showing four. With no ids it is the
+   * cheap poll instead: how many exist, and what the run is doing.
+   */
+  app.get('/api/explain', async (request) => {
+    const session = host.current();
+    const query = request.query as Record<string, unknown>;
+    const wanted = new Set(readCsv(query['ids']));
+    const stored = session.explanations();
+
+    return {
+      explanations: await Promise.all(
+        stored
+          .filter((entry) => wanted.has(entry.id))
+          .map(async (entry) => explained(session.store.graph, session.root, entry)),
+      ),
+      total: stored.length,
+      run: session.explainRun(),
+    };
+  });
+
+  /**
+   * Spend the user's quota, stop spending it, or throw an answer away.
+   *
+   * `run` answers 202 and not a byte of the explanation: the subprocess takes a
+   * minute or more, which is longer than a browser will hold a fetch open, and
+   * a fetch that dies leaves the run with nobody waiting for it. The answer
+   * arrives on the socket, and is readable from the GET above either way.
+   */
+  app.post('/api/explain', async (request, reply) => {
+    const session = host.current();
+    const body = (request.body ?? {}) as { action?: unknown; ids?: unknown; id?: unknown };
+
+    if (body.action === 'cancel') {
+      return { cancelled: session.cancelExplain(), run: session.explainRun() };
+    }
+
+    if (body.action === 'forget') {
+      const id = typeof body.id === 'string' ? body.id : '';
+      if (id === '') return reply.code(400).send({ error: 'id must be a non-empty string' });
+      // An explanation can simply be wrong, and hand-editing a committed file is
+      // not an answer to that.
+      return { forgotten: await session.forgetExplanation(id) };
+    }
+
+    if (body.action !== 'run') {
+      return reply.code(400).send({ error: "action must be 'run', 'cancel' or 'forget'" });
+    }
+
+    const targets: ExplainTarget[] = [];
+    for (const id of readStrings(body.ids)) {
+      const target = await resolveTarget(session.store.graph, session.root, id);
+      if (target) targets.push(target);
+    }
+    // Not a failed run — nothing was asked. A run that produces no answers is
+    // reported as a run; a request naming ids the graph has never heard of is a
+    // bad request, and telling them apart is what stops a spinner starting.
+    if (targets.length === 0) {
+      return reply.code(400).send({ error: 'none of those ids are in the graph' });
+    }
+
+    const run = session.startExplain(targets, (ended) => onExplainRun?.(ended));
+    if (!run) {
+      return reply.code(409).send({ error: 'a run is already in flight', run: session.explainRun() });
+    }
+    return reply.code(202).send({ run });
   });
 
   app.get('/api/search', async (request) => {
@@ -326,6 +448,143 @@ async function countUnreadable(root: string): Promise<{ extension: string; files
   return [...counted]
     .map(([extension, files]) => ({ extension, files }))
     .sort((a, b) => b.files - a.files || a.extension.localeCompare(b.extension));
+}
+
+/**
+ * One id — a file path or a symbol id — as something worth sending to a model.
+ *
+ * The source is read from disk rather than carried on the graph, which holds
+ * line ranges and no text. Re-reading is also what makes the fingerprint
+ * describe the code as it is at the moment of the run.
+ */
+async function resolveTarget(
+  graph: Graph,
+  root: string,
+  id: string,
+): Promise<ExplainTarget | null> {
+  const node = graph.nodes.get(id);
+  if (!node) return null;
+
+  const source = await readSource(root, node);
+  if (source === null) return null;
+
+  const shared = { id, name: node.name, filePath: node.filePath, source };
+
+  if (node.kind === 'file') {
+    const detail = describe(graph, node.filePath);
+    return {
+      ...shared,
+      kind: 'file',
+      context: detail?.kind === 'file' ? fileContext(detail) : [],
+      // The same list explainState will recompute later, so the two agree.
+      related: relatedFilesOf(graph, id),
+    };
+  }
+
+  const links = describeSymbol(graph, id);
+  return {
+    ...shared,
+    kind: 'symbol',
+    context: links ? symbolContext(links) : [],
+    related: relatedFilesOf(graph, id),
+  };
+}
+
+/** One stored explanation, told how it now stands to the code it describes. */
+async function explained(
+  graph: Graph,
+  root: string,
+  entry: Explanation,
+): Promise<ExplainedEntry> {
+  return { ...entry, state: await explainState(graph, root, entry) };
+}
+
+async function explainState(
+  graph: Graph,
+  root: string,
+  entry: Explanation,
+): Promise<ExplainState> {
+  const node = graph.nodes.get(entry.id);
+  if (!node) return 'orphaned';
+
+  const source = await readSource(root, node);
+  // In the graph and not on disk: a delete the parser has not caught up with,
+  // which is the same answer one re-parse early.
+  if (source === null) return 'orphaned';
+
+  const fresh = fingerprintOf(source);
+  // Read the algorithm back rather than assume it. An entry written by a build
+  // that hashed differently cannot be compared with this one's, and saying so is
+  // the whole difference between 'unknown' and reporting every old entry stale.
+  if (algorithmOf(fresh) !== algorithmOf(entry.fingerprint)) return 'unknown';
+  if (fresh !== entry.fingerprint) return 'stale';
+
+  return movedAround(graph, entry) ? 'drifted' : 'current';
+}
+
+/**
+ * Whether the relations this explanation was written against have changed.
+ *
+ * Compared as a hash of the relations themselves, not as a timestamp. The first
+ * attempt asked whether a related file's mtime was newer than `at`, which is
+ * true of every file in a fresh clone — so a committed explanation read as
+ * drifted for everyone except its author, defeating the reason it is committed.
+ *
+ * An entry written before relations were recorded has nothing to compare and is
+ * left alone: claiming drift we cannot see is the same kind of lie as missing it.
+ */
+function movedAround(graph: Graph, entry: Explanation): boolean {
+  if (entry.relations === undefined) return false;
+  return relationsFingerprint(relatedFilesOf(graph, entry.id)) !== entry.relations;
+}
+
+function relatedFilesOf(graph: Graph, id: string): string[] {
+  if (graph.nodes.get(id)?.kind === 'file') {
+    const detail = describe(graph, id);
+    return detail?.kind === 'file' ? [...detail.imports, ...detail.importedBy] : [];
+  }
+  const links = describeSymbol(graph, id);
+  return links ? [...links.uses, ...links.usedBy].map((relation) => relation.filePath) : [];
+}
+
+/** The label before the colon in a fingerprint, or '' when there is none. */
+function algorithmOf(fingerprint: string): string {
+  const colon = fingerprint.indexOf(':');
+  return colon === -1 ? '' : fingerprint.slice(0, colon);
+}
+
+async function readSource(root: string, node: GraphNode): Promise<string | null> {
+  const raw = await readFile(path.join(root, node.filePath), 'utf8').catch(() => null);
+  if (raw === null) return null;
+  // Ranges are 1-based and inclusive, and a file node spans the whole file.
+  return clip(raw.split('\n').slice(node.range.startLine - 1, node.range.endLine));
+}
+
+function clip(lines: readonly string[]): string {
+  const kept = lines.slice(0, MAX_SOURCE_LINES).join('\n');
+  const text = kept.slice(0, MAX_SOURCE_CHARS);
+  if (text.length === kept.length && lines.length <= MAX_SOURCE_LINES) return text;
+  return `${text}\n… truncated; the original is ${lines.length} lines`;
+}
+
+function symbolContext(links: SymbolLinks): string[] {
+  return [
+    ...links.usedBy.slice(0, MAX_CONTEXT).map((r) => `used by ${r.id} (${r.edge})`),
+    ...links.uses.slice(0, MAX_CONTEXT).map((r) => `uses ${r.id} (${r.edge})`),
+  ];
+}
+
+function fileContext(detail: FileDetail): string[] {
+  return [
+    ...detail.importedBy.slice(0, MAX_CONTEXT).map((from) => `used by ${from}`),
+    ...detail.imports.slice(0, MAX_CONTEXT).map((to) => `uses ${to}`),
+  ];
+}
+
+/** A comma-separated query parameter. No id in the graph contains a comma. */
+function readCsv(raw: unknown): string[] {
+  if (typeof raw !== 'string' || raw === '') return [];
+  return raw.split(',').filter((value) => value !== '');
 }
 
 /** Everything here is user input, from a query string or a socket frame. */
