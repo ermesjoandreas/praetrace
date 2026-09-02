@@ -42,6 +42,14 @@ export interface LiveHub {
    * graph did not change, so this is its own message rather than a view update.
    */
   explainChanged(run: ExplainRun): void;
+  /**
+   * A few characters of an answer as it is written.
+   *
+   * Its own message rather than a run update: these arrive dozens of times a
+   * second and carry no state, and putting them through the run would make
+   * every client re-render its whole panel for three letters.
+   */
+  explainDelta(runId: string, text: string): void;
   clientCount(): number;
 }
 
@@ -102,6 +110,13 @@ export function createLiveHub(
 
     explainChanged(run) {
       const payload = JSON.stringify({ type: 'explain', run });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
+    },
+
+    explainDelta(runId, text) {
+      const payload = JSON.stringify({ type: 'explain-delta', runId, text });
       for (const socket of clients.keys()) {
         if (socket.readyState === OPEN) socket.send(payload);
       }

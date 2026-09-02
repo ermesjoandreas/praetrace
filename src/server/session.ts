@@ -118,7 +118,11 @@ export interface Session {
    * Start one, or refuse: one press, one subprocess. `onEnded` fires once, with
    * the same run object this returned, and not at all once the session is closed.
    */
-  startExplain(targets: ExplainTarget[], onEnded: (run: ExplainRun) => void): ExplainRun | null;
+  startExplain(
+    targets: ExplainTarget[],
+    onEnded: (run: ExplainRun) => void,
+    onDelta?: (text: string) => void,
+  ): ExplainRun | null;
   /** Abandon the run in flight. True when there was one. */
   cancelExplain(): boolean;
   /** Drop one stored explanation. True when it was there to drop. */
@@ -278,7 +282,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     explanations: () => explanations,
     explainRun: () => run,
 
-    startExplain(targets, onEnded) {
+    startExplain(targets, onEnded, onDelta) {
       if (run?.state === 'running') return null;
 
       const started: ExplainRun = {
@@ -289,7 +293,13 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       };
       run = started;
 
-      void explain(targets).then(async (outcome) => {
+      void explain(targets, {
+        // Forwarded only while this run is still the one in flight: a cancelled
+        // run's words arriving in the panel would be a ghost typing.
+        ...(onDelta === undefined
+          ? {}
+          : { onDelta: (text: string) => { if (!closed && started.state === 'running') onDelta(text); } }),
+      }).then(async (outcome) => {
         // A cancelled run, or one whose project has been switched away from,
         // must not write: its answers describe a project nobody is looking at,
         // and `.codemap/explain.json` would gain them behind the user's back.

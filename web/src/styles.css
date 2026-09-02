@@ -862,6 +862,19 @@ main { display: flex; flex: 1; min-height: 0; }
    path beside a symbol name, not of the symbol. It has to stay readable, though:
    the whole case for showing a price instead of asking permission every time is
    that the price is actually visible. */
+/* The answer landing. Monospace and dim: it is not the finished reading, it is
+   evidence that something is happening, and it is replaced by the parsed
+   entries the moment the run ends. */
+.explain-stream {
+  margin: 6px 0 0;
+  max-height: 160px;
+  overflow-y: auto;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .explain-stop {
   background: transparent;
   border: 1px solid var(--line-strong);

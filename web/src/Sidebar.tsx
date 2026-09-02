@@ -90,6 +90,8 @@ export interface Following {
   lastRun: { costUsd: number; ms: number } | null;
   /** Why the last press produced none, in the server's own wording. */
   failure: { reason: ExplainFailure; detail: string } | null;
+  /** The answer as it is being written, before it is parsed into entries. */
+  streamed: string;
   onExplain: () => void;
   onDrop: (id: string) => void;
 }
@@ -541,7 +543,7 @@ function Followed({
   onSelect: (target: string) => void;
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
-  const { links, gone, files, explanations, running, runningIds, lastRun, failure } = following;
+  const { links, gone, files, explanations, running, runningIds, lastRun, failure, streamed } = following;
   if (links.length === 0 && gone.length === 0 && files.length === 0) return null;
 
   // What a press can come back with words for. A gone symbol keeps its row and
@@ -569,7 +571,13 @@ function Followed({
                 ? 'A run is in flight. It takes a minute or so.'
                 : answerable === 0
                   ? 'Nothing here that the graph can still resolve.'
-                  : 'Ask Claude what these are for. It spends your Claude quota.'
+                  : `Ask Claude what these are for. It spends your Claude quota.${
+                      lastRun === null
+                        ? ''
+                        : ` Last run ${money(lastRun.costUsd)}${
+                            lastRun.ms === 0 ? '' : `, ${Math.round(lastRun.ms / 1000)}s`
+                          }.`
+                    }`
             }
             onClick={following.onExplain}
           >
@@ -583,15 +591,15 @@ function Followed({
               stop
             </button>
           )}
-          {/* What the last one cost, quietly. The whole case for showing a price
-              instead of asking permission every time is that it stays visible. */}
-          {lastRun !== null && (
-            <span className="explain-cost">
-              last run {money(lastRun.costUsd)}
-              {lastRun.ms === 0 ? '' : ` · ${Math.round(lastRun.ms / 1000)}s`}
-            </span>
-          )}
         </div>
+
+        {/* The answer as it lands. Twelve seconds pass before the first
+            character, and a wait with nothing moving in it is indistinguishable
+            from a hung subprocess — which is what this was, until it streamed.
+            Shown raw: it is not parsed into entries until the run ends. */}
+        {running && streamed !== '' && (
+          <p className="explain-stream">{streamed.replace(/^@@ .*$/gm, '').trim()}</p>
+        )}
         {/* The label is never the useful half on its own: `missing` carries the
             list of places that were searched, which is the fixable part, so the
             detail is printed exactly as it came back. */}

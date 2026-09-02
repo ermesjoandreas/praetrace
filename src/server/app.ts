@@ -123,9 +123,11 @@ export interface AppOptions {
    * next GET /api/explain instead of being told.
    */
   onExplainRun?: (run: ExplainRun) => void;
+  /** A few characters of an answer, as it is being written. */
+  onExplainDelta?: (text: string) => void;
 }
 
-export function buildApp({ host, hub, onProjectChanged, onExplainRun }: AppOptions): FastifyInstance {
+export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainDelta }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: false });
 
   // The MCP proxy marks its own requests, which is the only way to tell an
@@ -263,7 +265,11 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun }: AppOptio
       return reply.code(400).send({ error: 'none of those ids are in the graph' });
     }
 
-    const run = session.startExplain(targets, (ended) => onExplainRun?.(ended));
+    const run = session.startExplain(
+      targets,
+      (ended) => onExplainRun?.(ended),
+      (text) => onExplainDelta?.(text),
+    );
     if (!run) {
       return reply.code(409).send({ error: 'a run is already in flight', run: session.explainRun() });
     }

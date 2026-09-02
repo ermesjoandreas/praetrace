@@ -138,6 +138,14 @@ interface AgentMessage {
   call: AgentCall;
 }
 
+/** A few characters of an answer as it is written. See live.ts for why it is
+ *  its own message and not a run update. */
+interface ExplainDeltaMessage {
+  type: 'explain-delta';
+  runId: string;
+  text: string;
+}
+
 interface ExplainMessage {
   type: 'explain';
   run: ExplainRun;
@@ -272,6 +280,16 @@ export function App() {
   }, []);
 
   /** What the project has had explained, by id, for the ids on show. */
+  /**
+   * The answer as it is being written, before it is parsed into entries.
+   *
+   * Shown raw and unstructured on purpose: the wait is twelve seconds before the
+   * first character and the whole point of showing it is that something is
+   * happening. Cleared when a run starts so the last one's words do not sit
+   * under the next one's spinner.
+   */
+  const [streamed, setStreamed] = useState('');
+
   const [explanations, setExplanations] = useState<ReadonlyMap<string, StoredExplanation>>(
     () => new Map(),
   );
@@ -389,11 +407,20 @@ export function App() {
       };
 
       socket.onmessage = (event: MessageEvent<string>) => {
-        const parsed = JSON.parse(event.data) as LiveMessage | AgentMessage | ExplainMessage;
+        const parsed = JSON.parse(event.data) as
+          | LiveMessage
+          | AgentMessage
+          | ExplainMessage
+          | ExplainDeltaMessage;
 
         // The run that ended is the one the poll below would have found three
         // seconds later; the poll stays, because it is the only thing that
         // notices a run another tab started.
+        if (parsed.type === 'explain-delta') {
+          setStreamed((was) => was + parsed.text);
+          return;
+        }
+
         if (parsed.type === 'explain') {
           takeRun(parsed.run);
           return;
@@ -786,6 +813,7 @@ export function App() {
   const explainFollowed = useCallback(() => {
     if (explainIds.length === 0) return;
     setExplainError(null);
+    setStreamed('');
     requestExplanations(explainIds).then(
       (result) => takeRun(result.run),
       (cause: unknown) => setExplainError(cause instanceof Error ? cause.message : String(cause)),
@@ -2021,6 +2049,7 @@ export function App() {
               failure: explainFailure,
               onExplain: explainFollowed,
               onDrop: dropFollowed,
+              streamed,
               onCancel: cancelExplain,
               onForget: forgetOne,
             }}

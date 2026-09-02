@@ -48,6 +48,10 @@ async function main(): Promise<void> {
       await ports?.pointAt(changedRoot);
     },
     onExplainRun: (run) => hub?.explainChanged(run),
+    onExplainDelta: (text) => {
+      const run = host.current().explainRun();
+      if (run !== null) hub?.explainDelta(run.id, text);
+    },
   });
   await app.listen({ port, host: '127.0.0.1' });
 

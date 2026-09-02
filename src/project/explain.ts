@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
@@ -178,7 +178,7 @@ const ANSWER_SCHEMA = {
  */
 export async function explain(
   targets: ExplainTarget[],
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; onDelta?: (text: string) => void } = {},
 ): Promise<ExplainOutcome> {
   if (targets.length === 0) return { ok: true, explanations: [], costUsd: 0, ms: 0 };
 
@@ -191,17 +191,50 @@ export async function explain(
   }
 
   const started = Date.now();
-  let stdout: string;
-  try {
-    const run = await execFileAsync(
-      binary.path,
+  const stream = await runStreaming(
+    binary.path,
+    buildPrompt(targets),
+    options.timeoutMs ?? timeoutFor(targets.length),
+    options.onDelta,
+  );
+  if (!stream.ok) return failureOf(stream.error, binary.looked);
+
+  return readAnswer(stream.text, targets, Date.now() - started, stream.costUsd);
+}
+
+/**
+ * Run it and read the answer as it is written, rather than waiting for the end.
+ *
+ * `--output-format stream-json` emits one JSON object per line, and with
+ * `--include-partial-messages` the content arrives as `content_block_delta`
+ * events carrying a few characters each. Handing those to `onDelta` is the
+ * whole reason this is a spawn rather than an execFile: fifty seconds of an
+ * unmoving "Explaining…" is indistinguishable from a hung subprocess, and the
+ * only cure is showing the words appearing.
+ *
+ * The cost of it is that `--json-schema` had to go. A schema makes the model
+ * stream a JSON object, so what a reader would watch arrive is
+ * `{"explanations":[{"id":"src/pro` — the structure, not the sentences. So the
+ * answer is asked for as delimited prose instead, and "the model answered in
+ * the wrong shape" is a failure again. It is caught as `unreadable`, and it is
+ * worth the trade: an answer nobody watched arrive feels broken even when it works.
+ */
+async function runStreaming(
+  binary: string,
+  prompt: string,
+  timeoutMs: number,
+  onDelta?: (text: string) => void,
+): Promise<{ ok: true; text: string; costUsd: number } | { ok: false; error: unknown }> {
+  return new Promise((resolve) => {
+    const child = spawn(
+      binary,
       [
         '-p',
-        buildPrompt(targets),
+        prompt,
         '--output-format',
-        'json',
-        '--json-schema',
-        JSON.stringify(ANSWER_SCHEMA),
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
         '--model',
         'haiku',
         '--allowed-tools',
@@ -211,20 +244,94 @@ export async function explain(
         '',
         '--no-session-persistence',
       ],
-      {
-        // A neutral directory: nothing here should be read as a project.
-        cwd: os.tmpdir(),
-        timeout: options.timeoutMs ?? timeoutFor(targets.length),
-        maxBuffer: MAX_OUTPUT_BYTES,
-        encoding: 'utf8',
-      },
+      { cwd: os.tmpdir(), stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    stdout = run.stdout;
-  } catch (error) {
-    return failureOf(error, binary.looked);
-  }
 
-  return readAnswer(stdout, targets, Date.now() - started);
+    let answer = '';
+    // The closing 'result' line carries what the run actually cost. It is the
+    // one thing the deltas do not, so it is picked up as it goes past.
+    let costUsd = 0;
+    let stderr = '';
+    let buffer = '';
+    let size = 0;
+    let settled = false;
+
+    const done = (result: { ok: true; text: string; costUsd: number } | { ok: false; error: unknown }): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+
+    // Our own timer, because spawn has no timeout option worth the name: SIGTERM
+    // first so the CLI can end its own turn, and nothing after — a killed child
+    // still fires 'close', which is where the reporting happens.
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      done({ ok: false, error: Object.assign(new Error('claude did not answer in time'), { killed: true }) });
+    }, timeoutMs);
+
+    child.on('error', (error) => done({ ok: false, error }));
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderr = (stderr + chunk.toString('utf8')).slice(-4000);
+    });
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_OUTPUT_BYTES) {
+        child.kill('SIGTERM');
+        done({ ok: false, error: new Error('claude produced more output than could be read') });
+        return;
+      }
+      buffer += chunk.toString('utf8');
+      // A chunk can split a line, so the tail is kept until its newline arrives.
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        const price = costOf(line);
+        if (price !== null) costUsd = price;
+        const text = deltaOf(line);
+        if (text === null) continue;
+        answer += text;
+        onDelta?.(text);
+      }
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) done({ ok: true, text: answer, costUsd });
+      else done({ ok: false, error: new Error(stderr.trim() || `claude exited with code ${code ?? 'null'}`) });
+    });
+  });
+}
+
+/** What the closing line says the run cost, or null on any other line. */
+function costOf(line: string): number | null {
+  const trimmed = line.trim();
+  if (trimmed === '' || !trimmed.includes('total_cost_usd')) return null;
+  try {
+    const value = (JSON.parse(trimmed) as { total_cost_usd?: unknown }).total_cost_usd;
+    return typeof value === 'number' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The text a stream line carries, or null when it carries none. */
+function deltaOf(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed === '') return null;
+  let event: unknown;
+  try {
+    event = JSON.parse(trimmed);
+  } catch {
+    // A line that is not JSON is not an answer; the CLI writes those too.
+    return null;
+  }
+  const record = event as { type?: unknown; event?: { type?: unknown; delta?: { text?: unknown } } };
+  if (record.type !== 'stream_event') return null;
+  if (record.event?.type !== 'content_block_delta') return null;
+  const text = record.event.delta?.text;
+  return typeof text === 'string' && text !== '' ? text : null;
 }
 
 /**
@@ -255,10 +362,19 @@ function buildPrompt(targets: ExplainTarget[]): string {
   return [
     'You are reading code you have not seen before and explaining its ROLE IN THE ARCHITECTURE.',
     '',
-    'For each target below, answer two questions and nothing else:',
-    '  short — one or two sentences: what this is for, in the system’s terms.',
-    '  long  — one paragraph: why it sits where it does, who depends on it, what',
-    '          decision it carries, and what would break without it.',
+    'WHO YOU ARE WRITING FOR: a developer with a computer science background and',
+    'about three years of experience. They know what a class, a callback, a queue',
+    'and a race condition are — do not explain those. They do not know THIS system,',
+    'and they have not read a paper on it either. So: plain words, short sentences,',
+    'ordinary terms. If a piece of jargon is the honest name for something, use it',
+    'and say what it means here in the same breath. Never reach for a longer word',
+    'than the thing needs.',
+    '',
+    'For each target, answer two things and nothing else:',
+    '  first  — one or two sentences: what this is for, in the system’s terms.',
+    '  then   — a blank line, then a paragraph or two: why it sits where it does,',
+    '           who depends on it, what decision it carries, and what would break',
+    '           without it.',
     '',
     'Rules:',
     '- Explain the role, not the lines. No walkthrough, no restating the signature,',
@@ -270,7 +386,14 @@ function buildPrompt(targets: ExplainTarget[]): string {
     '  rather than inventing a reason.',
     '- Plain prose. No markdown, no headings, no bullet lists, no code fences.',
     '',
-    'Return one entry per target, each carrying that target’s id verbatim.',
+    'FORMAT. Before each answer, write a line that is exactly two at-signs, a',
+    'space, and that target’s id copied verbatim. Then the answer. Nothing else —',
+    'no preamble before the first one, no summary after the last.',
+    '',
+    '  @@ src/example.ts#thing',
+    '  One or two sentences saying what it is for.',
+    '',
+    '  The longer part, in one or two paragraphs.',
     '',
     ...blocks,
   ].join('\n');
@@ -344,27 +467,17 @@ interface CliResult {
  * sentence the interface can show, and never an exception the server has to
  * survive.
  */
-function readAnswer(stdout: string, targets: ExplainTarget[], ms: number): ExplainOutcome {
-  let envelope: CliResult;
-  try {
-    envelope = JSON.parse(stdout) as CliResult;
-  } catch {
-    return { ok: false, reason: 'unreadable', detail: `claude printed something that is not JSON: ${stdout.trim().slice(0, 400)}` };
-  }
+function readAnswer(text: string, targets: ExplainTarget[], ms: number, costUsd: number): ExplainOutcome {
+  if (looksLikeAuth(text)) return { ok: false, reason: 'auth', detail: text.trim().slice(0, 400) };
 
-  const text = typeof envelope.result === 'string' ? envelope.result : '';
-  const subtype = typeof envelope.subtype === 'string' ? envelope.subtype : 'success';
-  if (envelope.is_error === true || subtype !== 'success') {
-    // The CLI's own name for "the model would not produce the shape asked for",
-    // which is this module's 'unreadable' rather than a failure of the run.
-    if (subtype.includes('structured_output')) return { ok: false, reason: 'unreadable', detail: subtype };
-    return looksLikeAuth(text) ? { ok: false, reason: 'auth', detail: text } : { ok: false, reason: 'failed', detail: text || 'claude reported an error' };
-  }
-
-  const answers = parseAnswers(envelope.structured_output ?? envelope.result);
-  if (answers === null) {
-    const shown = (text.trim() === '' ? stdout : text).trim().slice(0, 400);
-    return { ok: false, reason: 'unreadable', detail: `no answer could be read out of: ${shown}` };
+  const answers = parseAnswers(text);
+  if (answers.length === 0) {
+    const shown = text.trim().slice(0, 400);
+    return {
+      ok: false,
+      reason: 'unreadable',
+      detail: shown === '' ? 'claude answered with nothing' : `no answer could be read out of: ${shown}`,
+    };
   }
 
   const at = Date.now();
@@ -395,8 +508,7 @@ function readAnswer(stdout: string, targets: ExplainTarget[], ms: number): Expla
     return { ok: false, reason: 'unreadable', detail: 'the answer named none of the targets that were asked about' };
   }
 
-  const cost = typeof envelope.total_cost_usd === 'number' ? envelope.total_cost_usd : 0;
-  return { ok: true, explanations, costUsd: cost, ms };
+  return { ok: true, explanations, costUsd, ms };
 }
 
 interface Answer {
@@ -410,39 +522,53 @@ interface Answer {
  * others are here because a model that ignores the shape must degrade into
  * 'unreadable' or a partial answer, never into a crash on the server.
  */
-function parseAnswers(result: unknown): Answer[] | null {
-  const value = typeof result === 'string' ? parseJsonish(result) : result;
-  if (typeof value !== 'object' || value === null) return null;
+/**
+ * Read the delimited prose back into answers.
+ *
+ * The format is a separator line naming the id, then the paragraphs. The first
+ * paragraph is the short answer and the rest is the long one, which is why the
+ * prompt asks for a blank line after the opening sentences: it is the only
+ * structure in the whole reply, and it is one a model writing prose produces
+ * naturally rather than one it has to remember.
+ *
+ * Tolerant on purpose. An id that was never asked about is dropped by the
+ * caller, a target that got no block simply has no entry, and a reply with no
+ * separators at all reads as none — which the caller turns into 'unreadable'.
+ */
+function parseAnswers(text: string): Answer[] {
+  const answers: Answer[] = [];
+  let id: string | null = null;
+  let body: string[] = [];
 
-  const wrapped = (value as { explanations?: unknown }).explanations;
-  if (Array.isArray(wrapped)) return collect(wrapped);
-  if (Array.isArray(value)) return collect(value);
+  const flush = (): void => {
+    if (id === null) return;
+    const paragraphs = body
+      .join('\n')
+      .split(/\n\s*\n/)
+      .map((part) => part.trim())
+      .filter((part) => part !== '');
+    const short = paragraphs[0] ?? '';
+    if (short !== '') {
+      answers.push({ id, short, long: paragraphs.slice(1).join('\n\n') });
+    }
+    id = null;
+    body = [];
+  };
 
-  // An object keyed by id: the shape the prompt describes in words, arrived at
-  // without the wrapper.
-  const entries: Answer[] = [];
-  for (const [id, body] of Object.entries(value)) {
-    const answer = answerOf({ ...(typeof body === 'object' && body !== null ? body : {}), id });
-    if (answer !== null) entries.push(answer);
+  for (const line of text.split('\n')) {
+    const marker = /^\s*@@\s+(\S.*?)\s*$/.exec(line);
+    if (marker?.[1] !== undefined) {
+      flush();
+      id = marker[1];
+      continue;
+    }
+    if (id !== null) body.push(line);
   }
-  return entries.length > 0 ? entries : null;
+  flush();
+
+  return answers;
 }
 
-function collect(items: readonly unknown[]): Answer[] | null {
-  const found = items.map(answerOf).filter((answer): answer is Answer => answer !== null);
-  return found.length > 0 ? found : null;
-}
-
-function answerOf(item: unknown): Answer | null {
-  if (typeof item !== 'object' || item === null) return null;
-  const { id, short, long } = item as { id?: unknown; short?: unknown; long?: unknown };
-  if (typeof id !== 'string' || id === '') return null;
-  const one = typeof short === 'string' ? short : '';
-  const many = typeof long === 'string' ? long : '';
-  if (one === '' && many === '') return null;
-  // Either half alone is still worth keeping; the panel shows what it has.
-  return { id, short: one === '' ? many : one, long: many === '' ? one : many };
-}
 
 /** Text that is meant to be JSON, possibly wearing a code fence or a preamble. */
 function parseJsonish(text: string): unknown {
