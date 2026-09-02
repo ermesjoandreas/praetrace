@@ -16,4 +16,15 @@ export interface GitStatus {
   branch: string | null;
   /** Project-root-relative POSIX path -> status. */
   files: Record<string, GitFileStatus>;
+  /**
+   * Lines added and removed against the base, per path.
+   *
+   * Only for what git can count. An untracked file has no diff to measure — every
+   * line of it is new, which its status already says — and a binary file reports
+   * a dash. Both are absent here rather than being guessed at as zero, because
+   * "0 changed" and "not counted" read the same on screen and mean the opposite.
+   */
+  lines: Record<string, { added: number; deleted: number }>;
+  /** The same, summed, so the chip does not add up a thousand entries. */
+  totals: { added: number; deleted: number };
 }

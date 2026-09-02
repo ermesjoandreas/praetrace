@@ -21,6 +21,7 @@ import {
   decideCluster,
   fetchChanges,
   fetchClusters,
+  fetchGit,
   fetchAgentCalls,
   fetchHookStatus,
   fetchLanguages,
@@ -37,6 +38,7 @@ import {
   type AgentCall,
   type GroupColor,
   type ChangeEntry,
+  type GitStatus,
   type GroupSuggestion,
   type LanguageReport,
   type SearchHit,
@@ -154,6 +156,12 @@ export function App() {
    * the left one is the reason the data exists.
    */
   const [changes, setChanges] = useState<ChangeEntry[]>([]);
+  /**
+   * The whole git status, not the summary on the view. The line counts are
+   * per file and there can be a thousand of them, which is more than a view of
+   * six boxes has any business carrying.
+   */
+  const [gitLines, setGitLines] = useState<GitStatus | null>(null);
   const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
@@ -461,6 +469,21 @@ export function App() {
       document.removeEventListener('keydown', escape);
     };
   }, [baseOpen]);
+
+  // Re-read whenever the graph moves: the server polls git every 3 seconds and
+  // publishes when it changes, and that push is what bumps the revision.
+  useEffect(() => {
+    let cancelled = false;
+    fetchGit().then(
+      (result) => {
+        if (!cancelled) setGitLines(result);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root, git?.base]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1496,7 +1519,13 @@ export function App() {
             what you are looking at. They were one panel, which meant watching
             the agent cost you the detail of the thing it was touching. */}
         {data !== null && (
-          <Activity changes={changes} agentCalls={agentCalls} onSelect={setSelected} onFocus={goTo} />
+          <Activity
+            changes={changes}
+            agentCalls={agentCalls}
+            lines={gitLines?.lines ?? null}
+            onSelect={setSelected}
+            onFocus={goTo}
+          />
         )}
 
         <div className="canvas">

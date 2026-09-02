@@ -67,6 +67,8 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
   const resolved = await resolveBase(root, base);
 
   const files: Record<string, GitFileStatus> = {};
+  const lines: Record<string, { added: number; deleted: number }> = {};
+  const totals = { added: 0, deleted: 0 };
 
   // A repository with no commits has no HEAD to diff against, so everything in
   // it is untracked and the tracked half is skipped rather than failed.
@@ -76,6 +78,20 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
       for (const [gitPath, status] of parseNameStatus(diff)) {
         const filePath = stripPrefix(gitPath, prefix);
         if (filePath !== null) files[filePath] = status;
+      }
+    }
+
+    // A second pass rather than one command: --name-status and --numstat cannot
+    // be asked for together, and the statuses are what the badges need whether
+    // or not the counts arrive.
+    const numbers = await git(root, ['diff', '--numstat', '-z', resolved]);
+    if (numbers !== null) {
+      for (const [gitPath, added, deleted] of parseNumstat(numbers)) {
+        const filePath = stripPrefix(gitPath, prefix);
+        if (filePath === null) continue;
+        lines[filePath] = { added, deleted };
+        totals.added += added;
+        totals.deleted += deleted;
       }
     }
   }
@@ -93,7 +109,7 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
     }
   }
 
-  return { base: resolved ?? 'HEAD', requested: base, branch, files };
+  return { base: resolved ?? 'HEAD', requested: base, branch, files, lines, totals };
 }
 
 async function readBranch(root: string): Promise<string | null> {
@@ -172,6 +188,43 @@ function parseNameStatus(stdout: string): Array<[string, GitFileStatus]> {
 
     const status = TRACKED_STATUS[letter];
     if (status !== undefined) found.push([target, status]);
+  }
+
+  return found;
+}
+
+/**
+ * `--numstat -z` is added TAB deleted TAB path NUL, except for a rename, which
+ * writes an empty field and then both paths — the same three-field shape
+ * `--name-status` uses, arrived at differently.
+ *
+ * A binary file reports a dash for both counts. It is skipped rather than
+ * counted as zero: the file did change, and saying "+0 -0" about it would be a
+ * measurement rather than the absence of one.
+ */
+function parseNumstat(stdout: string): Array<[string, number, number]> {
+  const fields = stdout.split('\0');
+  const found: Array<[string, number, number]> = [];
+  let at = 0;
+
+  while (at < fields.length) {
+    const head = fields[at++];
+    if (head === undefined || head === '') break;
+
+    const [addedText, deletedText, inlinePath] = head.split('\t');
+    // A rename leaves the path empty here and writes the old and new ones next.
+    let target = inlinePath;
+    if (target === undefined || target === '') {
+      at += 1;
+      target = fields[at++];
+    }
+    if (target === undefined || target === '') break;
+
+    const added = Number(addedText);
+    const deleted = Number(deletedText);
+    if (Number.isFinite(added) && Number.isFinite(deleted)) {
+      found.push([target, added, deleted]);
+    }
   }
 
   return found;

@@ -79,11 +79,19 @@ function when(at: number, now: number): string {
 export function Activity({
   changes,
   agentCalls,
+  lines,
   onSelect,
   onFocus,
 }: {
   changes: ChangeEntry[];
   agentCalls: AgentCall[];
+  /**
+   * How far each file has moved from the git base, the way an editor's source
+   * control view counts it. Absent for a file git cannot measure — an untracked
+   * one, or a binary — and shown as nothing rather than as zero, because "+0 -0"
+   * and "not counted" look alike and mean the opposite.
+   */
+  lines: Record<string, { added: number; deleted: number }> | null;
   /** A click inspects, the same gesture a box gets. */
   onSelect: (target: string) => void;
   /** A double click navigates, also the same as a box. */
@@ -141,6 +149,18 @@ export function Activity({
                     </td>
                     <td className="activity-where">
                       {row.kind === 'change' ? whereOf(row.target) : (row.target ?? '')}
+                    </td>
+                    <td className="activity-lines">
+                      {path !== null && lines?.[path] !== undefined && (
+                        <>
+                          {lines[path].added > 0 && (
+                            <span className="activity-added">+{lines[path].added}</span>
+                          )}
+                          {lines[path].deleted > 0 && (
+                            <span className="activity-deleted">−{lines[path].deleted}</span>
+                          )}
+                        </>
+                      )}
                     </td>
                   </tr>
                 );

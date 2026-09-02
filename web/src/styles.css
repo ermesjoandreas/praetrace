@@ -588,6 +588,12 @@ main { display: flex; flex: 1; min-height: 0; }
   text-overflow: ellipsis;
 }
 
+/* The same two colours every source-control view uses, so the sign is legible
+   before the number is read. */
+.activity-lines { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; white-space: nowrap; }
+.activity-added { color: #9ece6a; }
+.activity-deleted { color: #f7768e; margin-left: 4px; }
+
 .activity-more {
   margin: 6px 0 0;
   padding: 0 14px;
