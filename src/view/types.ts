@@ -1,5 +1,6 @@
 import type { GitFileStatus } from '../git/types.js';
 import type { EdgeKind, NodeKind } from '../graph/types.js';
+import type { LanguageId } from '../lang/types.js';
 import type { ViewFilter } from './filter.js';
 
 /**
@@ -46,6 +47,13 @@ export interface ViewNode {
   gitStatus: GitFileStatus | null;
   /** How many of `files` differ from the base. 0 or 1 for a file box. */
   gitChanged: number;
+  /**
+   * The one language every file in this box is written in, or null when they
+   * differ. A mixed folder says nothing rather than naming its majority: a
+   * marker that is right most of the time is wrong in the way that looks
+   * authoritative. Never null for a file box.
+   */
+  language: LanguageId | null;
 }
 
 export interface ViewEdge {
@@ -54,6 +62,14 @@ export interface ViewEdge {
   kind: EdgeKind;
   /** How many underlying graph edges collapsed into this one. */
   weight: number;
+}
+
+/** How much of a project one language accounts for. */
+export interface LanguageCount {
+  id: LanguageId;
+  /** The registry's word for it — 'C#', not 'csharp' — so the page needs no table. */
+  label: string;
+  files: number;
 }
 
 export interface ViewGraph {
@@ -67,6 +83,12 @@ export interface ViewGraph {
   totalFiles: number;
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
+  /**
+   * What the whole project is written in, biggest first — not what this slice
+   * is. It answers "what is this repository", and a count that shrank because
+   * you navigated into a directory would be answering something else.
+   */
+  languages: LanguageCount[];
   /** null when the project is not a git work tree. */
   git: { base: string; requested: string; branch: string | null; changed: number } | null;
 }

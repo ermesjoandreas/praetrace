@@ -11,6 +11,7 @@ export function Welcome({
   hookInstalled,
   onInstallHook,
   onClose,
+  unreadable,
 }: {
   onOpen: (path: string) => void;
   onSearch: () => void;
@@ -18,6 +19,13 @@ export function Welcome({
   onInstallHook: () => void;
   /** Null when there is no project to go back to, so there is nothing to close. */
   onClose: (() => void) | null;
+  /**
+   * Source this tool cannot read, or null when there is none. It is repeated
+   * here because this screen is what a project of nothing but unreadable files
+   * shows, and it covers the header where the same fact is reported — so
+   * without it, the one project that most needs telling would be told nothing.
+   */
+  unreadable: { files: number; kinds: string[]; reads: string[] } | null;
 }) {
   const [recents, setRecents] = useState<string[]>([]);
 
@@ -36,6 +44,14 @@ export function Welcome({
         )}
         <h1>codemap</h1>
         <p className="welcome-sub">A live map of a codebase while an agent changes it.</p>
+
+        {unreadable !== null && (
+          <p className="welcome-warn">
+            codemap cannot read {unreadable.files} of the files here (
+            {unreadable.kinds.join(', ')}), so nothing they declare or import is in the graph. It
+            reads {unreadable.reads.join(', ')}.
+          </p>
+        )}
 
         <div className="welcome-columns">
           <section>

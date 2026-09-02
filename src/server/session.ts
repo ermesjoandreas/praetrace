@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitStatus } from '../git/types.js';
-import { applyBatch, createStore, type GraphStore } from '../graph/store.js';
+import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
 import { createParserPool } from '../parser/pool.js';
 import { readGitStatus } from '../project/git.js';
 import { scanProject } from '../project/scan.js';
@@ -83,6 +83,9 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   const store = createStore();
 
   const scan = await scanProject(pool, root);
+  // Before the files, not after: an alias table arriving second is a second
+  // derivation of the whole graph for the same answer.
+  setProjectFacts(store, scan.facts);
   applyBatch(store, scan.parsed, []);
   for (const failure of scan.failures) handlers.onError(failure);
 

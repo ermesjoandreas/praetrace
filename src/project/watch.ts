@@ -1,3 +1,4 @@
+import type { Stats } from 'node:fs';
 import path from 'node:path';
 import chokidar from 'chokidar';
 import { isIgnoredDirectoryName, isSourceFileName } from './walk.js';
@@ -35,7 +36,7 @@ export function watchProject({ root, onChange }: WatchOptions): ProjectWatcher {
 
   const watcher = chokidar.watch(root, {
     ignoreInitial: true,
-    ignored: (candidate) => shouldIgnore(root, candidate),
+    ignored: (candidate, stats) => shouldIgnore(root, candidate, stats),
   });
 
   watcher.on('add', (absolutePath) => emit(absolutePath, 'changed'));
@@ -50,10 +51,20 @@ export function watchProject({ root, onChange }: WatchOptions): ProjectWatcher {
 }
 
 /**
- * chokidar asks about paths before it has stat'ed them, so this decides from the
- * name alone: anything with no extension is treated as a directory.
+ * The boot scan's two rules, applied to one path at a time:
+ * `isIgnoredDirectoryName` judges a directory, `isSourceFileName` judges a
+ * file. What made the two disagree was guessing which of them a path was from
+ * its name — a dot read as an extension made `Serilog.Sinks.File` a file that
+ * was not source, so 28 of serilog's 63 directories were walked at boot and
+ * then invisible here, and no edit under them ever reached the graph.
+ *
+ * chokidar asks once about a bare path and again once it has stat'ed it, so an
+ * answer given without stats only has to be permissive enough to reach that
+ * second call. A symlink is left undecided for the same reason: its own stats
+ * describe the link rather than what it points at, which chokidar resolves
+ * before it asks again.
  */
-function shouldIgnore(root: string, candidate: string): boolean {
+function shouldIgnore(root: string, candidate: string, stats?: Stats): boolean {
   const relative = path.relative(root, candidate);
   if (relative === '' || relative.startsWith('..')) return false;
 
@@ -65,6 +76,6 @@ function shouldIgnore(root: string, candidate: string): boolean {
     if (isIgnoredDirectoryName(segment)) return true;
   }
 
-  if (path.extname(name) === '') return isIgnoredDirectoryName(name);
+  if (stats === undefined || !stats.isFile()) return isIgnoredDirectoryName(name);
   return !isSourceFileName(name);
 }

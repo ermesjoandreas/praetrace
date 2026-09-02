@@ -1,7 +1,8 @@
 import path from 'node:path';
+import { languageById } from '../lang/registry.js';
+import type { ProjectFacts } from '../lang/types.js';
 import type { ParsedFile } from '../parser/types.js';
 import type { Graph, GraphDelta, GraphEdge, GraphNode } from './types.js';
-import { resolveImport } from './resolve.js';
 
 /**
  * Holds the graph and the per-file parse results it is derived from.
@@ -16,17 +17,47 @@ import { resolveImport } from './resolve.js';
 export interface GraphStore {
   readonly files: Map<string, ParsedFile>;
   graph: Graph;
+  /** What the scan learned about the project; see `setProjectFacts`. */
+  facts: ProjectFacts;
+}
+
+/**
+ * A project whose facts have not been read yet. Resolution still works — every
+ * relative import resolves on paths alone — so a store is usable the moment it
+ * exists, and the aliases and package names arrive when the scan has them.
+ */
+function noFacts(): ProjectFacts {
+  return { tsPaths: new Map(), packages: new Map(), goModule: null, crates: new Map() };
 }
 
 export function createStore(): GraphStore {
-  return { files: new Map(), graph: { nodes: new Map(), edges: [] } };
+  return { files: new Map(), graph: { nodes: new Map(), edges: [] }, facts: noFacts() };
+}
+
+/**
+ * Install what the scan found. Separate from the parse results because it comes
+ * from files the graph never parses — tsconfig, package.json, go.mod — and
+ * because it changes only when the project does, not when a file is edited.
+ */
+export function setProjectFacts(store: GraphStore, facts: ProjectFacts): GraphDelta {
+  store.facts = facts;
+  // An alias table arriving after the files changes which imports resolve, so
+  // the graph is only correct once it has been derived again.
+  return store.files.size === 0 ? emptyDelta() : commit(store);
 }
 
 function commit(store: GraphStore): GraphDelta {
   const before = store.graph;
-  store.graph = derive(store.files);
+  store.graph = derive(store.files, store.facts);
   return diff(before, store.graph);
 }
+
+const emptyDelta = (): GraphDelta => ({
+  upsertedNodes: [],
+  removedNodeIds: [],
+  addedEdges: [],
+  removedEdges: [],
+});
 
 /**
  * Two symbols sharing a name in one file are disambiguated by document order.
@@ -39,9 +70,33 @@ function uniqueId(base: string, taken: ReadonlyMap<string, unknown>): string {
   return `${base}~${suffix}`;
 }
 
-function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
+function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Graph {
   const nodes = new Map<string, GraphNode>();
   const knownFiles = new Set(files.keys());
+  /**
+   * file -> the package or module it declares itself to be in. Built once for
+   * the whole project because that is how the languages that resolve by name
+   * ask the question: a Java import names a package, not a path, and the answer
+   * is every file that declared it.
+   */
+  const modules = new Map<string, string>();
+  /**
+   * file -> the references it made, for a language whose answer to one of them
+   * depends on what a *different* file wrote. A C# `global using` is the case:
+   * it sits in its own file and decides which namespaces every other file in
+   * the compilation can name.
+   */
+  const references = new Map<string, readonly string[]>();
+  for (const parsed of files.values()) {
+    if (parsed.moduleName !== undefined) modules.set(parsed.filePath, parsed.moduleName);
+    references.set(parsed.filePath, parsed.imports);
+  }
+  /**
+   * file -> the top-level names it declares, for a reference that names no path.
+   * Filled in pass 1 from the same table the name lookup uses, so the two cannot
+   * disagree about what a file declares.
+   */
+  const declarations = new Map<string, ReadonlySet<string>>();
   /** filePath -> symbol name -> node id, for resolving references by name. */
   const symbolsByFile = new Map<string, Map<string, string>>();
   /** filePath -> node id per symbol, positionally aligned with ParsedFile.symbols. */
@@ -95,6 +150,7 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
     ownersByFile.set(parsed.filePath, owners);
 
     symbolsByFile.set(parsed.filePath, byName);
+    declarations.set(parsed.filePath, new Set(byName.keys()));
     idsByFile.set(parsed.filePath, ids);
   }
 
@@ -113,9 +169,22 @@ function derive(files: ReadonlyMap<string, ParsedFile>): Graph {
   }
 
   for (const parsed of files.values()) {
+    // Whoever parsed the file resolves its references. A specifier means what
+    // its own language says it means, and there is no shared fallback: a rule
+    // that half applies would invent edges between files that never met.
+    const language = languageById(parsed.language);
+
     const importedFiles: string[] = [];
     for (const specifier of parsed.imports) {
-      const target = resolveImport(parsed.filePath, specifier, knownFiles);
+      const target = language?.resolve({
+        from: parsed.filePath,
+        specifier,
+        files: knownFiles,
+        modules,
+        declarations,
+        imports: references,
+        facts,
+      });
       if (target) {
         importedFiles.push(target);
         addEdge(parsed.filePath, target, 'imports');
@@ -223,8 +292,6 @@ export function applyBatch(
     if (store.files.delete(filePath)) touched = true;
   }
 
-  if (!touched) {
-    return { upsertedNodes: [], removedNodeIds: [], addedEdges: [], removedEdges: [] };
-  }
+  if (!touched) return emptyDelta();
   return commit(store);
 }

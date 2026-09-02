@@ -5,6 +5,8 @@
  * graph layer's job.
  */
 
+import type { LanguageId } from '../lang/types.js';
+
 export type SymbolKind = 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
 
 export interface ParsedSymbol {
@@ -48,6 +50,12 @@ export interface ParsedSymbol {
 export interface ParsedFile {
   /** POSIX path relative to the scanned root. */
   filePath: string;
+  /**
+   * Which language read the file. Carried on the result rather than re-derived
+   * from the extension later, so the graph resolves a Go import with Go's rules
+   * because Go parsed it — not because the graph guessed from `.go`.
+   */
+  language: LanguageId;
   /** Raw module specifiers exactly as written, e.g. `./graph/types.js`. */
   imports: string[];
   symbols: ParsedSymbol[];
@@ -55,6 +63,12 @@ export interface ParsedFile {
   /** Unix milliseconds from the filesystem, so "changed recently" survives a
    * restart and covers edits made before the app was even open. */
   modifiedAt: number;
+  /**
+   * What the file declares itself to belong to — a Java or C# package, a Go
+   * package, a Rust module. Absent for the languages that resolve by path, and
+   * the graph is what pairs it with the specifiers that name it.
+   */
+  moduleName?: string;
 }
 
 /** Message shapes exchanged with the parser worker threads. */

@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { MouseEvent } from 'react';
-import { openInEditor, type GitFileStatus, type ViewMember } from './api';
+import { openInEditor, type GitFileStatus, type LanguageId, type ViewMember } from './api';
 import { MAX_MEMBERS } from './layout';
 
 export type BoxData = {
@@ -16,6 +16,10 @@ export type BoxData = {
   gitStatus: GitFileStatus | null;
   /** How many of `files` differ from the base. 0 or 1 for a file box. */
   gitChanged: number;
+  /** The one language its files share; null on a folder holding several. */
+  language: LanguageId | null;
+  /** False in a single-language project, where the tag would say nothing. */
+  showLanguage: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
 };
@@ -43,10 +47,34 @@ const GIT_LETTER: Record<GitFileStatus, string> = {
  */
 const VISIBILITY = { private: '−', protected: '#', public: '+' } as const;
 
+/**
+ * The extension a developer would have typed, not the language's full name: the
+ * tag shares a 240px title row with a filename, and "TypeScript" would be the
+ * widest thing on it. The header spells the names out; this only has to be
+ * recognisable once you have read them.
+ */
+const LANGUAGE_TAG: Record<LanguageId, string> = {
+  typescript: 'ts',
+  javascript: 'js',
+  java: 'java',
+  go: 'go',
+  csharp: 'c#',
+  rust: 'rs',
+};
+
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const shown = data.members.slice(0, MAX_MEMBERS);
   const hidden = data.members.length - shown.length;
   const file = data.kind === 'file' ? data.files[0] : undefined;
+  // Muted text and nothing else. The box surface already carries amber for just
+  // written, blue for the agent just asked, a git badge and the selection ring;
+  // what a file is written in is the slowest fact of the five and gets the
+  // quietest treatment. Only a folder can be mixed — every file has one.
+  const tag = !data.showLanguage
+    ? null
+    : data.language === null
+      ? 'mixed'
+      : LANGUAGE_TAG[data.language];
 
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
@@ -85,6 +113,18 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
           >
             {data.gitChanged}
+          </span>
+        )}
+        {tag !== null && (
+          <span
+            className="box-lang"
+            title={
+              data.language === null
+                ? `${data.files.length} files, in more than one language`
+                : `language: ${data.language}`
+            }
+          >
+            {tag}
           </span>
         )}
         {file !== undefined && (

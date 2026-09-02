@@ -162,9 +162,13 @@ Kept here so the decision is not silently revisited later:
 
 - **Multi-user, hosted, team dashboards.** A different product with auth,
   multi-tenancy, and hosting costs. Not until a real user asks.
-- **Language sprawl.** TypeScript until the tool is genuinely good for TypeScript.
-  A mediocre parser for six languages is worse than an excellent one for a single
-  language.
+- ~~**Language sprawl.** TypeScript until the tool is genuinely good for TypeScript.~~
+  **Reversed on 2026-09-01.** The tool reads TypeScript, JavaScript, Java, Go, C# and
+  Rust, because the graph model was already language-neutral and the cost of a
+  language turned out to be one file. The concern behind this line — that six
+  mediocre parsers beat no parser at all — is answered by a rule rather than by a
+  ban: a language ships only when its edges are verified against a real repository.
+  See "Many languages" in CLAUDE.md.
 - **LLM-generated diagrams.** Too slow and too imprecise for a live view. The LLM's
   role is semantic dataflow inference between files — a later capability, and never
   the source of truth for structure.

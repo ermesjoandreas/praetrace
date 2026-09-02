@@ -1,7 +1,9 @@
 import type { GitStatus } from '../git/types.js';
 import type { Graph } from '../graph/types.js';
+import { languageFor } from '../lang/registry.js';
+import type { LanguageId, LanguageSupport } from '../lang/types.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
-import type { ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
+import type { LanguageCount, ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
 
 /**
  * Above this many files in scope, boxes stand for directories instead. Chosen
@@ -38,10 +40,57 @@ export function selectView(
     (edge) => files.has(edge.from) && files.has(edge.to),
   );
 
-  if (spec.focus !== null && files.has(spec.focus)) {
-    return focusView(spec, files, edges, git, changed);
+  const slice =
+    spec.focus !== null && files.has(spec.focus)
+      ? focusView(spec, files, edges, git, changed)
+      : scopeView(spec, files, edges, git, changed);
+
+  // Added here rather than threaded through both: it is a fact about the
+  // project, not about the slice, so neither of them has any business
+  // computing it — and computing it twice is how the two would disagree.
+  return { ...slice, languages: projectLanguages(graph) };
+}
+
+/** Everything a slice decides for itself; the project-wide facts land after. */
+type Slice = Omit<ViewGraph, 'languages'>;
+
+/**
+ * Read back off the path rather than carried on the node.
+ *
+ * `parseSource` picks a language with this same function, so for any file the
+ * graph holds the two cannot disagree. A `language` on every GraphNode would be
+ * a second copy of that answer, and a second copy is a thing that can drift.
+ */
+function languageOf(filePath: string): LanguageId | null {
+  return languageFor(filePath)?.id ?? null;
+}
+
+/** The one language a box's files share, or null the moment two of them differ. */
+function soleLanguage(files: readonly string[]): LanguageId | null {
+  let only: LanguageId | null = null;
+  for (const file of files) {
+    const id = languageOf(file);
+    if (id === null || (only !== null && only !== id)) return null;
+    only = id;
   }
-  return scopeView(spec, files, edges, git, changed);
+  return only;
+}
+
+/** Over the whole graph, so the filter and the scope cannot change the answer. */
+function projectLanguages(graph: Graph): LanguageCount[] {
+  const counted = new Map<LanguageSupport, number>();
+
+  for (const node of graph.nodes.values()) {
+    if (node.kind !== 'file') continue;
+    const language = languageFor(node.filePath);
+    if (language) counted.set(language, (counted.get(language) ?? 0) + 1);
+  }
+
+  return [...counted]
+    .map(([language, files]) => ({ id: language.id, label: language.label, files }))
+    // Ties broken by name, or two languages with the same count would swap
+    // places in the header every time a file was saved.
+    .sort((a, b) => b.files - a.files || a.id.localeCompare(b.id));
 }
 
 /**
@@ -172,6 +221,7 @@ function fileNode(
     focused,
     gitStatus,
     gitChanged: gitStatus ? 1 : 0,
+    language: languageOf(filePath),
   };
 }
 
@@ -183,7 +233,7 @@ function focusView(
   edges: readonly FileEdge[],
   git: GitStatus | null,
   _changed: ReadonlySet<string> | null,
-): ViewGraph {
+): Slice {
   const focus = spec.focus ?? '';
   const neighbours = new Map<string, Set<string>>();
 
@@ -241,7 +291,7 @@ function scopeView(
   edges: readonly FileEdge[],
   git: GitStatus | null,
   changed: ReadonlySet<string> | null,
-): ViewGraph {
+): Slice {
   const allPaths = [...files.keys()].sort();
   const scope = descend(normaliseScope(spec.scope), allPaths);
   const prefix = scope === '' ? '' : `${scope}/`;
@@ -279,9 +329,10 @@ function scopeView(
       external: !inside,
       focused: false,
       gitStatus: target.kind === 'file' ? (git?.files[target.id] ?? null) : null,
-      // Filled in with the rest of `backing` below, once the box knows which
-      // files it actually stands for.
+      // Both filled in from `backing` below, once the box knows which files it
+      // actually stands for — neither can be answered from the first one seen.
       gitChanged: 0,
+      language: null,
     };
     nodes.set(target.id, created);
     return created;
@@ -305,6 +356,7 @@ function scopeView(
 
   for (const node of nodes.values()) {
     node.files = [...(backing.get(node.id) ?? [])].sort();
+    node.language = soleLanguage(node.files);
     if (changed !== null) node.gitChanged = node.files.filter((file) => changed.has(file)).length;
   }
 

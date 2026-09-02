@@ -1,9 +1,12 @@
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
+import { LANGUAGES } from '../lang/registry.js';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
+import { isIgnoredDirectoryName } from '../project/walk.js';
 import {
   applyDecision,
   createManualGroup,
@@ -42,6 +45,24 @@ const MAX_DEPTH = 4;
  * before that" and "everything on this branch".
  */
 const GIT_BASES = ['HEAD', 'HEAD~1', 'branch'] as const;
+
+/**
+ * Program text no language here can read.
+ *
+ * Curated, rather than "every extension nothing claims": a repository is full of
+ * JSON, Markdown, lockfiles and images, and counting those as unread would bury
+ * the one line that matters under noise nobody expected a diagram of. Every
+ * entry below is unambiguously source, so a hit means a real part of the project
+ * is missing from the graph — which is the failure this whole thing exists to
+ * stop happening in silence. Extend it when a language is worth naming.
+ */
+const UNREADABLE_EXTENSIONS = new Set([
+  '.vue', '.svelte', '.astro',
+  '.py', '.rb', '.php', '.lua',
+  '.c', '.h', '.cc', '.cpp', '.hpp',
+  '.swift', '.kt', '.scala', '.dart',
+  '.ex', '.hs', '.elm', '.zig',
+]);
 
 export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
@@ -92,6 +113,21 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
+
+  /**
+   * What the tool reads, and what this project holds that it cannot.
+   *
+   * The breakdown of what *was* parsed rides on every ViewGraph, because it
+   * changes whenever the graph does. This is the other half, and it changes only
+   * when the project does: which languages exist at all, and how many files were
+   * never offered to one. Walked on request rather than remembered from the boot
+   * scan because the scan discards these before anyone counts them — and an
+   * answer computed now cannot claim a file the agent has since added is absent.
+   */
+  app.get('/api/languages', async () => ({
+    reads: LANGUAGES.map((language) => language.label),
+    unreadable: await countUnreadable(host.current().root),
+  }));
 
   app.get('/api/detail', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
@@ -244,6 +280,41 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
   });
 
   return app;
+}
+
+/**
+ * Count the source files no language claims, biggest extension first.
+ *
+ * The same walk `findSourceFiles` does and the same directories it ignores, over
+ * the complement of the same question — which is why it belongs beside that walk
+ * rather than here, and would cost nothing if the scan counted these on its way
+ * past. A directory it cannot read is skipped rather than fatal: an unreadable
+ * corner of the tree must not take down the answer for the rest of it.
+ */
+async function countUnreadable(root: string): Promise<{ extension: string; files: number }[]> {
+  const counted = new Map<string, number>();
+
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (!isIgnoredDirectoryName(entry.name)) await visit(path.join(directory, entry.name));
+        continue;
+      }
+      const name = entry.name.toLowerCase();
+      const extension = name.slice(name.lastIndexOf('.'));
+      if (UNREADABLE_EXTENSIONS.has(extension)) {
+        counted.set(extension, (counted.get(extension) ?? 0) + 1);
+      }
+    }
+  }
+
+  await visit(root);
+
+  return [...counted]
+    .map(([extension, files]) => ({ extension, files }))
+    .sort((a, b) => b.files - a.files || a.extension.localeCompare(b.extension));
 }
 
 /** Everything here is user input, from a query string or a socket frame. */

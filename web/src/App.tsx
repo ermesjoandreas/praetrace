@@ -23,6 +23,7 @@ import {
   fetchClusters,
   fetchAgentCalls,
   fetchHookStatus,
+  fetchLanguages,
   fetchView,
   groupAction,
   installHook,
@@ -37,6 +38,7 @@ import {
   type GroupColor,
   type ChangeEntry,
   type GroupSuggestion,
+  type LanguageReport,
   type SearchHit,
   type ViewGraph,
   type ViewResponse,
@@ -158,6 +160,8 @@ export function App() {
   const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [agentCalls, setAgentCalls] = useState<AgentCall[]>([]);
+  /** What the tool cannot read here. Null until the census has come back. */
+  const [languageReport, setLanguageReport] = useState<LanguageReport | null>(null);
   /** Files the agent asked about just now, for a pulse of their own. */
   const [agentLooking, setAgentLooking] = useState<string[]>([]);
   const flow = useReactFlow();
@@ -325,6 +329,23 @@ export function App() {
     };
   }, [revision, data?.root]);
 
+  // Per project, not per revision: this walks the tree, and what a repository is
+  // written in does not change because a file was saved. A language that arrives
+  // mid-session is missed until the project is reopened, which is the price of
+  // not re-walking on every edit.
+  useEffect(() => {
+    let cancelled = false;
+    fetchLanguages().then(
+      (report) => {
+        if (!cancelled) setLanguageReport(report);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [data?.root]);
+
   useEffect(() => {
     let cancelled = false;
     fetchClusters().then(
@@ -418,6 +439,12 @@ export function App() {
   // 'branch', which says nothing to anybody, so it stays in the tooltip.
   const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.chip ?? git?.base ?? '';
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
+  /**
+   * Whether saying what a box is written in adds anything. In a project of one
+   * language the same tag on every box is noise the header already covers, so
+   * there is no tag at all; the moment there are two, every box says which.
+   */
+  const mixedProject = (view?.languages.length ?? 0) > 1;
 
   useEffect(() => {
     if (!baseOpen) return;
@@ -562,6 +589,8 @@ export function App() {
         queried: queriedBoxIds.has(node.id),
         gitStatus: node.gitStatus,
         gitChanged: node.gitChanged,
+        language: node.language,
+        showLanguage: mixedProject,
         root: data?.root ?? '',
       },
     }));
@@ -681,7 +710,18 @@ export function App() {
     });
 
     return { nodes: [...frames, ...laid.nodes] as FlowNode[], edges: builtEdges };
-  }, [view, changedBoxIds, queriedBoxIds, picked, data?.root, clusters, decide, editGroup, renameGroup]);
+  }, [
+    view,
+    changedBoxIds,
+    queriedBoxIds,
+    picked,
+    mixedProject,
+    data?.root,
+    clusters,
+    decide,
+    editGroup,
+    renameGroup,
+  ]);
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();
@@ -941,6 +981,27 @@ export function App() {
   ].filter((chip): chip is { key: string; label: string } => chip !== null);
 
   const isFiltered = activeFilters.length > 0;
+
+  /**
+   * "TypeScript 479 · JavaScript 31" — what the project turned out to be, in the
+   * order that says which one it mostly is. Nobody declares a language when
+   * opening a project: a real repository is several at once, so this reports
+   * what was found instead of asking. Information, not a control, so it is not
+   * a button.
+   */
+  const languageSummary = (view?.languages ?? [])
+    .map((language) => `${language.label} ${language.files}`)
+    .join(' · ');
+
+  /**
+   * Files in a language nothing here reads, said out loud rather than left to be
+   * inferred from a thin diagram. That inference never happens: a graph missing
+   * a fifth of its source does not look broken, it looks like code with no
+   * coupling, which is exactly the picture this all exists to stop drawing.
+   */
+  const unreadable = languageReport?.unreadable ?? [];
+  const unreadableFiles = unreadable.reduce((total, kind) => total + kind.files, 0);
+  const unreadableDetail = unreadable.map((kind) => `${kind.files} ${kind.extension}`);
 
   const dropFilter = (key: string) => {
     const next = new URLSearchParams(window.location.search);
@@ -1218,6 +1279,30 @@ export function App() {
             <AgentStatus last={agentCalls[0] ?? null} total={agentCalls.length} />
             <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
             <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
+            {languageSummary !== '' && (
+              <span className="langs" title="What codemap parsed here, biggest first">
+                {languageSummary}
+              </span>
+            )}
+            {unreadableFiles > 0 && (
+              <span
+                className="unread"
+                title={`codemap cannot read ${unreadableFiles} ${
+                  unreadableFiles === 1 ? 'file' : 'files'
+                } here (${unreadableDetail.join(
+                  ', ',
+                )}), so nothing they declare or import is in this graph. It reads ${(
+                  languageReport?.reads ?? []
+                ).join(', ')}.`}
+              >
+                {/* What it means first, then what it was: the row is scanned
+                    left to right, and three kinds are what fits. The rest are in
+                    the tooltip, with a count so a fourth cannot hide behind the
+                    truncation. */}
+                not read: {unreadableDetail.slice(0, 3).join(' · ')}
+                {unreadableDetail.length > 3 ? ` +${unreadableDetail.length - 3}` : ''}
+              </span>
+            )}
             <span className="counts">
               {view
                 ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
@@ -1398,6 +1483,11 @@ export function App() {
           hookInstalled={hookInstalled}
           onInstallHook={() => void installHook().then(() => setRevision((n) => n + 1))}
           onClose={showWelcome ? () => setShowWelcome(false) : null}
+          unreadable={
+            unreadableFiles > 0
+              ? { files: unreadableFiles, kinds: unreadableDetail, reads: languageReport?.reads ?? [] }
+              : null
+          }
         />
       )}
 

@@ -1,6 +1,7 @@
 import { applyBatch, type GraphStore } from '../graph/store.js';
 import type { ParserPool } from '../parser/pool.js';
 import type { ParsedFile } from '../parser/types.js';
+import { findRevealedDeclaration, isShadowedDeclaration, type SourceFile } from './walk.js';
 import type { FileChange } from './watch.js';
 
 export interface UpdaterOptions {
@@ -61,11 +62,46 @@ export function createUpdater({
   }
 
   async function apply(batch: readonly FileChange[]): Promise<void> {
-    const removed = batch.filter((change) => change.kind === 'removed').map((c) => c.filePath);
-    const edited = batch.filter((change) => change.kind === 'changed');
+    // What the project will hold once this batch lands. The boot scan drops a
+    // `.d.ts` that a sibling implements, but neither source can: the watcher and
+    // the hook each decide one path at a time. This is where they converge and
+    // the only place holding the file set, so this is where the rule is applied.
+    // The batch's own paths count too — a build emits `foo.ts` and `foo.d.ts`
+    // together, and the store has seen neither yet.
+    const files = new Set(store.files.keys());
+    for (const change of batch) {
+      if (change.kind === 'removed') files.delete(change.filePath);
+      else files.add(change.filePath);
+    }
+
+    // The rule is a statement about the project, not about the batch. Writing
+    // `foo.ts` beside a `foo.d.ts` the store is already holding shadows a file
+    // no event names, and asking only about the batch's own paths leaves both
+    // in the graph — every symbol in that module drawn twice until a restart.
+    const shadowed = [...store.files.keys()].filter((filePath) =>
+      isShadowedDeclaration(filePath, files),
+    );
+    for (const filePath of shadowed) files.delete(filePath);
+
+    const removals = batch.filter((change) => change.kind === 'removed');
+    const removed = new Set([...removals.map((change) => change.filePath), ...shadowed]);
+
+    // The other direction: a removal can reveal a declaration that was dropped
+    // for restating it. Two implementations can reveal the same one, so it is
+    // keyed by path rather than parsed once per event.
+    const revealed = new Map<string, SourceFile>();
+    for (const found of await Promise.all(
+      removals.map((change) => findRevealedDeclaration(change, files)),
+    )) {
+      if (found) revealed.set(found.filePath, found);
+    }
+
+    const edited = batch.filter(
+      (change) => change.kind === 'changed' && !isShadowedDeclaration(change.filePath, files),
+    );
 
     const results = await Promise.allSettled(
-      edited.map((change) => pool.parse(change.filePath, change.absolutePath)),
+      [...edited, ...revealed.values()].map((file) => pool.parse(file.filePath, file.absolutePath)),
     );
 
     const updated: ParsedFile[] = [];
@@ -79,11 +115,21 @@ export function createUpdater({
     // not write to anything or announce itself.
     if (closed) return;
 
-    applyBatch(store, updated, removed);
+    // Asked before the store is mutated: a removal only landed if the file was
+    // in it. What is published is what the graph now says, not what the batch
+    // asked for — a path the tool refused to parse has no box, so reporting it
+    // raises a "changes outside" badge that focuses something that cannot exist.
+    const landed = [
+      ...updated.map((file) => file.filePath),
+      ...[...removed].filter((filePath) => store.files.has(filePath)),
+    ];
+
+    applyBatch(store, updated, [...removed]);
 
     // Reported even when the graph is unchanged: a touched file is worth
     // showing, and a comment-only edit still says where the agent is working.
-    onApplied(batch.map((change) => change.filePath));
+    // Nothing landing at all is a different thing, and says nothing.
+    if (landed.length > 0) onApplied(landed);
   }
 
   return {

@@ -5,9 +5,13 @@ import path from 'node:path';
  * known file rather than touching the filesystem, which keeps the graph layer
  * testable and free of I/O.
  *
- * Bare specifiers (`react`, `node:fs`) and anything outside the root resolve to
- * null, and the edge is dropped — the MVP graphs the project, not its
- * dependencies.
+ * This is the TypeScript and JavaScript rule — a specifier is a path, and the
+ * extension it names may not be the extension on disk. `src/lang/typescript.ts`
+ * calls it for the relative case and layers aliases and package names on top;
+ * languages that resolve by declared name instead have no use for it.
+ *
+ * Bare specifiers (`react`, `node:fs`) resolve to null here, and it is the
+ * language's business whether they mean anything.
  */
 export function resolveImport(
   fromFilePath: string,
@@ -17,22 +21,44 @@ export function resolveImport(
   if (!specifier.startsWith('.')) return null;
 
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFilePath), specifier));
+  return resolveModulePath(base, knownFiles);
+}
 
+/**
+ * The same extension arithmetic for a path that is already project-relative —
+ * what a tsconfig alias or a package name expands to before it is a file.
+ */
+export function resolveModulePath(base: string, knownFiles: ReadonlySet<string>): string | null {
   for (const candidate of candidatesFor(base)) {
     if (knownFiles.has(candidate)) return candidate;
   }
   return null;
 }
 
-function candidatesFor(base: string): string[] {
-  if (base.endsWith('.ts') || base.endsWith('.tsx')) return [base];
+/**
+ * In preference order. An implementation beats the declaration that restates
+ * it, which is why `.d.ts` is last: a project with both is describing one thing
+ * twice, and the source is the half worth drawing.
+ */
+const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'];
 
-  // NodeNext ESM writes `./foo.js` for what is `./foo.ts` on disk.
-  const jsExtension = /\.(js|jsx|mjs|cjs)$/.exec(base);
-  if (jsExtension) {
-    const stem = base.slice(0, -jsExtension[0].length);
-    return [`${stem}.ts`, `${stem}.tsx`];
+const WRITTEN = new Set(EXTENSIONS);
+/** NodeNext ESM writes `./foo.js` for what is `./foo.ts` on disk. */
+const REWRITTEN = new Set(['.js', '.jsx', '.mjs', '.cjs']);
+
+function candidatesFor(base: string): string[] {
+  const extension = /\.[a-z]+$/.exec(base)?.[0];
+
+  if (extension !== undefined && WRITTEN.has(extension)) {
+    if (!REWRITTEN.has(extension)) return [base];
+    // A JavaScript extension is a question rather than an answer: it may be the
+    // file, or the TypeScript source it was written to stand for.
+    const stem = base.slice(0, -extension.length);
+    return EXTENSIONS.map((candidate) => stem + candidate);
   }
 
-  return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`];
+  return [
+    ...EXTENSIONS.map((candidate) => base + candidate),
+    ...EXTENSIONS.map((candidate) => `${base}/index${candidate}`),
+  ];
 }

@@ -63,9 +63,45 @@ something in the last round of work argued for it:
    current feature honestly cannot show one.
 
 **Not started, and not to be drifted into.** Architecture drift detection
-(VISION.md capability 1), blast radius (capability 3), LLM dataflow inference, any
-language other than TypeScript, and anything hosted or multi-user. If a task seems
-to need one of these, say so and ask rather than building it.
+(VISION.md capability 1), blast radius (capability 3), LLM dataflow inference, and
+anything hosted or multi-user. If a task seems to need one of these, say so and ask
+rather than building it.
+
+## Many languages
+
+**The direction changed on 2026-09-01.** The tool reads TypeScript, JavaScript,
+Java, Go, C# and Rust. Anyone can point it at their repository. VISION.md's
+"language sprawl" line is overridden by this section, and its reasoning — a
+mediocre parser for six languages is worse than an excellent one for a single
+language — is answered by the rule below rather than dismissed.
+
+**The graph model did not change, and that is why this was affordable.** File,
+class, interface, method, field, and extends / implements / calls / contains /
+associates are UML, not TypeScript. A language supplies two things and nothing
+else: how to read symbols out of a syntax tree, and how to turn a reference into a
+file. The contract is `src/lang/types.ts`; a language is one file in `src/lang/`.
+
+**A language is finished when its edges are checked against a real repository, not
+when it parses.** This is the whole rule, and it is not academic. Before this
+existed, opening vuejs/core drew four boxes and zero edges, because 357 of its
+imports name packages inside the same repo and nothing resolved them. That does not
+look broken. It looks like code with no coupling — wrong in a way that reads as
+authoritative, which is the failure this project cares about most. Parsing is the
+easy half; resolution is the half that decides whether the picture is true.
+
+**Detected, never declared.** Opening a project does not ask what language it is.
+File extensions are unambiguous, and real repositories are mixed — TanStack/query is
+TypeScript, JSX, JavaScript, Svelte and Vue at once, so any single declared answer
+would be wrong. The interface shows what was found instead, and says plainly when a
+project contains files the tool cannot read at all.
+
+**Grammar loading has one trap, already paid for.** Pass the grammar *module* to
+`setLanguage`, not its `.language` property. The bare language throws
+`Cannot read properties of undefined (reading '<n>')` from inside `parse` rather
+than from the call that was wrong, which reads exactly like an ABI mismatch and is
+not one. `tree-sitter-typescript` is the exception: it exports `typescript` and
+`tsx` and wants one of those. All six grammars need `.npmrc`'s `legacy-peer-deps`,
+for the same stale peer range documented under Dependency note.
 
 ---
 
@@ -86,8 +122,9 @@ leak into the server layer, or rendering concerns into the graph engine.
 
 ## Stack
 
-- **Language:** TypeScript everywhere. No Python, no Go, no Rust in application code
-  — the Tauri shell is the one exception, and it does process lifecycle only.
+- **Language:** the application is TypeScript everywhere — the Tauri shell is the one
+  exception, and it does process lifecycle only. What it *reads* is a separate
+  question, answered under "Many languages" above.
 - **Runtime:** Node.js
 - **Parsing:** `tree-sitter` with `tree-sitter-typescript` grammar
 - **Server:** Fastify (HTTP + websocket)

@@ -35,13 +35,41 @@ header {
 
 .brand { font-weight: 600; letter-spacing: 0.02em; }
 
-.root, .counts, code {
+.root, .counts, .langs, code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
   color: var(--muted);
 }
 
 .counts { margin-left: auto; }
+
+/* What the project is written in. Nothing about it is clickable, so it is given
+   no border, no background and no hover — the things that would make it look
+   like the controls it sits between. It is also the piece of this row that
+   yields when the window is narrow: the bar does not wrap, and a language list
+   is the one thing here that still reads once it has been cut short. */
+.langs {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Source the tool cannot read. Amber because it is the one thing in this row
+   that is a gap rather than a fact, and quiet because it is still not an error:
+   the project is fine, the diagram is just not all of it. Never shrinks — it is
+   the last thing that should be squeezed out of a narrow window. */
+.unread {
+  flex: none;
+  border: 1px solid #5c4c28;
+  border-radius: 5px;
+  background: #241f14;
+  color: var(--folder);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
 
 .trail { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 .trail .sep { color: var(--muted); margin: 0 2px; }
@@ -124,6 +152,18 @@ main { display: flex; flex: 1; min-height: 0; }
   text-overflow: ellipsis;
   direction: rtl;
   text-align: left;
+}
+
+/* What a box is written in: text, no badge and no colour of its own. Four
+   signals already compete on this surface — amber for just written, blue for
+   the agent just asked, the git letter and the selection ring — and a fifth
+   with any weight to it would cost the four that are about right now. */
+.box-lang {
+  flex: none;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
 }
 
 .box-open {
@@ -1119,6 +1159,19 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .welcome h1 { margin: 0; font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
 .welcome-sub { margin: 6px 0 40px; color: var(--muted); font-size: 14px; }
+
+/* Sits between the strapline and the actions, because on a project of nothing
+   but unreadable source it is the only true thing on this screen. */
+.welcome-warn {
+  margin: -24px 0 32px;
+  padding: 10px 14px;
+  border: 1px solid #5c4c28;
+  border-radius: 6px;
+  background: #241f14;
+  color: var(--folder);
+  font-size: 13px;
+  line-height: 1.6;
+}
 
 .welcome-columns {
   display: grid;

@@ -1,11 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { GitFileStatus, GitStatus } from '../../src/git/types.js';
+import type { LanguageId } from '../../src/lang/types.js';
 import type { GroupColor } from '../../src/project/groups.js';
 import type { ViewGraph } from '../../src/view/types.js';
 
 // Types only. `groups.ts` reaches for node:fs, so nothing may import a value
 // from it here — the import disappears at compile time, the module never does.
-export type { GitFileStatus, GitStatus, GroupColor, ViewGraph };
+export type { GitFileStatus, GitStatus, GroupColor, LanguageId, ViewGraph };
 export type ViewMember = ViewGraph['nodes'][number]['members'][number];
 
 export interface ViewResponse {
@@ -148,6 +149,25 @@ export async function openInEditor(root: string, filePath: string, line: number)
   }
   // A browser hands a custom scheme to the OS itself, usually after a prompt.
   window.open(url, '_self');
+}
+
+/**
+ * What the tool can read, and what this project holds that it cannot. The
+ * breakdown of what *was* read comes with the view; this is the other half, and
+ * it is the one that has to be said out loud — a project half of whose source
+ * was never parsed draws a graph that looks like code with no coupling.
+ */
+export interface LanguageReport {
+  /** Every language the tool understands, for saying what is missing against. */
+  reads: string[];
+  unreadable: { extension: string; files: number }[];
+}
+
+export async function fetchLanguages(): Promise<LanguageReport> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/languages`);
+  if (!response.ok) throw new Error(`language report failed: HTTP ${response.status}`);
+  return (await response.json()) as LanguageReport;
 }
 
 export interface SymbolDetail {
