@@ -707,6 +707,9 @@ main { display: flex; flex: 1; min-height: 0; }
 
 /* The same two colours every source-control view uses, so the sign is legible
    before the number is read. */
+/* The count a fold stands for. Quiet: it is a detail about the row, not the row. */
+.activity-times { margin-left: 5px; color: var(--line-strong); font-size: 10px; }
+
 .activity-lines { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; white-space: nowrap; }
 .activity-added { color: #9ece6a; }
 .activity-deleted { color: #f7768e; margin-left: 4px; }

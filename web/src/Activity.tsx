@@ -31,6 +31,8 @@ interface Row {
   target: string | null;
   /** The tool name, for a question. */
   tool: string | null;
+  /** How many of the same thing in a row this stands for. 1 for most. */
+  times: number;
 }
 
 function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
@@ -39,16 +41,42 @@ function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
     // coalesces, which is an implementation detail, while "where" is the column
     // this table exists for and a batch has no single answer to it.
     ...changes.flatMap((entry) =>
-      entry.files.map((file) => ({ at: entry.at, kind: 'change' as const, target: file, tool: null })),
+      entry.files.map((file) => ({ at: entry.at, kind: 'change' as const, target: file, tool: null, times: 1 })),
     ),
     ...agentCalls.map((call) => ({
       at: call.at,
       kind: 'agent' as const,
       target: call.target,
       tool: call.tool,
+      times: 1,
     })),
   ];
-  return rows.sort((a, b) => b.at - a.at);
+  return collapse(rows.sort((a, b) => b.at - a.at));
+}
+
+/**
+ * Fold a run of the same thing into one row.
+ *
+ * A row is an event and the +/- beside it is a state — the file's whole distance
+ * from the git base — so four saves a minute apart drew four rows carrying the
+ * same unchanged number, and the feed read as though it were repeating itself.
+ * It was not; the number simply does not move at the pace the rows do.
+ *
+ * Only a CONSECUTIVE run folds. A, B, A is three things that happened and must
+ * stay three rows: collapsing across the gap would say the two A's were one edit
+ * and quietly reorder what the column exists to show.
+ */
+function collapse(rows: readonly Row[]): Row[] {
+  const folded: Row[] = [];
+  for (const row of rows) {
+    const last = folded[folded.length - 1];
+    if (last && last.kind === row.kind && last.target === row.target && last.tool === row.tool) {
+      last.times += 1;
+      continue;
+    }
+    folded.push({ ...row });
+  }
+  return folded;
 }
 
 /** The directory a path sits in — the "where" column, and empty at the root. */
@@ -137,15 +165,17 @@ export function Activity({
                     onClick={() => path !== null && onSelect(path)}
                     onDoubleClick={() => path !== null && onFocus(path, 'file')}
                     title={
-                      row.kind === 'change'
+                      (row.times > 1 ? `${row.times} times in a row — ` : '') +
+                      (row.kind === 'change'
                         ? `${row.target} — click to inspect, double-click to go there`
-                        : `The agent called ${row.tool}${row.target === null ? '' : ` on ${row.target}`}`
+                        : `The agent called ${row.tool}${row.target === null ? '' : ` on ${row.target}`}`)
                     }
                   >
                     <td className="activity-when">{when(row.at, now)}</td>
                     <td className="activity-mark">{row.kind === 'change' ? '✎' : '⌕'}</td>
                     <td className="activity-what">
                       {row.kind === 'change' ? nameOf(row.target) : row.tool}
+                      {row.times > 1 && <span className="activity-times">×{row.times}</span>}
                     </td>
                     <td className="activity-where">
                       {row.kind === 'change' ? whereOf(row.target) : (row.target ?? '')}

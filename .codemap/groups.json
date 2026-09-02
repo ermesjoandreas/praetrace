@@ -137,6 +137,21 @@
       ],
       "state": "accepted",
       "id": "src/graph/resolve.ts~12"
+    },
+    {
+      "name": "Lang decoder",
+      "id": "manual:lang-decoder",
+      "files": [
+        "src/lang/csharp.ts",
+        "src/lang/go.ts",
+        "src/lang/java.ts",
+        "src/lang/javascript.ts",
+        "src/lang/rust.ts",
+        "src/lang/types.ts",
+        "src/lang/typescript.ts"
+      ],
+      "state": "accepted",
+      "origin": "manual"
     }
   ]
 }
