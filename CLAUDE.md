@@ -303,6 +303,7 @@ GET  /api/view          the slice for a ViewSpec, given as a query string
 GET  /api/project       the current root
 POST /api/project       switch to another root
 GET  /api/detail        one node's dependents and dependencies
+GET  /api/symbol        one symbol's relations, for following it across boxes
 GET  /api/changes       this session's change feed
 GET  /api/search        subsequence search over the whole graph
 GET  /api/agent         what the agent has asked, and when

@@ -20,7 +20,7 @@ import {
   type NamedGroup,
 } from '../project/groups.js';
 import { installHook, readHookStatus } from '../project/hook-install.js';
-import { describe } from '../view/detail.js';
+import { describe, describeSymbol } from '../view/detail.js';
 import {
   DEFAULT_EDGE_KINDS,
   parseDuration,
@@ -135,6 +135,17 @@ export function buildApp({ host, hub, onProjectChanged }: AppOptions): FastifyIn
     const detail = describe(host.current().store.graph, target);
     if (!detail) return reply.code(404).send({ error: `nothing known about ${target}` });
     return detail;
+  });
+
+  // One symbol's relations. Separate from /api/detail because that answers about
+  // a box and this answers about a row inside one, and a caller wants exactly one
+  // of the two.
+  app.get('/api/symbol', async (request, reply) => {
+    const query = request.query as Record<string, unknown>;
+    const id = typeof query['id'] === 'string' ? query['id'] : '';
+    const links = describeSymbol(host.current().store.graph, id);
+    if (!links) return reply.code(404).send({ error: `no symbol ${id}` });
+    return links;
   });
 
   app.get('/api/search', async (request) => {

@@ -193,15 +193,18 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .box-members { margin: 0; padding: 4px 0; list-style: none; }
 .member {
+  display: flex;
+  align-items: baseline;
   font-size: 11px;
   line-height: 17px;
   color: var(--muted);
 }
 
-.member button {
+.member-name {
   display: block;
-  width: 100%;
-  padding: 0 10px;
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px 0 0;
   background: transparent;
   border: none;
   color: inherit;
@@ -213,7 +216,49 @@ main { display: flex; flex: 1; min-height: 0; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.member button:hover { background: var(--line); color: var(--accent); }
+.member-name:hover { background: var(--line); color: var(--accent); }
+
+/* Its own hit area, the full height of the row so nine pixels of mark is not
+   also nine pixels of target. Hidden until the row is under the cursor: twelve
+   members across forty boxes would otherwise be a field of dots on a surface
+   that already carries four signals. */
+.member-pick {
+  flex: none;
+  width: 11px;
+  height: 17px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  position: relative;
+}
+.member-pick::after {
+  content: '';
+  position: absolute;
+  top: 6px;
+  left: 2px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  opacity: 0;
+}
+.member:hover .member-pick::after { opacity: 1; }
+.member-pick:hover::after { border-color: var(--accent); }
+.member-picked .member-pick::after,
+.member-related .member-pick::after {
+  opacity: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* The three states of following a symbol. Everything unrelated recedes rather
+   than disappearing: a box that vanished would move the layout, and the shape of
+   the diagram is what you were looking at. */
+.member-picked { background: rgba(122, 162, 247, 0.16); }
+.member-picked .member-name { color: var(--text); }
+.member-related .member-name { color: var(--accent); }
+.member-aside { opacity: 0.3; }
 
 .member-more { padding: 0 10px; }
 .member-class, .member-interface { color: #bb9af7; }
@@ -223,15 +268,12 @@ main { display: flex; flex: 1; min-height: 0; }
    down the left so a run of them reads as one class's contents rather than as
    more top-level symbols. */
 .member-nested {
-  display: flex;
-  align-items: baseline;
   padding-left: 4px;
   margin-left: 3px;
   border-left: 1px solid var(--line);
 }
-.member-nested button { padding-left: 0; }
-.member-field button { color: #7dcfff; }
-.member-field button:hover { color: var(--text); }
+.member-field .member-name { color: #7dcfff; }
+.member-field .member-name:hover { color: var(--text); }
 
 /* UML's visibility column. Fixed width so the names line up under each other
    rather than stepping in and out with the marker. */
@@ -244,8 +286,8 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 
 /* The two UML type styles: static is underlined, abstract is italic. */
-.member-static button { text-decoration: underline; text-underline-offset: 2px; }
-.member-abstract button { font-style: italic; }
+.member-static .member-name { text-decoration: underline; text-underline-offset: 2px; }
+.member-abstract .member-name { font-style: italic; }
 .member-method button { color: var(--muted); }
 .member-method button:hover { color: var(--text); }
 .member-more { color: var(--line-strong); font-style: italic; }
@@ -1118,6 +1160,23 @@ main { display: flex; flex: 1; min-height: 0; }
   font-size: 11px;
   padding: 2px 9px;
 }
+/* Following a symbol. Blue rather than the filters amber, because it narrows
+   nothing — everything is still drawn, some of it just receded. */
+.symbol-chip {
+  background: rgba(122, 162, 247, 0.12);
+  border: 1px solid rgba(122, 162, 247, 0.45);
+  border-radius: 5px;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 9px;
+}
+.symbol-chip:hover { border-color: var(--accent); }
+.symbol-chip span { margin-left: 5px; opacity: 0.7; }
+/* A symbol nothing links to has to say so; an empty diagram cannot. */
+.symbol-chip-empty { background: transparent; border-color: var(--line-strong); color: var(--muted); }
+
 .filter-chip span { margin-left: 5px; opacity: 0.7; }
 .filter-chip:hover { border-color: var(--folder); }
 

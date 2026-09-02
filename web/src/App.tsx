@@ -22,6 +22,7 @@ import {
   fetchChanges,
   fetchClusters,
   fetchGit,
+  fetchSymbol,
   fetchAgentCalls,
   fetchHookStatus,
   fetchLanguages,
@@ -39,6 +40,7 @@ import {
   type GroupColor,
   type ChangeEntry,
   type GitStatus,
+  type SymbolLinks,
   type GroupSuggestion,
   type LanguageReport,
   type SearchHit,
@@ -162,6 +164,15 @@ export function App() {
    * six boxes has any business carrying.
    */
   const [gitLines, setGitLines] = useState<GitStatus | null>(null);
+  /**
+   * The symbol being followed, and what the server said about it.
+   *
+   * Symbol-level edges have always been in the graph — every drawing collapses
+   * them onto the files that hold them — so this asks the question the diagram
+   * cannot: not which two boxes are coupled, but which two rows made them so.
+   */
+  const [highlight, setHighlight] = useState<string | null>(null);
+  const [links, setLinks] = useState<SymbolLinks | null>(null);
   const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
@@ -473,6 +484,31 @@ export function App() {
   // Re-read whenever the graph moves: the server polls git every 3 seconds and
   // publishes when it changes, and that push is what bumps the revision.
   useEffect(() => {
+    if (highlight === null) {
+      setLinks(null);
+      return;
+    }
+    let cancelled = false;
+    fetchSymbol(highlight).then(
+      (result) => {
+        if (!cancelled) setLinks(result);
+      },
+      () => {
+        if (!cancelled) setLinks(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+    // revision, because a re-parse can give the symbol a new id or drop it.
+  }, [highlight, revision]);
+
+  const relatedIds = useMemo(() => {
+    if (links === null) return new Set<string>();
+    return new Set([...links.uses, ...links.usedBy].map((relation) => relation.id));
+  }, [links]);
+
+  useEffect(() => {
     let cancelled = false;
     fetchGit().then(
       (result) => {
@@ -615,6 +651,9 @@ export function App() {
         language: node.language,
         showLanguage: mixedProject,
         root: data?.root ?? '',
+        highlight,
+        related: relatedIds,
+        onHighlight: setHighlight,
       },
     }));
 
@@ -737,6 +776,8 @@ export function App() {
     view,
     changedBoxIds,
     queriedBoxIds,
+    highlight,
+    relatedIds,
     picked,
     mixedProject,
     data?.root,
@@ -935,6 +976,7 @@ export function App() {
         fitRef.current?.();
       } else if (event.key === 'Escape') {
         clearSelection();
+        setHighlight(null);
         setShowWelcome(false);
       }
     };
@@ -1435,6 +1477,33 @@ export function App() {
               </div>
             )}
           </div>
+        )}
+
+        {/* What is being followed, and — the part that matters — whether the
+            answer is "nothing uses this" or "nothing could be resolved". Those
+            look identical on the diagram and mean opposite things. */}
+        {highlight !== null && (
+          <button
+            type="button"
+            className={
+              links !== null && links.uses.length + links.usedBy.length === 0
+                ? 'symbol-chip symbol-chip-empty'
+                : 'symbol-chip'
+            }
+            onClick={() => setHighlight(null)}
+            title={
+              links === null
+                ? 'Looking up what this symbol is connected to'
+                : links.uses.length + links.usedBy.length === 0
+                  ? 'Nothing in this project references it, and nothing it references resolved. Method calls in particular are under-reported on purpose — see CLAUDE.md.'
+                  : 'Click to stop following it'
+            }
+          >
+            {links === null
+              ? 'following…'
+              : `${links.name} — ${links.usedBy.length} in, ${links.uses.length} out`}
+            <span aria-hidden="true">✕</span>
+          </button>
         )}
 
         {activeFilters.map((chip) => (

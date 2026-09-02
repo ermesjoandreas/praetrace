@@ -104,3 +104,83 @@ function importedByOf(graph: Graph, matches: (to: string) => boolean): string[] 
 export function directoryOf(filePath: string): string {
   return path.posix.dirname(filePath);
 }
+
+/**
+ * What one symbol reaches, and what reaches it.
+ *
+ * The graph has always held these edges — `calls`, `extends`, `implements` and
+ * `associates` all run between symbols — but every drawing collapses them onto
+ * the files that hold them, so the page could say two files are coupled and
+ * never which two symbols made them so. This is the same question `describe`
+ * answers for a file, asked one level down.
+ *
+ * `contains` and `imports` are left out on purpose: they are structural, and a
+ * symbol is related to its file in a way that says nothing about the code.
+ */
+export interface SymbolRelation {
+  /** The other symbol's id, so the page can light the exact row. */
+  id: string;
+  name: string;
+  kind: NodeKind;
+  filePath: string;
+  line: number;
+  /** Which relationship, so a call can read differently from an inheritance. */
+  edge: 'calls' | 'extends' | 'implements' | 'associates';
+}
+
+export interface SymbolLinks {
+  id: string;
+  name: string;
+  kind: NodeKind;
+  filePath: string;
+  /** What this symbol reaches out to. */
+  uses: SymbolRelation[];
+  /** What reaches it. This is the half nothing else in the app can answer. */
+  usedBy: SymbolRelation[];
+}
+
+const RELATED: ReadonlySet<string> = new Set(['calls', 'extends', 'implements', 'associates']);
+
+export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
+  const symbol = graph.nodes.get(id);
+  if (!symbol || symbol.kind === 'file') return null;
+
+  const relate = (otherId: string, edge: string): SymbolRelation | null => {
+    const other = graph.nodes.get(otherId);
+    if (!other || other.kind === 'file') return null;
+    return {
+      id: other.id,
+      name: other.name,
+      kind: other.kind,
+      filePath: other.filePath,
+      line: other.range.startLine,
+      edge: edge as SymbolRelation['edge'],
+    };
+  };
+
+  const uses: SymbolRelation[] = [];
+  const usedBy: SymbolRelation[] = [];
+
+  for (const edge of graph.edges) {
+    if (!RELATED.has(edge.kind)) continue;
+    if (edge.from === id) {
+      const found = relate(edge.to, edge.kind);
+      if (found) uses.push(found);
+    } else if (edge.to === id) {
+      const found = relate(edge.from, edge.kind);
+      if (found) usedBy.push(found);
+    }
+  }
+
+  const order = (a: SymbolRelation, b: SymbolRelation): number =>
+    a.filePath.localeCompare(b.filePath) || a.name.localeCompare(b.name);
+
+  return {
+    id,
+    name: symbol.name,
+    kind: symbol.kind,
+    filePath: symbol.filePath,
+    uses: uses.sort(order),
+    usedBy: usedBy.sort(order),
+  };
+}

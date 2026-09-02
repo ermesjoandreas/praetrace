@@ -19,6 +19,14 @@ export interface ViewSpec {
 }
 
 export interface ViewMember {
+  /**
+   * The graph id, so the page can ask about this exact symbol.
+   *
+   * Carried rather than rebuilt from name and owner: `uniqueId` disambiguates two
+   * symbols sharing a name in one file with a `~2` suffix, and a page that
+   * reconstructed the id would ask about the wrong one of the pair.
+   */
+  id: string;
   name: string;
   kind: NodeKind;
   /** Where the symbol starts, so the page can open an editor on it. */

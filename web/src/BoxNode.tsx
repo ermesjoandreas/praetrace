@@ -22,6 +22,11 @@ export type BoxData = {
   showLanguage: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
+  /** The symbol whose relations are being shown, if any is. */
+  highlight: string | null;
+  /** Symbol ids related to it, so a row knows whether to light or fade. */
+  related: ReadonlySet<string>;
+  onHighlight: (id: string | null) => void;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
@@ -151,17 +156,40 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 member.owner === null ? '' : 'member-nested',
                 member.isStatic ? 'member-static' : '',
                 member.isAbstract ? 'member-abstract' : '',
+                data.highlight === member.id ? 'member-picked' : '',
+                data.related.has(member.id) ? 'member-related' : '',
+                data.highlight !== null && data.highlight !== member.id && !data.related.has(member.id)
+                  ? 'member-aside'
+                  : '',
               ]
                 .filter(Boolean)
                 .join(' ')}
             >
-              {member.owner !== null && (
-                <span className="member-vis" aria-hidden="true">
-                  {VISIBILITY[member.visibility ?? 'public']}
-                </span>
-              )}
+              {/* Its own target, because clicking the name already opens an
+                  editor. Nine pixels is a small thing to hit, so the button is
+                  the full height of the row and only its mark is that size. */}
               <button
                 type="button"
+                className="member-pick"
+                aria-pressed={data.highlight === member.id}
+                title={
+                  data.highlight === member.id
+                    ? 'Stop following this symbol'
+                    : `Show what ${member.name} uses, and what uses it`
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  data.onHighlight(data.highlight === member.id ? null : member.id);
+                }}
+              />
+
+              <span className="member-vis" aria-hidden="true">
+                {member.owner === null ? '' : VISIBILITY[member.visibility ?? 'public']}
+              </span>
+
+              <button
+                type="button"
+                className="member-name"
                 onClick={open(member.line)}
                 title={`${member.owner === null ? '' : `${member.owner}.`}${member.name} — open at line ${member.line}`}
               >

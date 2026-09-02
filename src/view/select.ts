@@ -144,6 +144,7 @@ function collectFiles(
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
     files.get(node.filePath)?.push({
+      id: node.id,
       name: node.name,
       kind: node.kind,
       line: node.range.startLine,

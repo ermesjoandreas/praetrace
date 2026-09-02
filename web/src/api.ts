@@ -196,6 +196,33 @@ export async function fetchDetail(target: string): Promise<Detail | null> {
   return (await response.json()) as Detail;
 }
 
+export interface SymbolRelation {
+  id: string;
+  name: string;
+  kind: 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
+  filePath: string;
+  line: number;
+  edge: 'calls' | 'extends' | 'implements' | 'associates';
+}
+
+export interface SymbolLinks {
+  id: string;
+  name: string;
+  kind: SymbolRelation['kind'];
+  filePath: string;
+  uses: SymbolRelation[];
+  usedBy: SymbolRelation[];
+}
+
+/** What one symbol reaches and what reaches it. 404 means it left the graph. */
+export async function fetchSymbol(id: string): Promise<SymbolLinks | null> {
+  const server = await serverOrigin();
+  const response = await fetch(`${server}/api/symbol?id=${encodeURIComponent(id)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`symbol failed: HTTP ${response.status}`);
+  return (await response.json()) as SymbolLinks;
+}
+
 export interface ChangeEntry {
   at: number;
   files: string[];
