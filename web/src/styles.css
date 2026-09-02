@@ -262,7 +262,19 @@ main { display: flex; flex: 1; min-height: 0; }
 .member-picked { background: rgba(122, 162, 247, 0.16); }
 .member-picked .member-name { color: var(--text); }
 .member-related .member-name { color: var(--accent); }
-.member-aside { opacity: 0.3; }
+.member-aside { opacity: 0.35; }
+
+/* Following one symbol dims everything it has no part in — the whole box when
+   nothing inside it takes part, and every edge that does not run between two
+   boxes that do. Receding rather than hiding: a box that vanished would move the
+   layout, and the shape of the diagram is what you were reading.
+
+   Not so faint it stops being a map. You still need to see where the lit thing
+   sits relative to everything else, which is the only reason it is on a diagram
+   rather than in a list. */
+.box-aside { opacity: 0.28; }
+.react-flow__edge.edge-aside { opacity: 0.15; }
+.react-flow__edge.edge-aside .react-flow__edge-text { opacity: 0; }
 
 .member-more { padding: 0 10px; }
 .member-class, .member-interface { color: #bb9af7; }

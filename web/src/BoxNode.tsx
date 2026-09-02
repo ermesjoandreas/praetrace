@@ -22,6 +22,8 @@ export type BoxData = {
   showLanguage: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
+  /** Nothing in this box takes part in what is being followed. */
+  aside: boolean;
   /** Showing every member rather than the first twelve. */
   expanded: boolean;
   onExpand: (id: string, expanded: boolean) => void;
@@ -89,6 +91,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   if (data.changed) classes.push('box-changed');
   if (data.queried) classes.push('box-queried');
   if (data.focused) classes.push('box-focused');
+  if (data.aside) classes.push('box-aside');
 
   /** Clicking a box navigates, so opening an editor must not also do that. */
   const open = (line: number) => (event: MouseEvent) => {

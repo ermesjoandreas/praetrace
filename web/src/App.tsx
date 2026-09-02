@@ -520,6 +520,19 @@ export function App() {
     return new Set([...links.uses, ...links.usedBy].map((relation) => relation.id));
   }, [links]);
 
+  /**
+   * The boxes any of it lands in — the followed symbol's own file and every file
+   * holding something it reaches or that reaches it.
+   *
+   * Fading the rows inside a box was not enough on its own: a box holding
+   * nothing relevant still read as fully present, and so did every edge on the
+   * canvas, so the thing being followed had nothing to stand out against.
+   */
+  const relatedFiles = useMemo(() => {
+    if (links === null) return null;
+    return new Set([links.filePath, ...links.uses.map((r) => r.filePath), ...links.usedBy.map((r) => r.filePath)]);
+  }, [links]);
+
   useEffect(() => {
     let cancelled = false;
     fetchGit().then(
@@ -629,11 +642,22 @@ export function App() {
   const { nodes, edges } = useMemo(() => {
     if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
 
+    /** A box counts as involved when any file behind it is. */
+    const involved = (id: string): boolean => {
+      if (relatedFiles === null) return true;
+      const node = view.nodes.find((candidate) => candidate.id === id);
+      return node !== undefined && node.files.some((file) => relatedFiles.has(file));
+    };
+
     const builtEdges: Edge[] = view.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
       source: edge.from,
       target: edge.to,
-      className: `edge-${edge.kind}`,
+      // An edge stays lit only when both ends are in it. One end is not a
+      // relationship the followed symbol has any part in.
+      className: `edge-${edge.kind}${
+        relatedFiles !== null && !(involved(edge.from) && involved(edge.to)) ? ' edge-aside' : ''
+      }`,
       // A weight of one is the common case and labelling it is just noise.
       ...(edge.weight > 1 ? { label: String(edge.weight) } : {}),
     }));
@@ -668,6 +692,7 @@ export function App() {
         onHighlight: setHighlight,
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
+        aside: relatedFiles !== null && !node.files.some((file) => relatedFiles.has(file)),
       },
     }));
 
@@ -796,6 +821,7 @@ export function App() {
     queriedBoxIds,
     highlight,
     relatedIds,
+    relatedFiles,
     expanded,
     toggleExpanded,
     picked,
