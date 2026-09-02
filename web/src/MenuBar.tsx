@@ -31,7 +31,10 @@ export function MenuBar({ menus, trailing }: { menus: Menu[]; trailing?: ReactNo
       if (!bar.current?.contains(event.target as Node)) setOpen(null);
     };
     const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(null);
+      if (event.key !== 'Escape') return;
+      // Taken: the page's own Escape must not also leave a frozen view.
+      event.preventDefault();
+      setOpen(null);
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', escape);

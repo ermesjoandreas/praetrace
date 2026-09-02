@@ -139,15 +139,6 @@ export function layoutNodes<T extends Node>(
   }
 
   const present = new Set(nodes.map((node) => node.id));
-  const drawn: {
-    id: string;
-    files: string[];
-    cohesion: number;
-    depth: number;
-    manual: boolean;
-    padding: { x: number; y: number } | undefined;
-    locked: { x: number; y: number; width: number; height: number } | undefined;
-  }[] = [];
   const registered = new Set<string>();
 
   // Outer groups first, so an inner one can be parented to a node that exists.
@@ -166,16 +157,6 @@ export function layoutNodes<T extends Node>(
     if (cluster.parent !== null && registered.has(cluster.parent)) {
       graph.setParent(key, CLUSTER_PREFIX + cluster.parent);
     }
-
-    drawn.push({
-      id: cluster.id,
-      files: members,
-      cohesion: cluster.cohesion,
-      depth: cluster.depth,
-      manual: cluster.origin === 'manual',
-      padding: cluster.padding,
-      locked: cluster.locked === true ? cluster.geometry : undefined,
-    });
   }
 
   for (const edge of edges) graph.setEdge(edge.source, edge.target);
@@ -195,9 +176,23 @@ export function layoutNodes<T extends Node>(
     };
   });
 
-  // dagre's own parent box spans every rank its children touch, including the
-  // space other clusters occupy in between. A box drawn tight around where the
-  // members actually landed is far smaller and overlaps far less.
+  return { nodes: placed, clusters: frameClusters(placed, clusters) };
+}
+
+/**
+ * The frame each group occupies, drawn tight around where its members actually
+ * landed — not dagre's own parent box, which spans every rank its children
+ * touch, including the space other clusters occupy in between, and is far
+ * larger and overlaps far more.
+ *
+ * On its own so a frame can be redrawn without a layout: a colour, a lock or a
+ * hand-placed geometry changes nothing dagre reads, and running it again for
+ * those moved every box for a click that meant "hold this one still".
+ */
+export function frameClusters<T extends Node>(
+  placed: readonly T[],
+  clusters: readonly ClusterInput[],
+): ClusterBounds[] {
   const byId = new Map(placed.map((node) => [node.id, node]));
   const candidates: (ClusterBounds & {
     cohesion: number;
@@ -206,29 +201,32 @@ export function layoutNodes<T extends Node>(
     locked: boolean;
   })[] = [];
 
-  for (const cluster of drawn) {
-    let left = Infinity;
-    let top = Infinity;
-    let right = -Infinity;
-    let bottom = -Infinity;
+  for (const cluster of clusters) {
+    // The same rule the layout applies: a frame around one box says nothing.
+    const members = cluster.files.filter((file) => byId.has(file));
+    if (members.length < 2) continue;
 
     // A locked frame is where someone put it. Recomputing it from the members
     // would undo the act of locking on the very next edit, which is the one
     // thing a lock is for.
-    if (cluster.locked) {
+    if (cluster.locked === true && cluster.geometry !== undefined) {
       candidates.push({
-        ...cluster.locked,
+        ...cluster.geometry,
         id: cluster.id,
         depth: cluster.depth,
         cohesion: cluster.cohesion,
-        area: cluster.locked.width * cluster.locked.height,
-        manual: cluster.manual,
+        area: cluster.geometry.width * cluster.geometry.height,
+        manual: cluster.origin === 'manual',
         locked: true,
       });
       continue;
     }
 
-    for (const file of cluster.files) {
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const file of members) {
       const node = byId.get(file);
       if (!node) continue;
       left = Math.min(left, node.position.x);
@@ -251,10 +249,10 @@ export function layoutNodes<T extends Node>(
       ...box,
       cohesion: cluster.cohesion,
       area: box.width * box.height,
-      manual: cluster.manual,
+      manual: cluster.origin === 'manual',
       locked: false,
     });
   }
 
-  return { nodes: placed, clusters: withoutOverlaps(candidates) };
+  return withoutOverlaps(candidates);
 }

@@ -39,7 +39,10 @@ export function ContextMenu({
       if (!panel.current?.contains(event.target as Node)) onClose();
     };
     const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
+      if (event.key !== 'Escape') return;
+      // Taken: the page's own Escape must not also leave a frozen view.
+      event.preventDefault();
+      onClose();
     };
     // Capture, because React Flow stops pointer events on the pane before they
     // reach the document and the menu would then never close on a click away.

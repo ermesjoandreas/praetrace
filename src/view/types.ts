@@ -16,6 +16,16 @@ export interface ViewSpec {
   depth: number;
   /** What to leave out. Filtering is not navigating. */
   filter: ViewFilter;
+  /**
+   * A commit to draw the project as of, or null for the working tree now.
+   *
+   * A view and not a session setting — unlike the git base — because "how did
+   * this look at that commit" is a place someone wants to link to and step back
+   * out of. `selectView` does not act on it: it decides which graph to select
+   * *from*, which is the server's choice, and a pure function handed a graph
+   * cannot tell one commit's from another's.
+   */
+  at: string | null;
 }
 
 export interface ViewMember {
@@ -99,4 +109,12 @@ export interface ViewGraph {
   languages: LanguageCount[];
   /** null when the project is not a git work tree. */
   git: { base: string; requested: string; branch: string | null; changed: number } | null;
+  /**
+   * The commit this was selected from, echoed back, or null for now.
+   *
+   * At the top level and not only inside `spec` so the page has one place to
+   * ask "is what I am looking at frozen" — the answer that decides whether a
+   * live update may touch the diagram at all.
+   */
+  at: string | null;
 }

@@ -11,15 +11,11 @@ import { isDesktop, pickProject, recentProjects } from './api';
 export function Welcome({
   onOpen,
   onSearch,
-  hookInstalled,
-  onInstallHook,
   onClose,
   unreadable,
 }: {
   onOpen: (path: string) => void;
   onSearch: () => void;
-  hookInstalled: boolean | null;
-  onInstallHook: () => void;
   /** Null when there is no project to go back to, so there is nothing to close. */
   onClose: (() => void) | null;
   /**
@@ -90,13 +86,6 @@ export function Welcome({
               <kbd>⌘K</kbd>
             </button>
           </li>
-          {hookInstalled === false && (
-            <li>
-              <button type="button" className="welcome-action" onClick={onInstallHook}>
-                <span className="welcome-label">Install the Claude Code hook</span>
-              </button>
-            </li>
-          )}
           {[
             ['Toggle panel', '⌘B'],
             ['Back, forward', '⌘[ ⌘]'],

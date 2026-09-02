@@ -14,7 +14,7 @@ export interface LiveSocket {
 const OPEN = 1;
 
 /** What a client is shown when it connects, and after a project switch. */
-export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER };
+export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER, at: null };
 
 export interface LiveHub {
   add(socket: LiveSocket, spec: ViewSpec): void;
@@ -23,6 +23,11 @@ export interface LiveHub {
   /**
    * Push a fresh view to every client. Each gets its own slice: a client looking
    * at one directory should not be handed another's.
+   *
+   * A client viewing a past commit is not pushed to at all. Nothing that
+   * happens in the working tree changes what that commit looked like, and a
+   * view recomputed from the live graph would quietly replace the commit with
+   * now while the page still said otherwise. A frozen view is frozen.
    */
   publish(changedFiles: readonly string[]): void;
   /**
@@ -93,7 +98,10 @@ export function createLiveHub(
     },
 
     publish(changedFiles) {
-      for (const [socket, spec] of clients) push(socket, spec, changedFiles, 'update');
+      for (const [socket, spec] of clients) {
+        if (spec.at !== null) continue;
+        push(socket, spec, changedFiles, 'update');
+      }
     },
 
     projectChanged() {

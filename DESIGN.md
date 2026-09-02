@@ -74,6 +74,10 @@ info            --vsc-info          #3794FF   "the agent asked about this"
 warning         --vsc-warning       #CCA700
 error           --vsc-error         #F85149
 
+graph lanes     --vsc-graph-1 … -5  #FFB000 #DC267F #994F00 #40B0A6 #B66DFF
+                                              VS Code's scmGraph.foreground1–5;
+                                              lane 0 is the accent
+
 class, interface, type   --vsc-sym-class / -interface / -type   #4EC9B0
 function, method         --vsc-sym-function / -method            #DCDCAA
 field                    --vsc-sym-field                         #9CDCFE
@@ -105,9 +109,12 @@ Each one is a different *kind* of mark, not just a different hue:
 | the agent asked about it | border pulse | info blue |
 | git status | a letter badge in the title | the git colour |
 | language | a small muted tag in the title | none |
+| frozen at a commit | a chip in the breadcrumb row, `Viewing 7fe7f88 · 2 days ago ✕` | badge grey, like the filter chips |
+| a thread in the commit graph | a 1.5px line in the lane column | the accent for lane 0, then graph 1–5 |
 
 Blue is the agent's. Amber is the file system's. The accent is yours. Do not give a
-new signal one of those three hues.
+new signal one of those three hues — the frozen chip was blue for a day and shared
+the agent's colour with a state that has nothing to do with the agent.
 
 Group frames keep the eight colours a person chose for them, at a 6% fill and a 40%
 border. Those are the user's own meaning and are not subject to rule 4.
@@ -120,27 +127,31 @@ border. Those are the user's own meaning and are not subject to rule 4.
 ┌─────────────────────────────────────────────────────────────────┐
 │ MENU BAR  35px   codemap  File Edit Selection View Go Help      │ chrome
 ├─────────────────────────────────────────────────────────────────┤
-│ BREADCRUMB 22px  root › src › graph   [filters]   Search ⌘K     │ chrome
+│ BREADCRUMB 22px  root › src  [Viewing 7fe7f88 ✕] [filters] ⌘K   │ chrome
 ├──────────┬──────────────────────────────────────┬───────────────┤
-│ ACTIVITY │                                      │ SIDE BAR      │
-│ 272px    │           CANVAS  #1F1F1F            │ 330px         │
+│ LEFT BAR │                                      │ SIDE BAR      │
+│ 300px    │           CANVAS  #1F1F1F            │ 330px         │
 │ chrome   │                                      │ chrome        │
-│          │                                      │  ▾ Following  │
-│          │                                      │  ▾ Detail     │
-│          │                                      │  ▾ Groups     │
+│ ▾ <repo> │                                      │  ▾ Following  │
+│ ▾ Source │                                      │  ▾ Detail     │
+│   Control│                                      │  ▾ Groups     │
+│ ▾ Activity                                      │               │
 ├──────────┴──────────────────────────────────────┴───────────────┤
-│ STATUS BAR 22px  ⎇ main · 4 changed vs HEAD     55 boxes · TS 55 │ chrome
+│ STATUS BAR 22px  ⎇ main ↑2 ↓0 · Changes [4]     55 boxes · TS 55 │ chrome
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 - The menu bar is the title bar. Nothing in a menu is decoration.
-- The breadcrumb row is a toolbar: crumbs separated by a chevron, then the active
-  filters as chips, then search.
-- The activity table and the side bar are side bars in VS Code's sense: `#181818`,
-  edged by a 1px line, made of 22px sections with a chevron that really folds.
-- The status bar holds what the project *is*: branch, the git base and the changed
+- The breadcrumb row is a toolbar: crumbs separated by a chevron, then the commit
+  the diagram is frozen at, then the active filters as chips, then search.
+- The left bar and the side bar are side bars in VS Code's sense: `#181818`,
+  edged by a 1px line, made of 22px sections with a chevron that really folds. The
+  left bar is Repository (titled with the repository's own name), Source Control
+  (Changes and Graph as nested 22px headers, indented 8px) and Activity.
+- The status bar holds what the project *is*: branch, ahead/behind, the changed
   count, boxes and files, languages, the agent's connection. Every item is either
-  information or runs something.
+  information or runs something. The vocabulary is VS Code's — "Changes", "Diff
+  against HEAD · HEAD~1 · merge base" — never "vs HEAD".
 - The welcome screen covers the canvas, not the window. The chrome stays reachable.
 - `body` never scrolls. Every region scrolls inside itself.
 
@@ -162,6 +173,20 @@ row is hovered. Git letters right-aligned in the git colour.
 `web/src/layout.ts`; dagre places every box from them and every group frame is drawn
 around where the boxes land. A pixel of change moves every frame. Member rows are
 UML compartments, not list rows — the 22px rule does not apply to them.
+
+**Commit graph** — one 22px row per commit: an SVG lane column at 12px a lane,
+1.5px threads in the lane colours, a 6px dot, a curve where a thread changes lane,
+then the subject, the refs as 18px badges (the checked-out branch on the accent
+with a target icon, tags and remotes in badge grey with their codicon, a detached
+HEAD says so), and author · age muted, cut from the front so the age survives. The
+selected row is the commit on screen — the list-selection fill only, no ring, so a
+keyboard user can tell it from the focused row. The column is as wide as the busiest
+row and scrolls sideways past the panel; a commit is never drawn without its dot.
+
+**Repository panel** — three blocks, Project · Remote · Claude Code, each a list of
+22px label · value rows with a 76px muted label, the full value in the row's title,
+and one 26px full-width button under it. In a browser the "Open folder" slot holds
+the CLI line in `<code>` instead.
 
 **Menu, palette, popover** — the only things with `--vsc-shadow-widget`. 5px radius,
 `--vsc-border-menu`. Menu rows 26px, the selected one is the accent full width.
@@ -235,7 +260,8 @@ The checklist a change to `web/` has to pass, with the page in front of you:
 - No `box-shadow` outside menus, the palette, tooltips and the group editor.
 - Chrome `#181818`, canvas `#1F1F1F`, every region edge a 1px `#2B2B2B`.
 - List rows 22px, section headers 22px, member rows 17px, box header 38px.
-- Only `#0078D4` as accent; `7aa2f7`, `bb9af7`, `9ece6a`, `e0af68` absent.
+- Only `#0078D4` as accent; `7aa2f7`, `bb9af7`, `9ece6a`, `e0af68` absent. The
+  five lane hexes (`ffb000`, `dc267f`, `994f00`, `40b0a6`, `b66dff`) are expected.
 - Every icon a Codicon that renders — no missing-glyph boxes.
 - Section and row actions absent until hovered.
 - A group frame still hugs its members after any change near `layout.ts`.

@@ -1,5 +1,5 @@
-import { execFile } from 'node:child_process';
-import { realpath } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import type { GitFileStatus, GitStatus } from '../git/types.js';
@@ -112,7 +112,7 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
   return { base: resolved ?? 'HEAD', requested: base, branch, files, lines, totals };
 }
 
-async function readBranch(root: string): Promise<string | null> {
+export async function readBranch(root: string): Promise<string | null> {
   const output = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const name = output?.trim();
   // The literal 'HEAD' is what a detached HEAD answers, not a branch called HEAD.
@@ -281,4 +281,282 @@ function stripPrefix(gitPath: string, prefix: string): string | null {
   if (prefix === '') return gitPath;
   if (!gitPath.startsWith(`${prefix}/`)) return null;
   return gitPath.slice(prefix.length + 1);
+}
+
+/** One commit as the log reports it: enough to draw a graph of them. */
+export interface Commit {
+  sha: string;
+  /** Full shas, first parent first. Empty for a root commit. */
+  parents: string[];
+  author: string;
+  /** Unix milliseconds, like every other `at` in the project — git's seconds, scaled. */
+  at: number;
+  subject: string;
+  /**
+   * What points here, in git's own words: `HEAD`, `main`, `origin/main`,
+   * `tag: v1`. The arrow in `HEAD -> main` is taken apart into `HEAD` and the
+   * branch, so a consumer can look for either without knowing the spelling.
+   * The tag prefix is kept, because `v1` on its own could be a branch.
+   */
+  refs: string[];
+}
+
+const LOG_FORMAT = '%H%x00%P%x00%an%x00%at%x00%s%x00%D';
+const DEFAULT_LOG_LIMIT = 300;
+const HEAD_ARROW = 'HEAD -> ';
+
+/**
+ * The most recent commits on every ref, newest first. Empty when there is no
+ * git to read, or nothing committed yet.
+ *
+ * `--date-order` rather than the default: both sort by date, but only this one
+ * promises a parent never comes before its child when clocks disagreed, and a
+ * lane drawn top-down needs exactly that promise. Fields are NUL-separated
+ * because a subject can contain any printable character; records are lines,
+ * because none of these fields can contain a newline.
+ */
+export async function readLog(root: string, limit = DEFAULT_LOG_LIMIT): Promise<Commit[]> {
+  const output = await git(root, [
+    'log',
+    `--format=${LOG_FORMAT}`,
+    '--date-order',
+    '-n',
+    String(limit),
+    '--all',
+  ]);
+  return output === null ? [] : parseLog(output);
+}
+
+/** Pure, and exported for the test the parsing half of this module is owed. */
+export function parseLog(stdout: string): Commit[] {
+  const commits: Commit[] = [];
+  for (const line of stdout.split('\n')) {
+    if (line === '') continue;
+    const [sha, parents, author, seconds, subject, decorations] = line.split('\0');
+    const at = Number(seconds) * 1000;
+    if (sha === undefined || sha === '' || !Number.isFinite(at)) continue;
+    commits.push({
+      sha,
+      parents: parents === undefined || parents === '' ? [] : parents.split(' '),
+      author: author ?? '',
+      at,
+      subject: subject ?? '',
+      refs: parseRefs(decorations ?? ''),
+    });
+  }
+  return commits;
+}
+
+/** `HEAD -> main, origin/main, tag: v1` -> `HEAD`, `main`, `origin/main`, `tag: v1`. */
+function parseRefs(decorations: string): string[] {
+  const refs: string[] = [];
+  for (const entry of decorations.split(', ')) {
+    if (entry === '') continue;
+    if (entry.startsWith(HEAD_ARROW)) refs.push('HEAD', entry.slice(HEAD_ARROW.length));
+    else refs.push(entry);
+  }
+  return refs;
+}
+
+/**
+ * Where the repository stands against its remote. Every field can be absent on
+ * its own: a fresh `git init` has no origin, a local branch tracks nothing, a
+ * clone that never fetched has no FETCH_HEAD. None of those is an error.
+ */
+export interface RemoteStatus {
+  /** What `origin` points at, or null when there is no origin. */
+  url: string | null;
+  /** `origin/main`: what the current branch tracks, or null when it tracks nothing. */
+  upstream: string | null;
+  /** Commits here the upstream lacks, and the reverse. Both 0 without an upstream. */
+  ahead: number;
+  behind: number;
+  /** Unix milliseconds of the last fetch, or null when there has never been one. */
+  fetchedAt: number | null;
+}
+
+/** Null when there is no git to read; otherwise an answer, however empty. */
+export async function readRemote(root: string): Promise<RemoteStatus | null> {
+  if ((await git(root, ['rev-parse', '--show-toplevel'])) === null) return null;
+
+  const url = nonEmpty(await git(root, ['remote', 'get-url', 'origin']));
+  const upstream = nonEmpty(await git(root, ['rev-parse', '--abbrev-ref', '@{upstream}']));
+
+  let ahead = 0;
+  let behind = 0;
+  if (upstream !== null) {
+    const counts = await git(root, ['rev-list', '--left-right', '--count', 'HEAD...@{upstream}']);
+    const [left, right] = (counts ?? '').trim().split(/\s+/).map(Number);
+    if (left !== undefined && right !== undefined && Number.isFinite(left) && Number.isFinite(right)) {
+      ahead = left;
+      behind = right;
+    }
+  }
+
+  return { url, upstream, ahead, behind, fetchedAt: await lastFetch(root) };
+}
+
+function nonEmpty(output: string | null): string | null {
+  const text = output?.trim();
+  return text === undefined || text === '' ? null : text;
+}
+
+/**
+ * git rewrites FETCH_HEAD on every fetch, so its mtime is the last one. Asked
+ * for by `--git-path` rather than assumed under `.git`, because a worktree or
+ * a project opened inside a larger repository keeps it somewhere else.
+ */
+async function lastFetch(root: string): Promise<number | null> {
+  const gitPath = nonEmpty(await git(root, ['rev-parse', '--git-path', 'FETCH_HEAD']));
+  if (gitPath === null) return null;
+  const stats = await stat(path.resolve(root, gitPath)).catch(() => null);
+  return stats?.mtimeMs ?? null;
+}
+
+const FETCH_TIMEOUT_MS = 30_000;
+
+/**
+ * `git fetch`, the one verb here that talks to the network and the only one
+ * that is not a read — and it still touches no working tree, which matters
+ * because an agent may be editing it at the time. Never throws: every way it
+ * can fail comes back as a sentence the panel can show.
+ */
+export async function fetchRemote(root: string): Promise<{ ok: boolean; detail: string }> {
+  if ((await git(root, ['rev-parse', '--show-toplevel'])) === null) {
+    return { ok: false, detail: 'Not a git repository.' };
+  }
+  const remote = await fetchTarget(root);
+  if (remote === null) return { ok: false, detail: 'This repository has no remote to fetch from.' };
+
+  try {
+    await execFileAsync('git', ['fetch', '--quiet', remote], {
+      cwd: root,
+      timeout: FETCH_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+      encoding: 'utf8',
+      // A remote wanting a password would otherwise wait on a terminal nobody
+      // is looking at, and only the timeout would ever answer.
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    return { ok: true, detail: `Fetched ${remote}.` };
+  } catch (error) {
+    return { ok: false, detail: describeFetchFailure(error, remote) };
+  }
+}
+
+/**
+ * The remote a bare `git fetch` would pick — the current branch's, else
+ * origin, else whichever is configured — resolved here so the answer can name
+ * it. Null when there is none.
+ */
+async function fetchTarget(root: string): Promise<string | null> {
+  const remotes = (await git(root, ['remote']))?.split('\n').filter((name) => name !== '') ?? [];
+  if (remotes.length === 0) return null;
+
+  // `origin/main` names the remote by prefix, and a remote name may itself
+  // contain a slash, so the longest configured name that fits is the one.
+  const upstream = nonEmpty(await git(root, ['rev-parse', '--abbrev-ref', '@{upstream}'])) ?? '';
+  const tracked = remotes
+    .filter((name) => upstream.startsWith(`${name}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  if (tracked !== undefined) return tracked;
+  return remotes.includes('origin') ? 'origin' : (remotes[0] ?? null);
+}
+
+function describeFetchFailure(error: unknown, remote: string): string {
+  if (typeof error === 'object' && error !== null) {
+    const { killed, stderr } = error as { killed?: boolean; stderr?: string };
+    if (killed === true) return `git fetch ${remote} gave up after ${FETCH_TIMEOUT_MS / 1000} seconds.`;
+    const line = stderr
+      ?.split('\n')
+      .map((text) => text.trim())
+      .find((text) => text !== '');
+    if (line !== undefined) return line.replace(/^fatal: /, '');
+  }
+  return `git fetch ${remote} failed.`;
+}
+
+/**
+ * The full sha a ref names, or null when it names no commit: a typo, a short
+ * sha that matches nothing, a branch this clone never fetched. The ref comes
+ * from a URL, so `--end-of-options` keeps one spelled like a flag from being
+ * read as one.
+ */
+export async function resolveCommit(root: string, ref: string): Promise<string | null> {
+  return nonEmpty(await git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]));
+}
+
+const ARCHIVE_TIMEOUT_MS = 60_000;
+
+/**
+ * Unpack the project as it was at `sha` into `into`, an existing directory.
+ * When the project sits inside a larger repository only its own subtree is
+ * taken, so the paths — and with them the graph's ids — come out the same as
+ * a scan of the working tree gives.
+ *
+ * `git archive` streams a tar and `tar` unpacks it: an archive is what git
+ * hands over without touching the working tree, and it is one process for the
+ * whole tree rather than a `git show` per file. False for a sha that does not
+ * resolve, a commit the project did not exist at, or no `tar` on PATH — each
+ * of which is an ordinary answer to "what did this look like then".
+ */
+export async function archiveCommit(root: string, sha: string, into: string): Promise<boolean> {
+  const location = await git(root, ['rev-parse', '--show-toplevel', '--show-prefix']);
+  if (location === null) return false;
+  const [toplevel, prefix = ''] = location.split('\n').map((line) => line.trim().replace(/\/$/, ''));
+  if (toplevel === undefined || toplevel === '') return false;
+  const tree = prefix === '' ? sha : `${sha}:${prefix}`;
+
+  return new Promise((resolve) => {
+    // Run from the top of the repository, not the project: inside a
+    // subdirectory `git archive` keeps only that directory's paths *within the
+    // tree it was given*, and `sha:src` holds no `src/`, so from src/ it would
+    // quietly archive nothing at all.
+    const archive = spawn('git', ['archive', '--format=tar', '--end-of-options', tree], {
+      cwd: toplevel,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const extract = spawn('tar', ['-x', '-f', '-', '-C', into], {
+      stdio: ['pipe', 'ignore', 'ignore'],
+    });
+
+    let settled = false;
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(ok);
+    };
+    const abandon = (): void => {
+      archive.kill();
+      extract.kill();
+      finish(false);
+    };
+    const timer = setTimeout(abandon, ARCHIVE_TIMEOUT_MS);
+
+    // Whichever side dies first breaks the pipe under the other, and a broken
+    // pipe is an 'error' on the stream that takes the process down when nobody
+    // is listening. The exit codes already say what went wrong.
+    archive.stdout.on('error', () => {});
+    extract.stdin.on('error', () => {});
+    archive.on('error', abandon);
+    extract.on('error', abandon);
+
+    let archived: number | null = null;
+    let extracted: number | null = null;
+    const check = (): void => {
+      if (archived === null || extracted === null) return;
+      finish(archived === 0 && extracted === 0);
+    };
+    archive.on('close', (code) => {
+      archived = code ?? 1;
+      check();
+    });
+    extract.on('close', (code) => {
+      extracted = code ?? 1;
+      check();
+    });
+
+    archive.stdout.pipe(extract.stdin);
+  });
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import type { AddressInfo } from 'node:net';
+import { sweepHistoryDirs } from '../project/history.js';
 import { createPortFile } from '../project/port-file.js';
 import { buildApp } from './app.js';
 import { createLiveHub, type LiveHub } from './live.js';
@@ -27,6 +28,8 @@ async function main(): Promise<void> {
     return host.current();
   });
 
+  // Leftovers from a commit a previous process was drawing when it was killed.
+  void sweepHistoryDirs();
   host = await startSessionHost(args.find((arg) => !arg.startsWith('--')) ?? '.', {
     onApplied: (changedFiles) => hub?.publish(changedFiles),
     onError: (message) => console.error(`codemap: ${message}`),

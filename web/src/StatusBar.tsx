@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import type { AgentCall, ViewGraph } from './api';
+import type { AgentCall, RemoteStatus, ViewGraph } from './api';
 import { AgentStatus } from './AgentStatus';
 
 /**
  * The three bases the server accepts, and the words each one gets. One list
  * because three things read it — the picker, the chip and the View menu — and
  * they must never disagree about what a base is called or which is in force.
+ *
+ * The words are git's own. A developer reads "HEAD~1" in their terminal every
+ * day, and a friendlier paraphrase would be one more vocabulary to learn.
  */
 export const GIT_BASES = [
-  { value: 'HEAD', option: 'uncommitted', chip: 'HEAD', menu: 'Compare against uncommitted changes' },
-  { value: 'HEAD~1', option: '+ last commit', chip: 'HEAD~1', menu: 'Compare against the last commit too' },
-  { value: 'branch', option: 'whole branch', chip: 'the branch', menu: 'Compare against the whole branch' },
+  { value: 'HEAD', label: 'HEAD', hint: 'uncommitted changes', menu: 'Diff against HEAD' },
+  { value: 'HEAD~1', label: 'HEAD~1', hint: 'and the last commit', menu: 'Diff against HEAD~1' },
+  { value: 'branch', label: 'merge base', hint: 'the whole branch', menu: 'Diff against the merge base' },
 ] as const;
 
 /**
@@ -30,11 +33,20 @@ export interface Unreadable {
 interface StatusBarProps {
   /** null when the project is not a git work tree, which is normal, not a fault. */
   git: ViewGraph['git'];
-  /** What the bar calls the base — 'HEAD', 'HEAD~1' or 'the branch'. */
+  /** What the bar calls the base — 'HEAD', 'HEAD~1' or 'merge base'. */
   baseLabel: string;
+  /** null when there is no git, or no remote to be ahead of or behind. */
+  remote: RemoteStatus | null;
   onlyChanged: boolean;
   onToggleChanged: () => void;
   onChangeBase: (base: string) => void;
+  /**
+   * The diagram is a past commit's. The bar still describes now — the branch
+   * and the changes are the working tree's, whatever is drawn — but a filter
+   * that keeps only what differs from the base has nothing to keep in a graph
+   * that has no working tree, so the toggle is greyed rather than emptying it.
+   */
+  frozen: boolean;
   /** Whether the websocket is up, so updates arrive without a reload. */
   live: boolean;
   /** "12 boxes · 40 files", or '' until the first view has loaded. */
@@ -49,16 +61,18 @@ interface StatusBarProps {
 /**
  * The bottom row: the project's state in one line, the way an editor's status
  * bar reads. Left is what the working tree is — connected or not, which branch,
- * how much differs, what could not be read. Right is what is on screen and who
- * else is looking at it. Every item is information or runs something; nothing
- * here is decoration.
+ * how far from the remote, how much differs, what could not be read. Right is
+ * what is on screen and who else is looking at it. Every item is information
+ * or runs something; nothing here is decoration.
  */
 export function StatusBar({
   git,
   baseLabel,
+  remote,
   onlyChanged,
   onToggleChanged,
   onChangeBase,
+  frozen,
   live,
   counts,
   languages,
@@ -75,7 +89,10 @@ export function StatusBar({
       if (!baseMenu.current?.contains(event.target as Node)) setBaseOpen(false);
     };
     const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setBaseOpen(false);
+      if (event.key !== 'Escape') return;
+      // Taken: the page's own Escape must not also leave a frozen view.
+      event.preventDefault();
+      setBaseOpen(false);
     };
     document.addEventListener('mousedown', away);
     document.addEventListener('keydown', escape);
@@ -104,41 +121,66 @@ export function StatusBar({
         </span>
 
         {git !== null && (
-          // One control, two segments: what the tree is compared against, and
-          // how much differs. The shape is VS Code's status bar and GitHub's
-          // branch button, because a developer can already read it — and the
-          // dropdown is this app's own menu, so one gesture does not get two
-          // visual languages.
+          // The shape is VS Code's status bar, because a developer can already
+          // read it: the branch, then how far it is from its upstream, then the
+          // changes as a badge — and the dropdown is this app's own menu, so
+          // one gesture does not get two visual languages.
           <div className="git" ref={baseMenu}>
             <button
               type="button"
               className={baseOpen ? 'status-item git-base git-base-open' : 'status-item git-base'}
               aria-expanded={baseOpen}
               onClick={() => setBaseOpen((was) => !was)}
-              title={`Comparing against ${git.base}${git.branch === null ? '' : ` on ${git.branch}`}`}
+              title={`${git.branch ?? 'detached HEAD'} · diff against ${git.base} — click to change the base`}
             >
               <i className="codicon codicon-git-branch git-icon" aria-hidden="true" />
               <span className="git-base-name">{git.branch ?? baseLabel}</span>
               <i className="codicon codicon-chevron-down git-caret" aria-hidden="true" />
             </button>
 
+            {/* Only with an upstream: 0 ahead of nothing is not a fact.
+                Information, not a control — the Fetch button is in the
+                Repository panel, and one fetch path is enough. */}
+            {remote !== null && remote.upstream !== null && (
+              <span
+                className="status-item git-sync"
+                title={`${remote.ahead} ahead, ${remote.behind} behind ${remote.upstream}${
+                  remote.fetchedAt === null ? ' — never fetched' : ''
+                }`}
+              >
+                <i className="codicon codicon-arrow-small-up" aria-hidden="true" />
+                <span className="git-sync-n">{remote.ahead}</span>
+                <i className="codicon codicon-arrow-small-down" aria-hidden="true" />
+                <span className="git-sync-n">{remote.behind}</span>
+              </span>
+            )}
+
             <button
               type="button"
-              className="status-item git-count"
+              className={frozen ? 'status-item git-count git-count-frozen' : 'status-item git-count'}
               aria-pressed={onlyChanged}
-              onClick={onToggleChanged}
+              // aria-disabled rather than disabled: a disabled button gives no
+              // tooltip, and the tooltip is where the reason lives.
+              aria-disabled={frozen}
+              onClick={frozen ? undefined : onToggleChanged}
               // The count is git's, not the diagram's: it includes deleted files
               // that have no box and untracked files the graph never parses.
               title={
-                onlyChanged
-                  ? `Showing only what differs from ${git.base} — click to show every file`
-                  : `${git.changed === 1 ? '1 path differs' : `${git.changed} paths differ`} from ${
+                frozen
+                  ? `${git.changed === 1 ? '1 change' : `${git.changed} changes`} in the working tree now · diff against ${
                       git.base
-                    } — click to show only those`
+                    } — a past commit has none, so this cannot filter the diagram`
+                  : onlyChanged
+                    ? `Showing only the ${git.changed === 1 ? 'change' : `${git.changed} changes`} · diff against ${
+                        git.base
+                      } — click to show every file`
+                    : `${git.changed === 1 ? '1 change' : `${git.changed} changes`} · diff against ${
+                        git.base
+                      } — click to show only those`
               }
             >
-              <span className="git-count-n">{git.changed}</span>
-              <span className="git-count-word">changed vs {baseLabel}</span>
+              <span className="git-count-word">Changes</span>
+              <span className="git-count-badge">{git.changed}</span>
             </button>
 
             {/* The base is a session setting, not a view. One server watches one
@@ -147,7 +189,7 @@ export function StatusBar({
                 same reason the project root is not in the URL either. */}
             {baseOpen && (
               <div className="menu-drop menu-drop-up git-drop">
-                <div className="git-drop-head">Compare against</div>
+                <div className="git-drop-head">Diff against</div>
                 {GIT_BASES.map((base) => (
                   <button
                     key={base.value}
@@ -163,8 +205,8 @@ export function StatusBar({
                         <i className="codicon codicon-check" aria-hidden="true" />
                       )}
                     </span>
-                    <span className="menu-label">{base.option}</span>
-                    <kbd>{base.chip}</kbd>
+                    <span className="menu-label">{base.label}</span>
+                    <span className="git-drop-hint">{base.hint}</span>
                   </button>
                 ))}
               </div>

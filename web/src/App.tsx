@@ -27,8 +27,9 @@ import {
   fetchSymbol,
   forgetExplanation,
   fetchAgentCalls,
-  fetchHookStatus,
   fetchLanguages,
+  fetchLog,
+  fetchRepo,
   fetchView,
   groupAction,
   installHook,
@@ -45,7 +46,11 @@ import {
   type ChangeEntry,
   type ExplainFailure,
   type ExplainRun,
+  type FetchResponse,
   type GitStatus,
+  type HookStatus,
+  type LogResponse,
+  type RepoInfo,
   type StoredExplanation,
   type SymbolLinks,
   type GroupSuggestion,
@@ -54,7 +59,6 @@ import {
   type ViewGraph,
   type ViewResponse,
 } from './api';
-import { HookBanner } from './HookBanner';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
 import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
@@ -64,8 +68,11 @@ import { Sidebar, type GroupEditor } from './Sidebar';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { Activity } from './Activity';
+import { Repository } from './Repository';
+import { findCommit, relativeTime } from './GitGraph';
+import { SourceControl } from './SourceControl';
 import { ContextMenu } from './ContextMenu';
-import { NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
+import { frameClusters, NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
 
@@ -291,7 +298,13 @@ export function App() {
 
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
-  const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
+  /**
+   * What the repository is — remote, hook, port file, counts — for the
+   * Repository panel. One answer for one panel; null until it has arrived.
+   */
+  const [repo, setRepo] = useState<RepoInfo | null>(null);
+  /** The commit log, for the Graph and for naming the commit on screen. */
+  const [log, setLog] = useState<LogResponse | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   const [agentCalls, setAgentCalls] = useState<AgentCall[]>([]);
   /** What the tool cannot read here. Null until the census has come back. */
@@ -306,6 +319,11 @@ export function App() {
   const coveredRef = useRef(new Set<string>());
   /** The spec of the view on screen, so a push computed for an older one is refused. */
   const specRef = useRef<string | null>(null);
+  /**
+   * Whether the view on screen is a past commit's. A ref because the socket
+   * handler is registered once and would otherwise close over the first render.
+   */
+  const frozenRef = useRef(false);
 
   // The view lives in the URL, so the back button is the navigation history.
   useEffect(() => {
@@ -328,7 +346,15 @@ export function App() {
       },
       (cause: unknown) => {
         if (cancelled) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const message = cause instanceof Error ? cause.message : String(cause);
+        // The one 404 a view can answer is "no such commit", and the chip with
+        // the way out stays on screen, so the banner only has to say which.
+        const wanted = new URLSearchParams(search).get('at');
+        setError(
+          wanted !== null && message.includes('404')
+            ? `No commit ${wanted.slice(0, 7)} in this repository`
+            : message,
+        );
       },
     );
     return () => {
@@ -431,6 +457,12 @@ export function App() {
 
         if (message.type !== 'update') return;
 
+        // A frozen view is frozen. The server already skips a socket whose spec
+        // names a commit, but a push computed for the spec this client held a
+        // moment before freezing can still be in flight, and nothing that
+        // happens in the working tree changes what that commit looked like.
+        if (frozenRef.current) return;
+
         // The server computes each push from the spec it currently holds for this
         // socket, and that lags a navigation until the new spec has been sent.
         // Applying such a frame would silently revert the view, so it is refused
@@ -467,11 +499,13 @@ export function App() {
     };
   }, []);
 
+  // Per revision rather than per project: the hook can be installed, the agent
+  // can ask, and a commit can land, all without the project changing.
   useEffect(() => {
     let cancelled = false;
-    fetchHookStatus().then(
-      (status) => {
-        if (!cancelled) setHookInstalled(status.installed);
+    fetchRepo().then(
+      (info) => {
+        if (!cancelled) setRepo(info);
       },
       () => undefined,
     );
@@ -479,6 +513,40 @@ export function App() {
       cancelled = true;
     };
   }, [revision, data?.root]);
+
+  // The log is what the Graph draws, and a commit is invisible to the watcher:
+  // the git poll notices the status change and publishes, which bumps the
+  // revision, which is what re-reads the log.
+  useEffect(() => {
+    let cancelled = false;
+    fetchLog().then(
+      (result) => {
+        if (!cancelled) setLog(result);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root]);
+
+  /** The hook's state rides on the repo answer; nothing asks for it on its own. */
+  const hookInstalled = repo?.hook.installed ?? null;
+
+  /**
+   * A fetch finished: take its remote, then re-read the log — the point of
+   * fetching is that commits may have arrived. The panel ran the fetch; this
+   * is where its answer meets the two things outside the panel that read it.
+   */
+  const handleFetched = useCallback((result: FetchResponse) => {
+    setRepo((was) => (was === null ? was : { ...was, remote: result.remote }));
+    fetchLog().then(setLog, () => undefined);
+  }, []);
+
+  /** The hook was written. What the server now says about it is the whole update. */
+  const handleHookInstalled = useCallback((status: HookStatus) => {
+    setRepo((was) => (was === null ? was : { ...was, hook: status }));
+  }, []);
 
   // Per project, not per revision: this walks the tree, and what a repository is
   // written in does not change because a file was saved. A language that arrives
@@ -496,19 +564,6 @@ export function App() {
       cancelled = true;
     };
   }, [data?.root]);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetchClusters().then(
-      (found) => {
-        if (!cancelled) setClusters(found);
-      },
-      () => undefined,
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [revision, data?.root]);
 
   const decide = useCallback(
     (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => {
@@ -584,11 +639,51 @@ export function App() {
   const showCalls = view?.spec.filter.edgeKinds.includes('calls') ?? false;
   const showAssoc = view?.spec.filter.edgeKinds.includes('associates') ?? false;
   const onlyChanged = view?.spec.filter.onlyChanged ?? false;
-  /** null when the project is not a git work tree, which is normal, not a fault. */
-  const git = view?.git ?? null;
+  /**
+   * The commit on screen, or null for now. Threaded through every navigation
+   * the way the calls and changed flags are: a helper that rebuilt the URL
+   * without it would snap the user back to the present on the first click.
+   */
+  const at = view?.spec.at ?? null;
+  const frozen = at !== null;
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchClusters(at).then(
+      (found) => {
+        if (!cancelled) setClusters(found);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [revision, data?.root, at]);
+
+  /**
+   * null when the project is not a git work tree, which is normal, not a fault.
+   *
+   * A frozen view carries no git — a past commit has no working-tree status —
+   * but the status bar and the Changes list describe *now* whatever is drawn,
+   * so while frozen the same shape is rebuilt from the status fetched on its
+   * own. The count matches the view's: every path git reports.
+   */
+  const git = useMemo(
+    () =>
+      view?.git ??
+      (gitLines === null
+        ? null
+        : {
+            base: gitLines.base,
+            requested: gitLines.requested,
+            branch: gitLines.branch,
+            changed: Object.keys(gitLines.files).length,
+          }),
+    [view?.git, gitLines],
+  );
   // What the row calls the base. The resolved one is a merge-base sha for
   // 'branch', which says nothing to anybody, so it stays in the tooltip.
-  const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.chip ?? git?.base ?? '';
+  const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.label ?? git?.base ?? '';
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
   /**
    * Whether saying what a box is written in adds anything. In a project of one
@@ -597,12 +692,35 @@ export function App() {
    */
   const mixedProject = (view?.languages.length ?? 0) > 1;
 
+  useEffect(() => {
+    frozenRef.current = frozen;
+  }, [frozen]);
+
+  /**
+   * While frozen the server pushes nothing to this client — nothing in the
+   * working tree changes what a commit looked like — and the socket push is
+   * also what bumped `revision`, which is what re-read the change feed, the
+   * status and the log. The left column has to keep describing now, so while
+   * the diagram is stopped those three are polled instead: the same three
+   * seconds the server's own git poll runs at, and nothing else.
+   */
+  useEffect(() => {
+    if (!frozen) return;
+    const tick = (): void => {
+      fetchChanges().then(setChanges, () => undefined);
+      fetchGit().then(setGitLines, () => undefined);
+      fetchLog().then(setLog, () => undefined);
+    };
+    const timer = window.setInterval(tick, 3000);
+    return () => window.clearInterval(timer);
+  }, [frozen]);
+
   // Re-read whenever the graph moves: the server polls git every 3 seconds and
   // publishes when it changes, and that push is what bumps the revision.
   // A re-parse can give a symbol a new id or drop it, so nothing cached survives it.
   useEffect(() => {
     setLinks(new Map());
-  }, [revision]);
+  }, [revision, at]);
 
   /**
    * Ask about everything followed that has no answer yet.
@@ -625,7 +743,7 @@ export function App() {
     let cancelled = false;
     Promise.all(
       missing.map((id) =>
-        fetchSymbol(id).then(
+        fetchSymbol(id, at).then(
           (found) => found ?? ('gone' as const),
           () => null,
         ),
@@ -647,7 +765,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [following, links]);
+  }, [following, links, at]);
 
   /**
    * The union of what every followed symbol touches, not the intersection.
@@ -827,7 +945,10 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [revision, data?.root, git?.base]);
+    // Not keyed on the base: changing it publishes a fresh view, and that push
+    // bumps the revision. Keying on the view's git would stop this refetching
+    // while frozen, when it is the only status the page has.
+  }, [revision, data?.root]);
 
   useEffect(() => {
     let cancelled = false;
@@ -881,7 +1002,8 @@ export function App() {
 
   /**
    * A frame that was dragged keeps where it was put. Only frames are draggable,
-   * and only while locked, so anything arriving here is a deliberate placement.
+   * so anything arriving here is a deliberate placement — and a placement is a
+   * lock, or the next relayout would quietly undo it.
    */
   const handleFrameDragStop = useCallback(
     (_: unknown, node: { id: string; position: { x: number; y: number }; width?: number | null; height?: number | null }) => {
@@ -918,9 +1040,11 @@ export function App() {
   const layoutRef = useRef<{
     positions: Map<string, { x: number; y: number }>;
     clusters: ClusterBounds[];
-    /** Which groups the cached layout was computed for. */
+    /** Everything the cached frames were drawn from. */
     clusterKey: string;
-  }>({ positions: new Map(), clusters: [], clusterKey: '' });
+    /** Only what dagre read to place the boxes. */
+    placementKey: string;
+  }>({ positions: new Map(), clusters: [], clusterKey: '', placementKey: '' });
 
   const { nodes, edges } = useMemo(() => {
     if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
@@ -1005,31 +1129,44 @@ export function App() {
       // the same trap a group's colour and padding fell into: the cached bounds
       // come back and the growth never appears.
       .concat('#', [...expanded].sort().join(','));
+    // What dagre reads, and nothing more: which boxes, how tall, and which
+    // group each belongs to. A frame's colour, slack, lock or hand-placed
+    // geometry is left out on purpose — see below.
+    const placementKey = shown
+      .map((group) => `${group.id}~${group.files.join(',')}~${group.parent ?? ''}`)
+      .join('|')
+      .concat('#', [...expanded].sort().join(','));
     const previous = layoutRef.current;
 
     // The groups arrive from their own request, after the first layout. Without
     // comparing them too, that first cluster-less layout would be reused for
     // ever and no frame would ever appear.
-    const sameShape =
-      shapeKey === previous.clusterKey &&
+    const samePlacement =
+      placementKey === previous.placementKey &&
       boxes.length === previous.positions.size &&
       boxes.every((box) => previous.positions.has(box.id));
+    const sameShape = samePlacement && shapeKey === previous.clusterKey;
 
-    // Only the contents changed, so keep every box and frame exactly where it was.
+    const kept = boxes.map((box) => ({
+      ...box,
+      position: previous.positions.get(box.id) ?? box.position,
+    }));
+    // Only the contents changed: every box and frame stays exactly where it was.
+    // Only a frame changed — a colour, a lock, a drag: every box stays, and the
+    // frames are redrawn around where the boxes already are. Running dagre
+    // again for that moved every box, and a frame locked to where it stood was
+    // left standing where the boxes used to be.
     const laid = sameShape
-      ? {
-          nodes: boxes.map((box) => ({
-            ...box,
-            position: previous.positions.get(box.id) ?? box.position,
-          })),
-          clusters: previous.clusters,
-        }
-      : layoutNodes(boxes, builtEdges, shown);
+      ? { nodes: kept, clusters: previous.clusters }
+      : samePlacement
+        ? { nodes: kept, clusters: frameClusters(kept, shown) }
+        : layoutNodes(boxes, builtEdges, shown);
 
     layoutRef.current = {
       positions: new Map(laid.nodes.map((box) => [box.id, box.position])),
       clusters: laid.clusters,
       clusterKey: shapeKey,
+      placementKey,
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
@@ -1052,8 +1189,10 @@ export function App() {
           selectable: false,
           // Dragged by its label, the way a window moves by its title bar. The
           // frame body cannot be the handle: it is drawn behind the boxes it
-          // encloses and would swallow every drag meant for the canvas.
-          draggable: group.locked === true,
+          // encloses and would swallow every drag meant for the canvas. Any
+          // frame can be moved, and moving it is what locks it, the way pulling
+          // a corner does — the lock is never a step before the gesture.
+          draggable: true,
           dragHandle: '.group-label',
           data: {
             id: group.id,
@@ -1191,9 +1330,10 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, depth, showCalls, showAssoc, onlyChanged],
+    [navigate, depth, showCalls, showAssoc, onlyChanged, at],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -1211,9 +1351,10 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, showCalls, showAssoc, onlyChanged],
+    [navigate, showCalls, showAssoc, onlyChanged, at],
   );
 
   const changeDepth = useCallback(
@@ -1225,9 +1366,10 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [focus, navigate, showCalls, showAssoc, onlyChanged],
+    [focus, navigate, showCalls, showAssoc, onlyChanged, at],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -1318,6 +1460,14 @@ export function App() {
         // built deliberately and may already have paid to have explained.
         setFollowing(new Set());
         setShowWelcome(false);
+        // A frozen view is the one state on the page that hides the present,
+        // so the key that means "get me out of this" ends it too — unless the
+        // key was meant for a field, where it cancels an edit, not a view.
+        const target = event.target;
+        const inField = target instanceof HTMLElement && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+        // Nor when a menu already took the key to close itself: a press that
+        // dismissed the File menu did not mean "back to now".
+        if (!inField && !event.defaultPrevented) backToNowRef.current?.();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1326,6 +1476,7 @@ export function App() {
 
   const openProjectRef = useRef<(() => void) | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const backToNowRef = useRef<(() => void) | null>(null);
 
   const openProject = useCallback(() => {
     void pickProject().then((picked) => {
@@ -1354,6 +1505,30 @@ export function App() {
     navigate(params);
   }, [navigate]);
 
+  /**
+   * Freezing is a view, not a mode: the sha goes in the URL beside scope and
+   * focus, so it is shareable, and the back button is one way out of it. Built
+   * from the live URL so the scope, focus and edge kinds on screen survive —
+   * the question is "how did *this* look then".
+   */
+  const viewCommit = useCallback(
+    (sha: string) => {
+      const params = new URLSearchParams(window.location.search);
+      // Two filters need a working tree — "changed" against the base, "since"
+      // against the clock — and a commit has neither, so carrying them would
+      // freeze an empty diagram and leave the chip to explain why.
+      params.delete('changed');
+      params.delete('since');
+      params.set('at', sha);
+      navigate(params);
+    },
+    [navigate],
+  );
+  const backToNow = useCallback(() => setFilter('at', null), [setFilter]);
+  // Escape reaches this through the ref, like ⌘O does; null when there is
+  // nothing to go back from, so the key does not push a no-op history entry.
+  backToNowRef.current = frozen ? backToNow : null;
+
   const groupOfSelection = useMemo(
     () => (selected === null ? null : clusters.find((group) => group.files.includes(selected)) ?? null),
     [clusters, selected],
@@ -1376,7 +1551,7 @@ export function App() {
    * and watch what came back.
    */
   const activeFilters: { key: string; label: string }[] = [
-    params.has('changed') ? { key: 'changed', label: `changed vs ${baseLabel}` } : null,
+    params.has('changed') ? { key: 'changed', label: 'changes only' } : null,
     params.get('only') ? { key: 'only', label: `only ${params.get('only') ?? ''}` } : null,
     params.get('hide') ? { key: 'hide', label: `hiding ${params.get('hide') ?? ''}` } : null,
     params.get('kinds')
@@ -1418,6 +1593,19 @@ export function App() {
     next.delete(key);
     navigate(next);
   };
+
+  /**
+   * The commit on screen, as the chip names it: the short sha and roughly
+   * when. The URL's sha rather than the view's, so the chip — and its way out —
+   * is there while the commit is still loading, and when it turned out not to
+   * exist and the view on screen is still the previous one.
+   */
+  const urlAt = params.get('at');
+  const frozenCommit = log === null ? null : findCommit(log.commits, urlAt);
+  const frozenLabel =
+    urlAt === null
+      ? ''
+      : `Viewing ${urlAt.slice(0, 7)}${frozenCommit === null ? '' : ` · ${relativeTime(frozenCommit.at, Date.now())}`}`;
   const empty = view !== undefined && view.nodes.length === 0;
   /**
    * Nothing to draw is the moment to say what the app is for — unless a filter
@@ -1457,7 +1645,7 @@ export function App() {
           label: hookInstalled === false ? 'Install Claude Code hook' : 'Claude Code hook installed',
           separatorBefore: true,
           ...(hookInstalled === false
-            ? { run: () => void installHook().then(() => setRevision((n) => n + 1)) }
+            ? { run: () => void installHook().then(handleHookInstalled, () => undefined) }
             : { disabledBecause: 'Already installed for this project' }),
         },
         { label: 'Reload graph', run: () => setReloadToken((n) => n + 1) },
@@ -1535,16 +1723,23 @@ export function App() {
         {
           label: 'Only changed in the last 10 minutes',
           checked: params.get('since') === '10m',
-          run: () => setFilter('since', params.get('since') === '10m' ? null : '10m'),
+          // A commit's files are stamped with its time, so at a past commit
+          // "recent" would mean "committed within ten minutes of now".
+          ...(frozen
+            ? { disabledBecause: 'A past commit has no last ten minutes' }
+            : { run: () => setFilter('since', params.get('since') === '10m' ? null : '10m') }),
         },
         {
-          label: 'Only changed vs git',
+          label: 'Changes only',
           checked: onlyChanged,
           // Without git there is nothing to differ from, so the filter would
-          // empty the diagram rather than narrow it.
+          // empty the diagram rather than narrow it. Likewise at a past commit,
+          // which has no working tree to have changes in.
           ...(git === null
             ? { disabledBecause: 'This project is not a git work tree' }
-            : { run: toggleChanged }),
+            : frozen
+              ? { disabledBecause: 'A past commit has no working-tree changes' }
+              : { run: toggleChanged }),
         },
         { label: 'Clear filters', run: clearFilters },
         ...GIT_BASES.map(
@@ -1568,6 +1763,14 @@ export function App() {
         { label: 'Find a file or symbol…', shortcut: '⌘K', run: () => setSearchOpen(true) },
         { label: 'Back', shortcut: '⌘[', separatorBefore: true, run: () => window.history.back() },
         { label: 'Forward', shortcut: '⌘]', run: () => window.history.forward() },
+        {
+          label: 'Back to now',
+          shortcut: '⎋',
+          separatorBefore: true,
+          ...(frozen
+            ? { run: backToNow }
+            : { disabledBecause: 'Already viewing the working tree — pick a commit in the Graph to go back' }),
+        },
         { label: 'Whole project', separatorBefore: true, run: () => goToScope('') },
         {
           label: 'Up one level',
@@ -1681,7 +1884,9 @@ export function App() {
   })();
 
   return (
-    <div className="app">
+    // `app-frozen` is the one hook for anything that has to read differently
+    // while the diagram is a past commit's — the badges say now, the boxes then.
+    <div className={frozen ? 'app app-frozen' : 'app'}>
       {/* The menu bar is the title bar, and the project is its title. What the
           project *is* — branch, connection, languages, who is looking — is
           status, and reads at the bottom of the page the way it does in an
@@ -1763,6 +1968,24 @@ export function App() {
           </button>
         )}
 
+        {/* Which commit is drawn, and the way back. A chip like the filters
+            because it narrows the same way — everything else in the row still
+            applies, just to the project as it was then. */}
+        {urlAt !== null && (
+          <button
+            type="button"
+            className="frozen-chip"
+            onClick={backToNow}
+            title={`The diagram is the project as of commit ${urlAt}${
+              frozenCommit === null ? '' : ` — ${frozenCommit.subject}`
+            }. Click to go back to now (⎋)`}
+          >
+            <i className="codicon codicon-history" aria-hidden="true" />
+            {frozenLabel}
+            <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+        )}
+
         {activeFilters.map((chip) => (
           <button
             key={chip.key}
@@ -1781,7 +2004,10 @@ export function App() {
           </button>
         )}
 
-        {missed.length > 0 && (
+        {/* Not while frozen: the badge counts what is happening now, and
+            clicking it goes to now — it would be the one link on the row that
+            silently left the commit. It is back the moment the freeze ends. */}
+        {missed.length > 0 && !frozen && (
           <button type="button" className="missed" onClick={goToMissed}>
             {missed.length} change{missed.length === 1 ? '' : 's'} outside
           </button>
@@ -1814,8 +2040,6 @@ export function App() {
         </button>
       </nav>
 
-      {data !== null && <HookBanner root={data.root} />}
-
       {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
 
       {contextAt !== null && (
@@ -1829,17 +2053,48 @@ export function App() {
 
 
       <main>
-        {/* Left is time, right is structure: what the agent is doing, beside
-            what you are looking at. They were one panel, which meant watching
-            the agent cost you the detail of the thing it was touching. */}
+        {/* Left is time, right is structure: what the repository is and what
+            the agent is doing to it, beside what you are looking at. They were
+            one panel, which meant watching the agent cost you the detail of
+            the thing it was touching.
+
+            Everything in this column describes NOW. The Changes list is the
+            working tree's, the Activity table is this session's, and neither
+            changes because the diagram is showing a past commit: that is what
+            the frozen chip in the breadcrumb row is for, and the Graph's
+            selected row is the one place the column says which commit. */}
         {data !== null && (
-          <Activity
-            changes={changes}
-            agentCalls={agentCalls}
-            lines={gitLines?.lines ?? null}
-            onSelect={setSelected}
-            onFocus={goTo}
-          />
+          <aside className={frozen ? 'leftbar leftbar-frozen' : 'leftbar'}>
+            {repo !== null && (
+              <Repository
+                repo={repo}
+                boxes={view?.nodes.length ?? 0}
+                onSwitchProject={handleSwitchProject}
+                onFetched={handleFetched}
+                onHookInstalled={handleHookInstalled}
+              />
+            )}
+            <SourceControl
+              git={gitLines}
+              base={git?.requested ?? null}
+              onChangeBase={changeBase}
+              onlyChanged={onlyChanged}
+              onToggleChanged={toggleChanged}
+              log={log}
+              at={at}
+              onViewCommit={viewCommit}
+              onBackToNow={backToNow}
+              onSelect={setSelected}
+              onFocus={goTo}
+            />
+            <Activity
+              changes={changes}
+              agentCalls={agentCalls}
+              lines={gitLines?.lines ?? null}
+              onSelect={setSelected}
+              onFocus={goTo}
+            />
+          </aside>
         )}
 
         <div className="canvas">
@@ -1853,8 +2108,6 @@ export function App() {
               setShowWelcome(false);
               setSearchOpen(true);
             }}
-            hookInstalled={hookInstalled}
-            onInstallHook={() => void installHook().then(() => setRevision((n) => n + 1))}
             onClose={showWelcome ? () => setShowWelcome(false) : null}
             unreadable={unreadableReport}
           />
@@ -1914,6 +2167,7 @@ export function App() {
             root={data.root}
             selected={selected}
             revision={revision}
+            at={at}
             onSelect={setSelected}
             onFocus={goTo}
             groups={clusters}
@@ -1947,9 +2201,11 @@ export function App() {
       <StatusBar
         git={git}
         baseLabel={baseLabel}
+        remote={repo?.remote ?? null}
         onlyChanged={onlyChanged}
         onToggleChanged={toggleChanged}
         onChangeBase={changeBase}
+        frozen={frozen}
         live={live}
         counts={
           view

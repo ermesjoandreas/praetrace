@@ -1,14 +1,22 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import type { GitFileStatus, GitStatus } from '../../src/git/types.js';
 import type { LanguageId } from '../../src/lang/types.js';
+import type { Commit, RemoteStatus } from '../../src/project/git.js';
 import type { GroupColor } from '../../src/project/groups.js';
-import type { ExplainState, ExplainedEntry } from '../../src/server/app.js';
+import type {
+  ExplainState,
+  ExplainedEntry,
+  FetchResponse,
+  LogResponse,
+  RepoInfo,
+} from '../../src/server/app.js';
 import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { ViewGraph } from '../../src/view/types.js';
 
-// Types only. `groups.ts` reaches for node:fs, so nothing may import a value
-// from it here — the import disappears at compile time, the module never does.
-export type { GitFileStatus, GitStatus, GroupColor, LanguageId, ViewGraph };
+// Types only. `groups.ts` reaches for node:fs and `git.ts` for child_process,
+// so nothing may import a value from either here — the import disappears at
+// compile time, the module never does.
+export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteStatus, ViewGraph };
 export type ViewMember = ViewGraph['nodes'][number]['members'][number];
 
 export interface ViewResponse {
@@ -190,9 +198,14 @@ export type Detail =
     }
   | { kind: 'folder'; path: string; files: string[]; imports: string[]; importedBy: string[] };
 
-export async function fetchDetail(target: string): Promise<Detail | null> {
+/** `at` is the commit on screen, so the answer is about the diagram being looked at. */
+function atParam(at: string | null): string {
+  return at === null ? '' : `&at=${encodeURIComponent(at)}`;
+}
+
+export async function fetchDetail(target: string, at: string | null = null): Promise<Detail | null> {
   const base = await serverOrigin();
-  const response = await fetch(`${base}/api/detail?path=${encodeURIComponent(target)}`);
+  const response = await fetch(`${base}/api/detail?path=${encodeURIComponent(target)}${atParam(at)}`);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`detail failed: HTTP ${response.status}`);
   return (await response.json()) as Detail;
@@ -217,9 +230,9 @@ export interface SymbolLinks {
 }
 
 /** What one symbol reaches and what reaches it. 404 means it left the graph. */
-export async function fetchSymbol(id: string): Promise<SymbolLinks | null> {
+export async function fetchSymbol(id: string, at: string | null = null): Promise<SymbolLinks | null> {
   const server = await serverOrigin();
-  const response = await fetch(`${server}/api/symbol?id=${encodeURIComponent(id)}`);
+  const response = await fetch(`${server}/api/symbol?id=${encodeURIComponent(id)}${atParam(at)}`);
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`symbol failed: HTTP ${response.status}`);
   return (await response.json()) as SymbolLinks;
@@ -300,9 +313,9 @@ export interface GroupSuggestion {
   locked?: boolean;
 }
 
-export async function fetchClusters(): Promise<GroupSuggestion[]> {
+export async function fetchClusters(at: string | null = null): Promise<GroupSuggestion[]> {
   const base = await serverOrigin();
-  const response = await fetch(`${base}/api/clusters`);
+  const response = await fetch(`${base}/api/clusters${at === null ? '' : `?at=${encodeURIComponent(at)}`}`);
   if (!response.ok) throw new Error(`clusters failed: HTTP ${response.status}`);
   return ((await response.json()) as { clusters: GroupSuggestion[] }).clusters;
 }
@@ -445,4 +458,42 @@ export async function requestExplanations(ids: string[]): Promise<ExplainResult>
   if (response.status === 409) return { run: body.run ?? null };
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
   return { run: body.run ?? null };
+}
+
+/**
+ * Read-only history. The page shows what git knows and never writes to it —
+ * an agent may be editing the working tree this very moment — so the three
+ * verbs here are log, repo and fetch, and `fetch` is the only one that is not
+ * a pure read, and it still touches no working tree.
+ */
+export type { LogResponse, RepoInfo, FetchResponse };
+
+/** The most recent commits on every ref, newest first, and which one is HEAD. */
+export async function fetchLog(limit?: number): Promise<LogResponse> {
+  const base = await serverOrigin();
+  const query = limit === undefined ? '' : `?limit=${limit}`;
+  const response = await fetch(`${base}/api/log${query}`);
+  if (!response.ok) throw new Error(`log failed: HTTP ${response.status}`);
+  return (await response.json()) as LogResponse;
+}
+
+/** Everything the Repository panel shows, in one answer. */
+export async function fetchRepo(): Promise<RepoInfo> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/repo`);
+  if (!response.ok) throw new Error(`repo failed: HTTP ${response.status}`);
+  return (await response.json()) as RepoInfo;
+}
+
+/**
+ * `git fetch`. The server answers with a sentence either way — a remote that
+ * refused is an ordinary outcome the panel shows, not a thrown error — and it
+ * can take up to thirty seconds, so the button that calls this needs a pending
+ * state. Re-read the log afterwards: commits may have arrived.
+ */
+export async function requestFetch(): Promise<FetchResponse> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/fetch`, { method: 'POST' });
+  if (!response.ok) throw new Error(`fetch failed: HTTP ${response.status}`);
+  return (await response.json()) as FetchResponse;
 }

@@ -39,17 +39,18 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 - Git status against a chosen base, and a group editor
 - Explain: a paid, on-request reading of what a symbol is for, and whether it still
   matches the code it described
+- Source Control: the commit graph with its threads, the diagram frozen at any
+  commit (`?at=`), and a Repository panel — project, remote, hook and MCP
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
 
-1. **Close the loose ends from the git and group work.** The git badges reuse the
-   two colours reserved for the live signals (amber "just changed", blue "the agent
-   asked") — they should move to git-conventional hues, which are free. `/api/git`,
-   `fetchGit()` and `Session.gitBase()` have no callers; either use them or delete
-   them. And `list_groups` in the MCP server prints a hand-drawn group exactly like
-   a derived one, with "0% cohesion", which is the one promise the group feature
-   makes and the one consumer most likely to be misled by breaking it.
+1. **Close the loose ends from the git and group work.** `Session.gitBase()` has
+   no caller; use it or delete it. `list_groups` in the MCP server prints a
+   hand-drawn group exactly like a derived one, with "0% cohesion", which is the
+   one promise the group feature makes and the one consumer most likely to be
+   misled by breaking it. And ⌘K still searches the live graph while the diagram
+   is frozen at a commit — the one request left that does.
 
 2. **Tests for the pure modules.** See *Conventions*. This is the highest-value
    item on the list and the reason is in the last round: a bug that made colour and
@@ -57,13 +58,13 @@ something in the last round of work argued for it:
    two pure functions, survived three review agents' worth of reading, and would
    have been caught by a single test case.
 
-3. **Structural session diff** — VISION.md phase 1, and the natural next step now
-   that the git work landed. Today the tool knows which *files* differ from a base.
-   Phase 1 is which *symbols and edges* differ, which means reading the base version
-   of a changed file with `git show <base>:<path>`, parsing it through the pool that
-   already exists, and diffing two graphs. That is also the only way to draw a
-   deleted file as a ghost — a file that is not on disk is not in the graph, so the
-   current feature honestly cannot show one.
+3. **Structural session diff** — VISION.md phase 1. Today the tool knows which
+   *files* differ from a base, and since time travel it can build a commit's whole
+   graph (`project/history.ts`) with the same ids the live one has. Phase 1 is
+   which *symbols and edges* differ: the diff of two graphs is the only part left,
+   and it is also the only way to draw a deleted file as a ghost — a file that is
+   not on disk is not in the live graph, so the current feature honestly cannot
+   show one.
 
 **Not started, and not to be drifted into.** Architecture drift detection
 (VISION.md capability 1), blast radius (capability 3), LLM dataflow inference, and
@@ -264,7 +265,10 @@ src/
     walk.ts       boot scan + the ignore/source predicates everything shares
     scan.ts       walk + parse everything through the pool
     watch.ts      chokidar; emits raw changes, does not batch
-    git.ts        git status against a base -> GitStatus. Never throws
+    git.ts        git status against a base -> GitStatus; the log, the remote,
+                  fetch, resolveCommit, archiveCommit. Read-only, and never throws
+    history.ts    one commit's graph: git archive -> temp dir -> scanProject
+                  through the session's pool. Never throws, never leaves the dir
     groups.ts     named groups, their colours and sizes, .codemap/groups.json
     explain.ts    spawns `claude -p` for a reading of a symbol. Never throws
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
@@ -278,10 +282,13 @@ src/
     cluster.ts    label propagation over the import graph
     detail.ts     one node's dependents and dependencies, for the panel
     search.ts     subsequence search over the whole graph
+    lanes.ts      lane assignment for the commit graph — pure, and tested
+    lanes.test.ts the first test. `npm test`
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    session.ts    one project: store, pool, watcher, updater, git. Swapped whole
+    session.ts    one project: store, pool, watcher, updater, git, and an LRU of
+                  16 past commits' graphs. Swapped whole
     app.ts        Fastify: static web build, and the API below
     live.ts       connected clients and their view specs; pushes per client
     main.ts       boot scan, wiring, listen
@@ -290,8 +297,12 @@ web/              the browser page (Vite, built into dist/web)
   src/BoxNode.tsx one box: a file with its symbols, or a folder
   src/GroupNode.tsx a group frame: name, colour, size, membership
   src/Sidebar.tsx the side panel: detail, change feed, group list and editor
+  src/Repository.tsx   the left bar's first section: project, remote, the Claude
+                       Code hook and MCP, and the buttons that act on them
+  src/SourceControl.tsx  Changes (the per-file list, the base picker) and Graph
+  src/GitGraph.tsx     the commit graph: lane numbers into pixels, refs, ages
+  src/Activity.tsx     what the agent is doing, and where — describes now, always
   src/ProjectMenu.tsx  folder picker and recents; desktop only
-  src/HookBanner.tsx   offers to install the hook, showing the file first
   src/Welcome.tsx      shown when there is nothing to draw, and from Help
   src/MenuBar.tsx      the menus
   src/StatusBar.tsx    branch, git base, counts, languages, the agent — what the
@@ -312,15 +323,21 @@ web/              the browser page (Vite, built into dist/web)
 **The API surface**, all served by `server/app.ts`:
 
 ```
-GET  /api/view          the slice for a ViewSpec, given as a query string
+GET  /api/view          the slice for a ViewSpec, given as a query string.
+                        ?at=<sha> draws the project as of that commit; 404 for
+                        an unknown one, never the live graph under its name
 GET  /api/project       the current root
 POST /api/project       switch to another root
-GET  /api/detail        one node's dependents and dependencies
-GET  /api/symbol        one symbol's relations, for following it across boxes
+GET  /api/detail        one node's dependents and dependencies       (?at=)
+GET  /api/symbol        one symbol's relations, for following it     (?at=)
+GET  /api/log           the commits on every ref, newest first, plus HEAD and
+                        the checked-out branch
+GET  /api/repo          what the repository is: files, remote, hook, MCP, languages
+POST /api/fetch         git fetch. The only verb that is not a read
 GET  /api/changes       this session's change feed
 GET  /api/search        subsequence search over the whole graph
 GET  /api/agent         what the agent has asked, and when
-GET  /api/clusters      the groups, named and unnamed
+GET  /api/clusters      the groups, named and unnamed                (?at=)
 POST /api/clusters      accept or reject one, by membership
 POST /api/groups        create, update or delete one, by storedId
 GET  /api/explain       the readings for the ids asked for, and the run
@@ -374,7 +391,17 @@ back button works and a view is shareable.
 /?scope=src/graph            the files in one directory
 /?focus=<file>&depth=1       a file and its neighbours, imports both ways
 /?changed=1                  only what differs from the git base
+/?at=<sha>                   the whole diagram as of that commit — not a highlight
 ```
+
+**A frozen view is frozen.** `at` is a view, so it rides the URL and the socket
+spec, and every helper that rebuilds the URL carries it. The server selects from
+`session.graphAt(sha)` — a commit unpacked with `git archive` and scanned exactly as
+a project is at boot, so the ids match the live graph's — and everything that
+describes the diagram (`/api/detail`, `/api/symbol`, `/api/clusters`) takes the same
+`at`, so a frame or a panel on a diagram of last week is what last week's imports
+produced. `changed` and `since` are dropped on freeze: a commit has no working tree
+or clock to filter by. Escape leaves the commit, unless a menu took the key first.
 
 - Above 40 files in scope, boxes stand for directories, and edges between them are
   aggregated with a weight.
@@ -410,6 +437,16 @@ error, and every caller treats `null` as "no git here".
   and cleared with the session.
 - Git status is a small badge on a box, never a third full-box tint. Amber already
   means "just changed" and blue means "the agent asked about this".
+- **The vocabulary is VS Code's.** "Changes" with a count, "Diff against HEAD ·
+  HEAD~1 · merge base", `⎇ main ↑2 ↓0` — never "vs HEAD". The letters are VS
+  Code's too: an untracked file is `U`, on the box and in the list.
+- **Git is read-only here.** The log is `git log --date-order --all -n 300` (date
+  order because the lane layout needs a parent never to precede its child), the
+  remote is read, and `fetch` is the one verb that writes — to `.git`, never to the
+  working tree. Nothing commits, checks out, resets or stashes.
+- **The commit graph's lanes are a pure function**, `view/lanes.ts`, with the test
+  beside it. One bug lived there already: a merge whose second parent joined a
+  lane that was already open dropped that lane's thread through the row.
 
 ## Architectural groups
 
@@ -432,10 +469,13 @@ governs membership.
 
 ## The rest of the page
 
-- **The status bar.** 22px at the bottom, and it is where the git control moved to:
-  branch, the base picker, the changed-count toggle, then boxes and files, the
-  language summary and the agent's connection. Every item is information or runs
-  something.
+- **The left bar** is Repository › Source Control › Activity, 300px. The Repository
+  panel absorbed the hook banner: hook, MCP and port file are rows, and "Install
+  hook" is a button under them, hidden once installed. Activity describes *now*
+  even while the diagram is frozen: the agent is still working in the working tree.
+- **The status bar.** 22px at the bottom: branch, ahead/behind, the "Changes" count
+  that toggles the filter, then boxes and files, the language summary and the
+  agent's connection. Every item is information or runs something.
 - **The menu bar.** Two rows: menus and project on top, breadcrumb and filter chips
   below. **Nothing in a menu is decoration.** Every item runs something the app can
   already do, and an item that needs a selection is greyed with the reason in its
@@ -462,9 +502,20 @@ Every connected client is sent a view **computed for its own spec**. The behavio
 
 - A touched box pulses and holds a warm tint. The camera does not move.
 - Box positions are preserved across an update, and only re-laid-out when the set of
-  boxes actually changes. **The layout cache key must include everything that changes
-  frame geometry** — the group list, and each group's colour and padding — or an edit
-  will not appear until something else forces a relayout.
+  boxes actually changes. **The layout cache has two keys.** `placementKey` is what
+  dagre reads — the boxes, their heights, which group each belongs to; `shapeKey`
+  adds everything a frame is drawn from — colour, slack, lock, hand-placed geometry.
+  A change to the second alone redraws the frames around where the boxes already
+  are (`frameClusters`) and never runs dagre, because running it moved every box
+  for a click that meant "hold this one still", and a frame locked to where it
+  stood was left standing where the boxes used to be.
+- **Dragging a frame locks it**, the way pulling a corner does; the lock button only
+  releases. A frame that had to be locked before it could be moved was the wrong
+  order, and it was reported as such.
+- A socket whose spec names a commit is not pushed `update` at all — a frozen view
+  is frozen — and the page refuses `update` frames while frozen as well. Because
+  that push was what bumped `revision`, the page polls changes, git status and the
+  log every 3 s while frozen so the left bar keeps describing now.
 - A change landing outside the current view is not drawn; it increments a
   "N changes outside" badge that focuses the most recent one when clicked.
 
@@ -593,6 +644,8 @@ is that every check in DECISIONS.md is a scratch script that was run once and th
 away, so nothing in it can be re-run to see if it still holds.
 
 Use `node --test`. It is built into Node, so this adds no dependency and no ceremony.
+`npm test` compiles and runs every `*.test.ts` beside the module it tests; the first
+is `src/view/lanes.test.ts`.
 
 - **Test the pure modules**: `graph/`, `view/`, `project/groups.ts`, and the parsing
   half of `project/git.ts`. These are where logic hides and where a bug is silent.
@@ -685,6 +738,19 @@ the graph can be trusted at a glance on a project that is not this one:
   dropped; pressing Explain on them gets a 400 with the server's own words.
 - `cancel` abandons a run, it does not kill the subprocess: the money is already
   spent, and what it buys is that the answer is refused and never written.
+- **⌘K searches the live graph while the diagram is frozen**; detail, symbols and
+  groups follow the commit, search does not yet.
+- A commit's graph is built through the same FIFO parser pool as the live updater,
+  so a save that arrives after a big commit has queued its files waits behind them
+  — seconds on a vuejs/core-sized repository. Decision 1 is about the main thread,
+  which stays free; the *latency* of the live pulse is what suffers.
+- `git archive` honours `export-ignore`, so a directory marked that way is absent
+  from every commit's graph while present in the live one.
+- A history temp dir survives a SIGKILL mid build (the desktop shell dropping the
+  sidecar, Ctrl-C). Boot sweeps `codemap-*` directories older than an hour; a
+  fresher one is assumed to belong to another codemap still running.
+- HEAD further back than the 300-commit log selects no Graph row; a commit at which
+  the opened subdirectory did not exist answers "unknown commit".
 - `/api/hook` can still answer 413/400/415: Fastify's 1 MiB body limit and its
   content-type parser reject before the route handler's deliberate 200.
 - A failed view fetch leaves the previous graph rendered under the error banner, and

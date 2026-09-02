@@ -14,6 +14,11 @@ import { Section } from './Section';
  * The agent's questions and the file changes share one list on purpose. Two
  * lists would hide the thing worth seeing: an agent looks a file up and then
  * rewrites it, and the lookup is what explains the edit.
+ *
+ * This table describes NOW, whatever the diagram is showing. While the page
+ * views a past commit the rows keep arriving and the +/- keep counting against
+ * the git base, because the agent is still working in the working tree — the
+ * diagram is the thing that stopped, not the project.
  */
 
 /** Enough to answer "what happened while I was away" without a scrollback. */

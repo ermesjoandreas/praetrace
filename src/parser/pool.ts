@@ -119,6 +119,11 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
 
     async close() {
       closed = true;
+      // Jobs still waiting can never run now, and a caller left waiting on one —
+      // a commit's graph half built when the project was switched — would hang
+      // for ever, its temporary directory with it.
+      const reason = new Error('parser pool is closed');
+      while (queue.length > 0) queue.shift()?.reject(reason);
       const workers = [...idle, ...inFlight.keys()];
       idle.length = 0;
       await Promise.all(workers.map((worker) => worker.terminate()));

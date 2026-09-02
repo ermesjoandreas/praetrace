@@ -48,11 +48,12 @@ export function selectView(
   // Added here rather than threaded through both: it is a fact about the
   // project, not about the slice, so neither of them has any business
   // computing it — and computing it twice is how the two would disagree.
-  return { ...slice, languages: projectLanguages(graph) };
+  // `at` is echoed, not acted on: the caller chose which graph this is.
+  return { ...slice, languages: projectLanguages(graph), at: spec.at };
 }
 
 /** Everything a slice decides for itself; the project-wide facts land after. */
-type Slice = Omit<ViewGraph, 'languages'>;
+type Slice = Omit<ViewGraph, 'languages' | 'at'>;
 
 /**
  * Read back off the path rather than carried on the node.
@@ -76,8 +77,12 @@ function soleLanguage(files: readonly string[]): LanguageId | null {
   return only;
 }
 
-/** Over the whole graph, so the filter and the scope cannot change the answer. */
-function projectLanguages(graph: Graph): LanguageCount[] {
+/**
+ * Over the whole graph, so the filter and the scope cannot change the answer.
+ * Exported for the Repository panel, which asks the same question of the same
+ * graph and must not get a second answer.
+ */
+export function projectLanguages(graph: Graph): LanguageCount[] {
   const counted = new Map<LanguageSupport, number>();
 
   for (const node of graph.nodes.values()) {
@@ -366,7 +371,7 @@ function scopeView(
   return {
     nodes: boxes,
     edges: [...aggregated.values()],
-    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter },
+    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter, at: spec.at },
     trail: trailFor(scope),
     totalFiles: inScope.length,
     // Whether grouping actually happened, not whether it was attempted. A flat

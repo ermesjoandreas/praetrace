@@ -31,6 +31,14 @@
   --vsc-git-deleted: #F85149;
   --vsc-git-untracked: #73C991;
 
+  /* VS Code's own Source Control Graph palette, scmGraph.foreground1-5. A
+     lane colour means "this thread, not that one"; the accent takes lane 0. */
+  --vsc-graph-1: #FFB000;
+  --vsc-graph-2: #DC267F;
+  --vsc-graph-3: #994F00;
+  --vsc-graph-4: #40B0A6;
+  --vsc-graph-5: #B66DFF;
+
   --vsc-list-hover: #2A2D2E;
   --vsc-list-active-sel: #04395E;
   --vsc-list-inactive-sel: #37373D;
@@ -135,7 +143,6 @@ code { font-size: var(--vsc-font-size-status); }
 .row-actions button,
 .panel-toggle,
 .depth button,
-.hook-dismiss,
 .welcome-close,
 .group-editor-close,
 .group-palette-close {
@@ -152,7 +159,6 @@ code { font-size: var(--vsc-font-size-status); }
 .row-actions button:hover:not(:disabled),
 .panel-toggle:hover,
 .depth button:hover:not(:disabled),
-.hook-dismiss:hover,
 .welcome-close:hover,
 .group-editor-close:hover,
 .group-palette-close:hover {
@@ -169,7 +175,7 @@ code { font-size: var(--vsc-font-size-status); }
    secondary is a hairline around the ordinary text colour. */
 .explain-run,
 .explain-stop,
-.hook-actions button,
+.repo-button,
 .group-delete {
   display: inline-flex;
   align-items: center;
@@ -181,24 +187,27 @@ code { font-size: var(--vsc-font-size-status); }
   white-space: nowrap;
 }
 .explain-stop:hover,
-.hook-actions button:hover:not(:disabled),
+.repo-button:hover:not(:disabled),
 .group-delete:hover {
   background: var(--vsc-toolbar-hover);
 }
 .explain-run,
-.hook-actions .hook-install {
+.repo-primary {
   background: var(--vsc-accent);
   border-color: transparent;
   color: var(--vsc-fg-strong);
 }
 .explain-run:hover:not(:disabled),
-.hook-actions .hook-install:hover:not(:disabled) {
+.repo-primary:hover:not(:disabled) {
   background: var(--vsc-accent-hover);
 }
 .explain-run:disabled,
-.hook-actions .hook-install:disabled {
+.repo-primary:disabled {
   opacity: 0.4;
 }
+/* A secondary button that cannot run right now says so in its colour; the
+   reason is already in its title. */
+.repo-button:disabled:not(.repo-primary) { color: var(--vsc-fg-disabled); }
 
 /* A keycap, where VS Code draws one: beside a search box and on a Quick Pick
    row. Menus and the welcome list print their keys as plain muted text. */
@@ -387,6 +396,26 @@ main { display: flex; flex: 1; min-height: 0; }
   color: var(--vsc-git-modified);
 }
 .missed:hover { border-color: var(--vsc-git-modified); }
+
+/* Which commit the diagram is frozen at. A filter chip, in the filter chips'
+   badge grey: not the accent, which is the selection, and not the info blue,
+   which is the agent's. A diagram of last week is a filter on time, and it
+   reads as one beside the others. */
+.frozen-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 18px;
+  padding: 0 2px 0 4px;
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-badge-bg);
+  color: var(--vsc-badge-fg);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+  white-space: nowrap;
+}
+.frozen-chip:hover { background: var(--vsc-fg-disabled); }
 
 .filter-clear {
   height: 22px;
@@ -960,18 +989,331 @@ main { display: flex; flex: 1; min-height: 0; }
 .group-row:hover .row-actions,
 .group-row:focus-within .row-actions { opacity: 1; }
 
-/* --- the activity column (left) -------------------------------------------- */
+/* --- the left column ------------------------------------------------------- */
 
-/* Left is time, right is structure. The two used to share the right-hand panel,
-   which meant watching what the agent was doing cost you the detail of the very
-   thing it was touching. */
-.activity {
-  width: 272px;
+/* Left is the repository and time, right is structure. Three sections:
+   what the repository is, what source control says about it, and what the
+   agent has done to it — in that order, because it is the order the
+   questions come in. 300px is VS Code's own side bar width. */
+.leftbar {
+  display: flex;
+  flex-direction: column;
+  width: 300px;
   flex: none;
   border-right: 1px solid var(--vsc-border);
   background: var(--vsc-chrome-bg);
   overflow: hidden;
 }
+
+/* The facts keep their height up to half the column and scroll past that;
+   the feed takes what it has to show up to a third; the log gets the rest,
+   because it is the one list that is always long. Sized like the right-hand
+   sections, and not in proportion to content: a 300-commit log would have
+   shrunk an empty feed to nothing. When the log is folded away the feed
+   takes its space, the way a pane does when the one above it collapses. */
+.repository { max-height: 50%; }
+.source-control { flex: 1; }
+.activity { max-height: 35%; }
+.source-control:has(> .section-head > [aria-expanded='false']) ~ .activity { flex: 1; max-height: none; }
+.source-control > .section-body { display: flex; flex-direction: column; }
+.scm-section-changes { max-height: 50%; }
+.scm-section-graph { flex: 1; }
+/* A log wider than the column scrolls sideways. The alternative was cutting
+   the outer lanes, which drew commits with no dot. */
+.scm-section-graph > .section-body { overflow-x: auto; }
+
+/* The two halves of source control are sections inside a section. The same
+   header, one step in, so the hierarchy reads as an outline rather than as
+   three equals; the Graph keeps the line the sibling rule gives it. */
+.scm-section > .section-head { padding-left: 8px; }
+
+/* --- the repository panel -------------------------------------------------- */
+
+/* Three blocks of label · value rows with the block's one button under them.
+   A block title wears what a list heading wears in the detail panel: muted,
+   small, bold — a heading inside a section, not a section. */
+.repo-block { padding-bottom: 4px; }
+.repo-block-title {
+  margin: 0;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.repo-rows { margin: 0; }
+.repo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+/* Wide enough for "Cannot read"; the labels line up in a column. */
+.repo-label { flex: none; width: 76px; color: var(--vsc-fg-muted); }
+/* A browser indents a dd by 40px. The title carries whatever was cut. */
+.repo-value {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.repo-actions { padding: 4px 8px; }
+.repo-button { width: 100%; justify-content: center; gap: 6px; }
+
+/* No folder picker in a browser tab: the command line that opens another
+   project, in the button's slot and its height, selectable in one click. */
+.repo-cli {
+  display: block;
+  height: 26px;
+  color: var(--vsc-fg-muted);
+  line-height: 26px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: all;
+}
+
+/* A failed fetch or install, in full: the useful part is git's own line. */
+.repo-error {
+  margin: 0;
+  padding: 2px 8px;
+  color: var(--vsc-error);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.repo-sync { display: inline-flex; align-items: center; font-variant-numeric: tabular-nums; }
+.repo-sync .codicon:not(:first-child) { margin-left: 4px; }
+
+/* The hook's state: the icon carries the colour, the word stays text. Green
+   is what "connected" already wears in the status bar; a missing hook is
+   the warning colour, and a settings file that cannot be read is an error. */
+.repo-ok, .repo-missing { display: inline-flex; align-items: center; gap: 4px; }
+.repo-ok .codicon { color: var(--vsc-git-untracked); }
+.repo-missing .codicon { color: var(--vsc-warning); }
+.repo-missing .codicon-error { color: var(--vsc-error); }
+
+/* --- source control -------------------------------------------------------- */
+
+.scm-empty {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  line-height: 1.5;
+}
+
+/* The count in the Changes header, a badge the way VS Code's pane header
+   carries one. The same badge the status bar shows, so it is the same number
+   in both places to the eye as well as in fact. */
+.scm-count {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  margin-right: 4px;
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-badge-bg);
+  color: var(--vsc-badge-fg);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 400;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* The commit the Graph is frozen at, beside its title: a sha, in mono like any other. */
+.scm-viewing {
+  flex: none;
+  padding-right: 4px;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+}
+
+/* The filter is a mode and holds the accent while on, like the status bar's
+   copy of it. Greyed rather than gone while the diagram is a past commit: the
+   reason is in its title, and a missing button has no title. */
+.section-actions button.scm-filter-on,
+.section-actions button.scm-filter-on:hover { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+.section-actions button.scm-filter[aria-disabled='true'],
+.section-actions button.scm-filter[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--vsc-fg-disabled);
+  cursor: default;
+}
+
+/* Which base the list is against: three words in git's own vocabulary on one
+   22px row, the one in force wearing an input's face — it is a setting's
+   value, not a mode, so not the accent. */
+.scm-base {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.scm-base-label { margin-right: 4px; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+.scm-base-pick {
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+}
+.scm-base-pick:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+.scm-base-pick-on, .scm-base-pick-on:hover { background: var(--vsc-input-bg); color: var(--vsc-fg); }
+
+/* One changed file per row: name, where it is, how far it moved, and the git
+   letter at the edge — read left to right the way the explorer decorates a
+   file. Monospace like every other path on the page. */
+.scm-changes { margin: 0; padding: 0; list-style: none; }
+.scm-change {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
+}
+.scm-change:hover { background: var(--vsc-list-hover); }
+.scm-change:focus-visible { outline-offset: -1px; }
+.scm-change-name { flex: none; color: var(--vsc-fg); }
+.scm-change-where {
+  flex: 1;
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.scm-change-lines { flex: none; font-size: var(--vsc-font-size-sm); font-variant-numeric: tabular-nums; }
+.scm-added { color: var(--vsc-git-added); }
+.scm-deleted { color: var(--vsc-git-deleted); margin-left: 4px; }
+.scm-letter {
+  flex: none;
+  min-width: 10px;
+  font-size: var(--vsc-font-size-sm);
+  text-align: right;
+  color: var(--vsc-fg-muted);
+}
+.scm-letter-modified  { color: var(--vsc-git-modified); }
+.scm-letter-added     { color: var(--vsc-git-added); }
+.scm-letter-deleted   { color: var(--vsc-git-deleted); }
+.scm-letter-untracked { color: var(--vsc-git-untracked); }
+.scm-letter-renamed   { color: var(--vsc-git-untracked); }
+
+/* A deleted file has no box, so its row runs nothing: greyed, the letter
+   still red because that is the fact the row is there to state. */
+.scm-change-gone, .scm-change-gone:hover { background: transparent; cursor: default; }
+.scm-change-gone .scm-change-name, .scm-change-gone .scm-change-where { color: var(--vsc-fg-disabled); }
+
+/* --- the commit graph ------------------------------------------------------ */
+
+/* One 22px row per commit: threads down the left, the subject, the refs that
+   point here, then who and when at the right edge in muted text. The lanes
+   are an SVG per row; the palette is CSS, so the picture and the page agree
+   on what each thread is coloured. */
+.git-graph { display: flex; flex-direction: column; }
+.git-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.git-row:hover { background: var(--vsc-list-hover); }
+.git-row:focus-visible { outline-offset: -1px; }
+/* The commit the diagram shows: selected like a list row, and only that. The
+   ring is the focus ring, and a keyboard user has to tell the row Enter will
+   act on from the row the diagram is at. */
+.git-row-selected, .git-row-selected:hover {
+  background: var(--vsc-list-active-sel);
+  color: var(--vsc-fg-strong);
+}
+.git-row-selected .git-meta { color: var(--vsc-fg); }
+
+/* A block, not an inline: an inline SVG sits on the baseline and grows the row. */
+.git-lanes { display: block; flex: none; }
+.git-lane-c0 { color: var(--vsc-accent); }
+.git-lane-c1 { color: var(--vsc-graph-1); }
+.git-lane-c2 { color: var(--vsc-graph-2); }
+.git-lane-c3 { color: var(--vsc-graph-3); }
+.git-lane-c4 { color: var(--vsc-graph-4); }
+.git-lane-c5 { color: var(--vsc-graph-5); }
+
+/* The refs sit right after the subject rather than at the edge, which is how
+   a log reads. Both give way when the row is full, but the subject keeps a
+   floor: at 300px a HEAD and a remote badge would otherwise leave it one
+   word, and the first badge — the branch you are on — is the one that
+   matters, so it is the remote one that gets clipped. */
+.git-subject { flex: 0 10 auto; min-width: 80px; overflow: hidden; text-overflow: ellipsis; }
+
+/* Badges that do not fit wrap onto a second line the 18px height hides, so a
+   ref is shown whole or not at all — never as a sliver of a cloud icon. The
+   subject's shrink weight is ten times this one's, so it reaches its floor
+   before the first badge loses a letter rather than both losing a third.
+   Ten and one, not one and a tenth: once the subject is frozen, a shrink
+   sum below one hands the rest of the overflow to nobody (that is the
+   spec), and the meta is what would have been pushed off the row. */
+.git-refs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  height: 18px;
+  overflow: hidden;
+}
+.git-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: 18px;
+  padding: 0 5px 0 2px;
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-badge-bg);
+  color: var(--vsc-badge-fg);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+}
+/* The branch you are on wears the accent; every other ref is a grey badge
+   and its icon says which kind it is. */
+.git-ref-head { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+
+/* Right-aligned, and cut from the front when the column is too narrow for
+   both name and age: "… · 2 days ago" is the half a log is read for. */
+.git-meta {
+  flex: none;
+  margin-left: auto;
+  max-width: 84px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  direction: rtl;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* --- activity -------------------------------------------------------------- */
+
 .activity .section-body { display: flex; flex-direction: column; flex: 1; }
 
 /* Not a dot for "connected": whether anything has happened in the last few
@@ -1412,11 +1754,38 @@ button.status-item:focus-visible { outline-offset: -1px; }
 .git-caret { color: var(--vsc-fg-muted); }
 .git-count-n { font-variant-numeric: tabular-nums; }
 .git-count-word { color: var(--vsc-fg-muted); }
+
+/* How far the branch is from its upstream — information, not a control; the
+   one Fetch button is in the Repository panel. */
+.git-sync { gap: 0; font-variant-numeric: tabular-nums; }
+.git-sync .codicon:not(:first-child) { margin-left: 2px; }
+
+/* The count as a badge, the same one the Changes header carries. */
+.git-count-badge {
+  min-width: 16px;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-badge-bg);
+  color: var(--vsc-badge-fg);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 /* Filtering to the changed files is a mode, not a click, so it holds a filled
    state — the accent, like every other mode here. */
 .git-count[aria-pressed='true'] { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
 .git-count[aria-pressed='true'] .git-count-word { color: var(--vsc-fg-strong); }
+.git-count[aria-pressed='true'] .git-count-badge {
+  background: color-mix(in srgb, var(--vsc-fg-strong) 22%, transparent);
+  color: var(--vsc-fg-strong);
+}
 .git-count[aria-pressed='true']:hover { background: var(--vsc-accent-hover); }
+/* A past commit has no working tree to filter by. The count stays — it is
+   the working tree's, and still true — but the control reads as disabled. */
+button.git-count-frozen, button.git-count-frozen:hover { background: transparent; cursor: default; }
+.git-count-frozen .git-count-word, .git-count-frozen .git-count-badge { color: var(--vsc-fg-disabled); }
 
 .git-drop { min-width: 210px; }
 .git-drop-head {
@@ -1427,6 +1796,9 @@ button.status-item:focus-visible { outline-offset: -1px; }
   line-height: 22px;
 }
 .git-drop .menu-item kbd { font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); }
+/* What each base means, after its name; white on the accent when the row is. */
+.git-drop-hint { margin-left: auto; padding-left: 12px; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+.menu-item:hover:not(:disabled) .git-drop-hint { color: var(--vsc-fg-strong); }
 
 /* Source the tool cannot read: a gap rather than a fact, and still not an error. */
 .unread { color: var(--vsc-warning); }
@@ -1574,59 +1946,6 @@ button.status-item:focus-visible { outline-offset: -1px; }
   font-size: var(--vsc-font-size-sm);
   line-height: 22px;
 }
-
-/* --- Claude Code hook installation ----------------------------------------- */
-
-.hook-banner {
-  flex: none;
-  border-bottom: 1px solid var(--vsc-border);
-  background: var(--vsc-chrome-bg);
-}
-
-.hook-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 26px;
-  padding: 0 8px;
-  white-space: nowrap;
-}
-.hook-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.hook-icon { flex: none; color: var(--vsc-warning); }
-.hook-icon.codicon-error { color: var(--vsc-error); }
-/* The banner's action is a link, the way a notification's is. */
-.hook-row button:not(.hook-dismiss) {
-  height: 22px;
-  padding: 0 4px;
-  border-radius: var(--vsc-radius);
-  color: var(--vsc-link);
-}
-.hook-row button:not(.hook-dismiss):hover { background: var(--vsc-toolbar-hover); }
-.hook-dismiss { margin-left: auto; }
-
-.hook-review { padding: 0 8px 8px 32px; border-top: 1px solid var(--vsc-border); }
-.hook-path { color: var(--vsc-fg-muted); font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); line-height: 22px; }
-
-.hook-review pre {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 6px 8px;
-  border: 1px solid var(--vsc-border);
-  border-radius: var(--vsc-radius);
-  background: var(--vsc-editor-bg);
-  color: var(--vsc-fg);
-  font-size: var(--vsc-font-size-sm);
-  line-height: 1.5;
-  /* The hook command is one long line; wrapping shows all of it, and pre-wrap
-     still preserves the JSON indentation. */
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.hook-error { margin-top: 6px; color: var(--vsc-error); font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); }
-
-.hook-actions { display: flex; gap: 6px; margin-top: 8px; }
 
 /* --- welcome --------------------------------------------------------------- */
 

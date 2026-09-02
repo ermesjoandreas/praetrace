@@ -55,7 +55,7 @@ const GIT_LETTER: Record<GitFileStatus, string> = {
   modified: 'M',
   added: 'A',
   deleted: 'D',
-  untracked: '?',
+  untracked: 'U',
   renamed: 'R',
 };
 

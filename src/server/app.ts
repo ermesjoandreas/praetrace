@@ -5,6 +5,7 @@ import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { Graph, GraphNode } from '../graph/types.js';
+import type { Session } from './session.js';
 import { LANGUAGES } from '../lang/registry.js';
 import {
   fingerprintOf,
@@ -12,7 +13,16 @@ import {
   type ExplainTarget,
   type Explanation,
 } from '../project/explain.js';
+import {
+  fetchRemote,
+  readLog,
+  readRemote,
+  type Commit,
+  type RemoteStatus,
+  readBranch,
+} from '../project/git.js';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
+import { portFilePath } from '../project/port-file.js';
 import { isIgnoredDirectoryName } from '../project/walk.js';
 import {
   applyDecision,
@@ -26,7 +36,7 @@ import {
   type GroupColor,
   type NamedGroup,
 } from '../project/groups.js';
-import { installHook, readHookStatus } from '../project/hook-install.js';
+import { installHook, readHookStatus, type HookStatus } from '../project/hook-install.js';
 import { describe, describeSymbol, type FileDetail, type SymbolLinks } from '../view/detail.js';
 import {
   DEFAULT_EDGE_KINDS,
@@ -35,8 +45,8 @@ import {
 } from '../view/filter.js';
 import { clusterFiles, identify } from '../view/cluster.js';
 import { search } from '../view/search.js';
-import { selectView } from '../view/select.js';
-import type { ViewSpec } from '../view/types.js';
+import { projectLanguages, selectView } from '../view/select.js';
+import type { LanguageCount, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
 import type { ExplainRun, SessionHost } from './session.js';
 
@@ -106,6 +116,64 @@ const MAX_SOURCE_CHARS = 24_000;
  */
 const MAX_CONTEXT = 20;
 
+/**
+ * The most log a page can ask for at once. The graph is drawn one row per
+ * commit, and a thousand rows is taller than anyone scrolls; past that, the
+ * question is a search, not a list.
+ */
+const MAX_LOG = 1000;
+
+/** What `git log` answers, plus which commit is checked out. */
+export interface LogResponse {
+  commits: Commit[];
+  /**
+   * The sha HEAD is at, so the page can select its row when nothing is frozen.
+   * '' when no commit in the log is decorated HEAD — a repository with no
+   * commits, or one whose HEAD lies further back than the log was asked for.
+   */
+  head: string;
+  /**
+   * The branch checked out, or null when HEAD is detached. From git, not from
+   * the decorations: `%D` spells a detached HEAD sitting on a branch tip the
+   * same way it spells the branch once the arrow is split, so the refs alone
+   * cannot say which one the row's target badge belongs to.
+   */
+  branch: string | null;
+}
+
+/**
+ * Everything the Repository panel shows, in one answer. Composed here from
+ * what already exists rather than fetched as four requests, because the panel
+ * is a single thing on screen and the parts arriving at four different moments
+ * would draw it four times.
+ */
+export interface RepoInfo {
+  /** The repository's own name: the last segment of the root. */
+  name: string;
+  root: string;
+  /** Source files the graph holds. */
+  files: number;
+  /** null when the project is not a repository, or has no remote. */
+  remote: RemoteStatus | null;
+  hook: HookStatus;
+  /** Where the hook finds this server; written only while `.claude/` exists. */
+  portFile: string;
+  agent: { lastAt: number | null; total: number };
+  languages: {
+    /** What the project is written in, biggest first. */
+    found: LanguageCount[];
+    /** Source the tool cannot read, biggest first. */
+    unreadable: { extension: string; files: number }[];
+  };
+}
+
+export interface FetchResponse {
+  ok: boolean;
+  detail: string;
+  /** Re-read after the fetch, so ahead/behind describe what just arrived. */
+  remote: RemoteStatus | null;
+}
+
 export interface AppOptions {
   /** Holds the current project. Routes read through it, never around it. */
   host: SessionHost;
@@ -149,19 +217,30 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   app.register(fastifyStatic, { root: WEB_DIR });
   app.register(websocket);
 
-  app.get('/api/view', async (request) => {
+  app.get('/api/view', async (request, reply) => {
     const session = host.current();
-    return {
-      root: session.root,
-      // The cutoff for "changed recently" is computed per request, so a stored
-      // spec does not freeze time at the moment it was set.
-      view: selectView(
-        session.store.graph,
-        toSpec(request.query as Record<string, unknown>),
-        Date.now(),
-        session.gitStatus(),
-      ),
-    };
+    const spec = toSpec(request.query as Record<string, unknown>);
+
+    if (spec.at === null) {
+      return {
+        root: session.root,
+        // The cutoff for "changed recently" is computed per request, so a stored
+        // spec does not freeze time at the moment it was set.
+        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus()),
+      };
+    }
+
+    // A commit that cannot be drawn is a 404 and never the live graph: a page
+    // showing now under a banner naming a commit is exactly the wrong picture
+    // that looks authoritative, and the one thing this feature must not do.
+    if (!isCommitId(spec.at)) {
+      return reply.code(404).send({ error: `not a commit id: ${spec.at}` });
+    }
+    const graph = await session.graphAt(spec.at);
+    if (graph === null) return reply.code(404).send({ error: `unknown commit ${spec.at}` });
+
+    // No git status: a past commit has no working tree to differ from a base.
+    return { root: session.root, view: selectView(graph, spec, Date.now(), null) };
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
@@ -184,7 +263,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   app.get('/api/detail', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const target = typeof query['path'] === 'string' ? query['path'] : '';
-    const detail = describe(host.current().store.graph, target);
+    const at = readAt(query['at']);
+    const graph = await graphFor(host.current(), at);
+    if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
+    const detail = describe(graph, target);
     if (!detail) return reply.code(404).send({ error: `nothing known about ${target}` });
     return detail;
   });
@@ -195,7 +277,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   app.get('/api/symbol', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const id = typeof query['id'] === 'string' ? query['id'] : '';
-    const links = describeSymbol(host.current().store.graph, id);
+    const at = readAt(query['at']);
+    const graph = await graphFor(host.current(), at);
+    if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
+    const links = describeSymbol(graph, id);
     if (!links) return reply.code(404).send({ error: `no symbol ${id}` });
     return links;
   });
@@ -282,11 +367,15 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     return { hits: search(host.current().store.graph, term) };
   });
 
-  app.get('/api/clusters', async () => {
+  app.get('/api/clusters', async (request, reply) => {
     const session = host.current();
-    // The graph decides membership; the stored file only supplies names.
-    const clusters = clusterFiles(session.store.graph);
-    return { clusters: mergeGroups(clusters, await readGroups(session.root)) };
+    const at = readAt((request.query as Record<string, unknown>)['at']);
+    // The graph decides membership; the stored file only supplies names. At a
+    // commit it is that commit's graph: a frame on a diagram of last week has
+    // to be what last week's imports produced, or it is a tidy lie.
+    const graph = await graphFor(session, at);
+    if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
+    return { clusters: mergeGroups(clusterFiles(graph), await readGroups(session.root)) };
   });
 
   app.post('/api/clusters', async (request, reply) => {
@@ -349,6 +438,44 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     // on screen still describe the base that was just replaced.
     hub.publish([]);
     return status ?? { available: false };
+  });
+
+  app.get('/api/log', async (request): Promise<LogResponse> => {
+    const query = request.query as Record<string, unknown>;
+    const limit = readLimit(query['limit']);
+    const root = host.current().root;
+    const [commits, branch] = await Promise.all([readLog(root, limit ?? undefined), readBranch(root)]);
+    return { commits, head: headOf(commits), branch };
+  });
+
+  app.get('/api/repo', async (): Promise<RepoInfo> => {
+    const session = host.current();
+    const root = session.root;
+    const [remote, hook, unreadable] = await Promise.all([
+      readRemote(root),
+      readHookStatus(root),
+      countUnreadable(root),
+    ]);
+    const calls = session.agentCalls();
+
+    return {
+      name: path.basename(root),
+      root,
+      files: session.store.files.size,
+      remote,
+      hook,
+      portFile: portFilePath(root),
+      agent: { lastAt: calls[calls.length - 1]?.at ?? null, total: calls.length },
+      languages: { found: projectLanguages(session.store.graph), unreadable },
+    };
+  });
+
+  // The one thing here that talks to a remote, and the only git verb that is
+  // not a read. It touches no working tree — an agent may be editing it.
+  app.post('/api/fetch', async (): Promise<FetchResponse> => {
+    const root = host.current().root;
+    const fetched = await fetchRemote(root);
+    return { ...fetched, remote: await readRemote(root) };
   });
 
   app.get('/api/agent', async () => {
@@ -601,7 +728,59 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     focus,
     depth: readDepth(raw['depth']),
     filter: toFilter(raw),
+    at: readAt(raw['at']),
   };
+}
+
+/**
+ * Kept as given rather than checked here: an `at` that is not a commit must
+ * reach the view route and be refused there, because turning it into null
+ * would draw the working tree under a URL that names a commit.
+ */
+function readAt(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim().toLowerCase();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Abbreviated or full, hex only. A ref name would reach `git archive` as an
+ * argument, and a name is a moving target no cache keyed on it could be right
+ * about after the next commit.
+ */
+function isCommitId(at: string): boolean {
+  return /^[0-9a-f]{4,40}$/.test(at);
+}
+
+/**
+ * The graph a request is about: the live one, or a commit's when `at` names
+ * one. Everything that describes the diagram — a box's detail, a symbol's
+ * relations, the groups — goes through here, so a frozen diagram is never
+ * described by the graph it is not showing. Null means the commit cannot be
+ * drawn; the caller answers 404, never the live graph under a commit's name.
+ */
+async function graphFor(session: Session, at: string | null): Promise<Graph | null> {
+  if (at === null) return session.store.graph;
+  if (!isCommitId(at)) return null;
+  return session.graphAt(at);
+}
+
+/** The count a page asked for, or null for the log's own default. */
+function readLimit(raw: unknown): number | null {
+  if (typeof raw !== 'string' || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return null;
+  return Math.min(value, MAX_LOG);
+}
+
+/**
+ * The commit HEAD decorates. `%D` writes `HEAD -> main` on a branch and a bare
+ * `HEAD` when detached, so the token is looked for either way — the first
+ * match is the one, because only one commit is ever HEAD.
+ */
+function headOf(commits: readonly Commit[]): string {
+  const isHead = (ref: string): boolean => ref === 'HEAD' || ref.startsWith('HEAD ->');
+  return commits.find((commit) => commit.refs.some(isHead))?.sha ?? '';
 }
 
 /**
@@ -630,6 +809,7 @@ function toSocketSpec(raw: Record<string, unknown>): ViewSpec {
       sinceMs: typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : 0,
       onlyChanged: filter['onlyChanged'] === true,
     },
+    at: readAt(raw['at']),
   };
 }
 

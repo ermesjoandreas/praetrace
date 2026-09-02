@@ -103,6 +103,8 @@ interface SidebarProps {
   selected: string | null;
   /** Bumped whenever the graph changes, so the panel never shows a stale file. */
   revision: number;
+  /** The commit the diagram is frozen at, so the detail describes what is drawn. */
+  at: string | null;
   onSelect: (target: string) => void;
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
@@ -122,6 +124,7 @@ export function Sidebar({
   root,
   selected,
   revision,
+  at,
   onSelect,
   onFocus,
   groups,
@@ -137,7 +140,7 @@ export function Sidebar({
       return;
     }
     let cancelled = false;
-    fetchDetail(selected).then(
+    fetchDetail(selected, at).then(
       (result) => {
         if (!cancelled) setDetail(result);
       },
@@ -148,7 +151,7 @@ export function Sidebar({
     return () => {
       cancelled = true;
     };
-  }, [selected, revision, root]);
+  }, [selected, revision, root, at]);
 
   // The header's actions are what the panel head used to spell out as words:
   // go to it on the diagram, open it in the editor. Only a file has anywhere
@@ -551,6 +554,9 @@ const STATE_WORDS: Record<ExplainState, string> = {
   unknown: 'Fingerprinted by a build this one cannot check against.',
 };
 
+/** The kinds a caller would be expected for. The rest are named, not called. */
+const CALLABLE: ReadonlySet<string> = new Set(['function', 'method', 'class']);
+
 /** Why a run produced nothing, in words that say what to do about it. */
 const FAILURE_WORDS: Record<ExplainFailure, string> = {
   missing: 'claude was not found.',
@@ -690,10 +696,15 @@ function Followed({
           />
 
           {symbol.usedBy.length === 0 && symbol.uses.length === 0 ? (
-            <p className="followed-none">
-              Nothing here references it, and nothing it references resolved. Method calls
-              are under-reported on purpose.
-            </p>
+            // A type, an interface or a field is never *called*, so an empty
+            // relation list is the normal case for it and saying so on every one
+            // taught the reader to stop reading the line. It is only worth a
+            // sentence where callers were expected and the graph found none.
+            CALLABLE.has(symbol.kind) && (
+              <p className="followed-none">
+                No resolved references. Method calls are under-reported on purpose.
+              </p>
+            )
           ) : (
             <>
               <Relations title="used by" rows={symbol.usedBy} onSelect={onSelect} onFocus={onFocus} />

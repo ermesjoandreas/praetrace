@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
+import type { Graph } from '../graph/types.js';
 import { createParserPool } from '../parser/pool.js';
 import {
   explain,
@@ -11,7 +12,8 @@ import {
   type ExplainTarget,
   type Explanation,
 } from '../project/explain.js';
-import { readGitStatus } from '../project/git.js';
+import { readGitStatus, resolveCommit } from '../project/git.js';
+import { graphAt as buildGraphAt } from '../project/history.js';
 import { scanProject } from '../project/scan.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
@@ -85,6 +87,14 @@ const MAX_HISTORY = 200;
 const GIT_POLL_MS = 3000;
 
 /**
+ * How many past commits' graphs to keep. A build costs an archive, a scan and a
+ * derivation — around a tenth of a second here, seconds on a big repository —
+ * so stepping back and forth through the log must not pay it twice. Sixteen
+ * covers a session of clicking around the graph; a whole history would not fit.
+ */
+const MAX_PAST_GRAPHS = 16;
+
+/**
  * Everything scoped to one project root: the graph, the workers that build it,
  * and the watcher feeding it.
  *
@@ -110,6 +120,12 @@ export interface Session {
   setGitBase(base: string): Promise<GitStatus | null>;
   /** Re-reads git; true when the answer differs from the one being served. */
   refreshGit(): Promise<boolean>;
+  /**
+   * The project's graph as of one commit, or null when the sha is not one this
+   * repository knows. Built on demand and remembered; two asks for the same
+   * commit while it is being built share the one build.
+   */
+  graphAt(sha: string): Promise<Graph | null>;
   /** Everything this project has had explained, as last read or written. */
   explanations(): readonly Explanation[];
   /** The run in flight, or the last one to end. Null until the first press. */
@@ -223,6 +239,50 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   const watcher = watchProject({ root, onChange: (change) => updater.queue(change) });
 
   /**
+   * Past commits' graphs, least recently asked for first — a Map keeps
+   * insertion order, and re-inserting on a hit is what makes it an LRU.
+   *
+   * A commit's graph never changes, so nothing here can go stale; the only
+   * reason to drop one is room. The pool is shared with the live updater, so a
+   * build queues behind whatever the agent just saved rather than racing it.
+   */
+  const past = new Map<string, Graph>();
+  const building = new Map<string, Promise<Graph | null>>();
+  /** Every spelling asked for -> the full sha, so `7fe7f88` and the whole sha share one slot. */
+  const spelled = new Map<string, string>();
+
+  async function graphAt(sha: string): Promise<Graph | null> {
+    const full = spelled.get(sha) ?? (await resolveCommit(root, sha));
+    if (full === null || closed) return null;
+    spelled.set(sha, full);
+
+    const remembered = past.get(full);
+    if (remembered !== undefined) {
+      past.delete(full);
+      past.set(full, remembered);
+      return remembered;
+    }
+
+    const inFlight = building.get(full);
+    if (inFlight !== undefined) return inFlight;
+
+    const build = buildGraphAt(root, full, pool).then((built) => {
+      building.delete(full);
+      // A session torn down mid build has closed the pool this parsed with,
+      // and a graph with half its files missing is worse than no answer.
+      if (built === null || closed) return null;
+      past.set(full, built.graph);
+      for (const oldest of past.keys()) {
+        if (past.size <= MAX_PAST_GRAPHS) break;
+        past.delete(oldest);
+      }
+      return built.graph;
+    });
+    building.set(full, build);
+    return build;
+  }
+
+  /**
    * Record what a finished run produced, and put it where it survives a restart.
    *
    * The answers are held in memory before they are written, and a write that
@@ -278,6 +338,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       return status;
     },
     refreshGit,
+    graphAt,
 
     explanations: () => explanations,
     explainRun: () => run,
@@ -337,6 +398,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
         run.finishedAt = Date.now();
       }
       clearInterval(poll);
+      // A build still running settles into nothing: `closed` is checked before
+      // it stores, so clearing here cannot be undone by a late arrival.
+      past.clear();
+      building.clear();
+      spelled.clear();
       updater.close();
       await Promise.allSettled([watcher.close(), pool.close()]);
     },
