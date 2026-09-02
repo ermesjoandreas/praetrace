@@ -55,8 +55,8 @@ import {
   type ViewResponse,
 } from './api';
 import { HookBanner } from './HookBanner';
-import { AgentStatus } from './AgentStatus';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
+import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
@@ -99,39 +99,17 @@ function linksOf(entry: SymbolLinks | 'gone' | undefined): SymbolLinks | null {
 }
 
 /**
- * The three bases the server accepts, and the words each one gets. One list
- * because three things read it — the picker, the chip and the View menu — and
- * they must never disagree about what a base is called or which is in force.
- */
-const GIT_BASES = [
-  { value: 'HEAD', option: 'uncommitted', chip: 'HEAD', menu: 'Compare against uncommitted changes' },
-  { value: 'HEAD~1', option: '+ last commit', chip: 'HEAD~1', menu: 'Compare against the last commit too' },
-  { value: 'branch', option: 'whole branch', chip: 'the branch', menu: 'Compare against the whole branch' },
-] as const;
-
-/**
  * The ring on a box that is part of the selection. It sits on the node wrapper
  * rather than on the box, because the box surface already carries three signals
  * of its own — just written, just asked about, and its git badge — and being
- * picked is the one of them the user is holding themselves.
+ * picked is the one of them the user is holding themselves. An outline, not a
+ * shadow: nothing that does not float casts one, and the radius has to be the
+ * box's own or the ring shows a different corner from the thing it rings.
  */
-const PICKED_STYLE: CSSProperties = { boxShadow: '0 0 0 2px var(--accent)', borderRadius: '7px' };
-
-/**
- * GitHub's own git-branch glyph. Drawn rather than written because every tool a
- * developer already uses draws this one, and a control that says "git" without
- * it reads as a text field rather than as the thing they know.
- */
-function BranchIcon() {
-  return (
-    <svg className="git-icon" viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M9.5 3.25a2.25 2.25 0 1 1 3 2.122V6A2.5 2.5 0 0 1 10 8.5H6a1 1 0 0 0-1 1v1.128a2.251 2.251 0 1 1-1.5 0V5.372a2.25 2.25 0 1 1 1.5 0v1.836A2.493 2.493 0 0 1 6 7h4a1 1 0 0 0 1-1v-.628A2.25 2.25 0 0 1 9.5 3.25Zm-6 0a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0Zm8.25-.75a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5ZM4.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z"
-      />
-    </svg>
-  );
-}
+const PICKED_STYLE: CSSProperties = {
+  outline: '2px solid var(--vsc-accent)',
+  borderRadius: 'var(--vsc-radius)',
+};
 
 interface AgentMessage {
   type: 'agent';
@@ -182,7 +160,6 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
-  const [baseOpen, setBaseOpen] = useState(false);
   /** Where the right-click menu is, and what was under the cursor. */
   const [contextAt, setContextAt] = useState<{ x: number; y: number; node: string | null } | null>(null);
   /**
@@ -312,7 +289,6 @@ export function App() {
     }
   }, []);
 
-  const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
   const [hookInstalled, setHookInstalled] = useState<boolean | null>(null);
@@ -620,22 +596,6 @@ export function App() {
    * there is no tag at all; the moment there are two, every box says which.
    */
   const mixedProject = (view?.languages.length ?? 0) > 1;
-
-  useEffect(() => {
-    if (!baseOpen) return;
-    const away = (event: globalThis.MouseEvent) => {
-      if (!baseMenu.current?.contains(event.target as Node)) setBaseOpen(false);
-    };
-    const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key === 'Escape') setBaseOpen(false);
-    };
-    document.addEventListener('mousedown', away);
-    document.addEventListener('keydown', escape);
-    return () => {
-      document.removeEventListener('mousedown', away);
-      document.removeEventListener('keydown', escape);
-    };
-  }, [baseOpen]);
 
   // Re-read whenever the graph moves: the server polls git every 3 seconds and
   // publishes when it changes, and that push is what bumps the revision.
@@ -1447,6 +1407,11 @@ export function App() {
   const unreadable = languageReport?.unreadable ?? [];
   const unreadableFiles = unreadable.reduce((total, kind) => total + kind.files, 0);
   const unreadableDetail = unreadable.map((kind) => `${kind.files} ${kind.extension}`);
+  /** One shape for the two places that say it: the status bar and the welcome. */
+  const unreadableReport =
+    unreadableFiles > 0
+      ? { files: unreadableFiles, kinds: unreadableDetail, reads: languageReport?.reads ?? [] }
+      : null;
 
   const dropFilter = (key: string) => {
     const next = new URLSearchParams(window.location.search);
@@ -1717,44 +1682,13 @@ export function App() {
 
   return (
     <div className="app">
+      {/* The menu bar is the title bar, and the project is its title. What the
+          project *is* — branch, connection, languages, who is looking — is
+          status, and reads at the bottom of the page the way it does in an
+          editor. */}
       <MenuBar
         menus={menus}
-        trailing={
-          <>
-            <AgentStatus last={agentCalls[0] ?? null} total={agentCalls.length} />
-            <span className={live ? 'live live-on' : 'live'} title={live ? 'watching' : 'disconnected'} />
-            <ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />
-            {languageSummary !== '' && (
-              <span className="langs" title="What codemap parsed here, biggest first">
-                {languageSummary}
-              </span>
-            )}
-            {unreadableFiles > 0 && (
-              <span
-                className="unread"
-                title={`codemap cannot read ${unreadableFiles} ${
-                  unreadableFiles === 1 ? 'file' : 'files'
-                } here (${unreadableDetail.join(
-                  ', ',
-                )}), so nothing they declare or import is in this graph. It reads ${(
-                  languageReport?.reads ?? []
-                ).join(', ')}.`}
-              >
-                {/* What it means first, then what it was: the row is scanned
-                    left to right, and three kinds are what fits. The rest are in
-                    the tooltip, with a count so a fourth cannot hide behind the
-                    truncation. */}
-                not read: {unreadableDetail.slice(0, 3).join(' · ')}
-                {unreadableDetail.length > 3 ? ` +${unreadableDetail.length - 3}` : ''}
-              </span>
-            )}
-            <span className="counts">
-              {view
-                ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
-                : ''}
-            </span>
-          </>
-        }
+        trailing={<ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />}
       />
 
       <nav className="breadcrumb">
@@ -1762,7 +1696,7 @@ export function App() {
           <span className="trail">
             {view?.trail.map((step, index) => (
               <span key={step.scope}>
-                {index > 0 && <span className="sep">/</span>}
+                {index > 0 && <i className="codicon codicon-chevron-right sep" aria-hidden="true" />}
                 <button
                   type="button"
                   onClick={() => goToScope(step.scope)}
@@ -1778,85 +1712,32 @@ export function App() {
             <span className="focus-label">focus</span>
             <code>{focus}</code>
             <span className="depth">
-              <button type="button" onClick={() => changeDepth(depth - 1)} disabled={depth <= 1}>
-                −
+              <button
+                type="button"
+                onClick={() => changeDepth(depth - 1)}
+                disabled={depth <= 1}
+                title="One hop fewer"
+                aria-label="One hop fewer"
+              >
+                <i className="codicon codicon-remove" aria-hidden="true" />
               </button>
               <span>
                 {depth} hop{depth === 1 ? '' : 's'}
               </span>
-              <button type="button" onClick={() => changeDepth(depth + 1)} disabled={depth >= MAX_DEPTH}>
-                +
+              <button
+                type="button"
+                onClick={() => changeDepth(depth + 1)}
+                disabled={depth >= MAX_DEPTH}
+                title="One hop more"
+                aria-label="One hop more"
+              >
+                <i className="codicon codicon-add" aria-hidden="true" />
               </button>
             </span>
             <button type="button" className="clear" onClick={() => goToScope('')}>
               clear
             </button>
           </span>
-        )}
-
-        {git !== null && (
-          // One control, two segments: what the tree is compared against, and
-          // how much differs. The shape is VS Code's status bar and GitHub's
-          // branch button, because a developer can already read it — and the
-          // dropdown is this app's own menu, so one gesture does not get two
-          // visual languages.
-          <div className="git" ref={baseMenu}>
-            <button
-              type="button"
-              className={baseOpen ? 'git-base git-base-open' : 'git-base'}
-              aria-expanded={baseOpen}
-              onClick={() => setBaseOpen((was) => !was)}
-              title={`Comparing against ${git.base}${git.branch === null ? '' : ` on ${git.branch}`}`}
-            >
-              <BranchIcon />
-              <span className="git-base-name">{git.branch ?? baseLabel}</span>
-              <span className="git-caret" aria-hidden="true">▾</span>
-            </button>
-
-            <button
-              type="button"
-              className="git-count"
-              aria-pressed={onlyChanged}
-              onClick={toggleChanged}
-              // The count is git's, not the diagram's: it includes deleted files
-              // that have no box and untracked files the graph never parses.
-              title={
-                onlyChanged
-                  ? `Showing only what differs from ${git.base} — click to show every file`
-                  : `${git.changed === 1 ? '1 path differs' : `${git.changed} paths differ`} from ${
-                      git.base
-                    } — click to show only those`
-              }
-            >
-              <span className="git-count-n">{git.changed}</span>
-              <span className="git-count-word">changed vs {baseLabel}</span>
-            </button>
-
-            {/* The base is a session setting, not a view. One server watches one
-                project and runs git against one base, so a base carried in the
-                URL would promise a per-tab comparison nothing can honour — the
-                same reason the project root is not in the URL either. */}
-            {baseOpen && (
-              <div className="menu-drop git-drop">
-                <div className="git-drop-head">Compare against</div>
-                {GIT_BASES.map((base) => (
-                  <button
-                    key={base.value}
-                    type="button"
-                    className="menu-item"
-                    onClick={() => {
-                      setBaseOpen(false);
-                      changeBase(base.value);
-                    }}
-                  >
-                    <span className="menu-check">{git.requested === base.value ? '✓' : ''}</span>
-                    <span className="menu-label">{base.option}</span>
-                    <kbd>{base.chip}</kbd>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
         )}
 
         {/* What is being followed, and — the part that matters — whether the
@@ -1878,7 +1759,7 @@ export function App() {
             {!reach.settled
               ? 'following…'
               : `${reach.label} — ${reach.usedBy} in, ${reach.uses} out`}
-            <span aria-hidden="true">✕</span>
+            <i className="codicon codicon-close" aria-hidden="true" />
           </button>
         )}
 
@@ -1890,7 +1771,7 @@ export function App() {
             onClick={() => dropFilter(chip.key)}
             title={`Stop filtering by ${chip.label}`}
           >
-            {chip.label} <span aria-hidden="true">✕</span>
+            {chip.label} <i className="codicon codicon-close" aria-hidden="true" />
           </button>
         ))}
 
@@ -1920,8 +1801,16 @@ export function App() {
           className="panel-toggle"
           onClick={() => setShowSidebar((was) => !was)}
           title={showSidebar ? 'Hide panel (⌘B)' : 'Show panel (⌘B)'}
+          aria-label={showSidebar ? 'Hide panel' : 'Show panel'}
         >
-          {showSidebar ? '⇥' : '⇤'}
+          <i
+            className={
+              showSidebar
+                ? 'codicon codicon-layout-sidebar-right'
+                : 'codicon codicon-layout-sidebar-right-off'
+            }
+            aria-hidden="true"
+          />
         </button>
       </nav>
 
@@ -1938,26 +1827,6 @@ export function App() {
         />
       )}
 
-      {(showWelcome || emptyProject) && (
-        <Welcome
-          onOpen={(path) => {
-            setShowWelcome(false);
-            handleSwitchProject(path);
-          }}
-          onSearch={() => {
-            setShowWelcome(false);
-            setSearchOpen(true);
-          }}
-          hookInstalled={hookInstalled}
-          onInstallHook={() => void installHook().then(() => setRevision((n) => n + 1))}
-          onClose={showWelcome ? () => setShowWelcome(false) : null}
-          unreadable={
-            unreadableFiles > 0
-              ? { files: unreadableFiles, kinds: unreadableDetail, reads: languageReport?.reads ?? [] }
-              : null
-          }
-        />
-      )}
 
       <main>
         {/* Left is time, right is structure: what the agent is doing, beside
@@ -1974,6 +1843,22 @@ export function App() {
         )}
 
         <div className="canvas">
+        {(showWelcome || emptyProject) && (
+          <Welcome
+            onOpen={(path) => {
+              setShowWelcome(false);
+              handleSwitchProject(path);
+            }}
+            onSearch={() => {
+              setShowWelcome(false);
+              setSearchOpen(true);
+            }}
+            hookInstalled={hookInstalled}
+            onInstallHook={() => void installHook().then(() => setRevision((n) => n + 1))}
+            onClose={showWelcome ? () => setShowWelcome(false) : null}
+            unreadable={unreadableReport}
+          />
+        )}
         {error !== null && <div className="error">{error}</div>}
         {error === null && view?.nodes.length === 0 && (
           <div className="empty">Nothing to show here.</div>
@@ -2017,7 +1902,9 @@ export function App() {
             zoomable
             // A frame is the size of everything it encloses, so in the minimap it
             // would be a solid block over the boxes it is meant to sit behind.
-            nodeColor={(node) => (node.type === 'frame' ? 'transparent' : '#3a414d')}
+            // A token, not a hex: React Flow paints this as an inline fill, so
+            // the page's own rule for minimap nodes cannot reach it.
+            nodeColor={(node) => (node.type === 'frame' ? 'transparent' : 'var(--vsc-border-input)')}
           />
         </ReactFlow>
         </div>
@@ -2056,6 +1943,24 @@ export function App() {
           />
         )}
       </main>
+
+      <StatusBar
+        git={git}
+        baseLabel={baseLabel}
+        onlyChanged={onlyChanged}
+        onToggleChanged={toggleChanged}
+        onChangeBase={changeBase}
+        live={live}
+        counts={
+          view
+            ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
+            : ''
+        }
+        languages={languageSummary}
+        unreadable={unreadableReport}
+        agentLast={agentCalls[0] ?? null}
+        agentTotal={agentCalls.length}
+      />
     </div>
   );
 }

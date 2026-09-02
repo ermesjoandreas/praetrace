@@ -35,7 +35,7 @@ export function ProjectMenu({ root, onSwitch }: { root: string; onSwitch: (path:
     <div className="project" ref={container}>
       <button type="button" className="project-button" onClick={() => setOpen((was) => !was)} title={root}>
         {shorten(root)}
-        <span className="chevron">▾</span>
+        <i className="codicon codicon-chevron-down chevron" aria-hidden="true" />
       </button>
 
       {open && (

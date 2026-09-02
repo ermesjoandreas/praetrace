@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { searchGraph, type SearchHit } from './api';
 
 interface SearchPaletteProps {
@@ -6,6 +6,21 @@ interface SearchPaletteProps {
   onPick: (hit: SearchHit, inEditor: boolean) => void;
   onClose: () => void;
 }
+
+/**
+ * The Quick Pick icon for each kind. A function wears the method glyph, as it
+ * does in VS Code's own outline; a type alias has no glyph of its own and
+ * borrows the struct.
+ */
+const KIND_ICON: Record<SearchHit['kind'], string> = {
+  file: 'symbol-file',
+  class: 'symbol-class',
+  interface: 'symbol-interface',
+  function: 'symbol-function',
+  method: 'symbol-method',
+  field: 'symbol-field',
+  type: 'symbol-structure',
+};
 
 export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
   const [query, setQuery] = useState('');
@@ -57,6 +72,8 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
     }
   };
 
+  const needle = query.trim().toLowerCase();
+
   return (
     <div className="palette-backdrop" onMouseDown={onClose}>
       <div className="palette" onMouseDown={(event) => event.stopPropagation()}>
@@ -70,32 +87,97 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
 
         {hits.length > 0 && (
           <ul>
-            {hits.map((hit, index) => (
-              <li key={`${hit.path}-${hit.name}-${index}`}>
-                <button
-                  type="button"
-                  className={index === active ? 'hit hit-active' : 'hit'}
-                  onMouseEnter={() => setActive(index)}
-                  onClick={(event) => onPick(hit, event.shiftKey)}
-                >
-                  <span className={`hit-name kind-${hit.kind}`}>
-                    {hit.kind === 'function' ? `${hit.name}()` : hit.name}
-                  </span>
-                  <span className="hit-path">{hit.path}</span>
-                  <span className="hit-kind">{hit.kind}</span>
-                </button>
-              </li>
-            ))}
+            {hits.map((hit, index) => {
+              // A file was matched on its whole path and its name is the tail
+              // of that path, so one match colours both; a symbol was matched
+              // on its name alone.
+              const isFile = hit.kind === 'file';
+              const positions = matchedAt(isFile ? hit.path : hit.name, needle);
+              const nameOffset = isFile ? hit.path.length - hit.name.length : 0;
+
+              return (
+                <li key={`${hit.path}-${hit.name}-${index}`}>
+                  <button
+                    type="button"
+                    className={index === active ? 'hit hit-active' : 'hit'}
+                    onMouseEnter={() => setActive(index)}
+                    onClick={(event) => onPick(hit, event.shiftKey)}
+                  >
+                    <i
+                      className={`codicon codicon-${KIND_ICON[hit.kind]} hit-icon kind-${hit.kind}`}
+                      role="img"
+                      aria-label={hit.kind}
+                      title={hit.kind}
+                    />
+                    <span className={`hit-name kind-${hit.kind}`}>
+                      {coloured(hit.name, positions, nameOffset)}
+                      {hit.kind === 'function' ? '()' : ''}
+                    </span>
+                    <span className="hit-path">{isFile ? coloured(hit.path, positions) : hit.path}</span>
+                    {index === active && (
+                      <span className="hit-keys">
+                        <kbd>↵</kbd> show in graph <kbd>⇧↵</kbd> open in editor
+                      </span>
+                    )}
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         )}
-
-        <footer>
-          <span>↑↓ move</span>
-          <span>↵ show in graph</span>
-          <span>⇧↵ open in editor</span>
-          <span>esc close</span>
-        </footer>
       </div>
     </div>
   );
+}
+
+/**
+ * Where the query's characters landed, mirroring the server's matcher: a
+ * contiguous run if there is one, else the leftmost subsequence. Empty when
+ * the query is not a subsequence, which only happens between a keystroke and
+ * the results that answer it.
+ */
+function matchedAt(haystack: string, needle: string): number[] {
+  if (needle === '') return [];
+  const text = haystack.toLowerCase();
+  const exact = text.indexOf(needle);
+  if (exact !== -1) return Array.from({ length: needle.length }, (_, i) => exact + i);
+
+  const positions: number[] = [];
+  let at = 0;
+  for (const character of needle) {
+    const found = text.indexOf(character, at);
+    if (found === -1) return [];
+    positions.push(found);
+    at = found + 1;
+  }
+  return positions;
+}
+
+/**
+ * The text with its matched characters wrapped, the way Quick Pick colours a
+ * match rather than painting behind it. Runs are grouped so a contiguous hit
+ * is one span, not one per letter.
+ */
+function coloured(text: string, positions: number[], offset = 0): ReactNode[] {
+  const marked = new Set(positions.map((position) => position - offset));
+  const out: ReactNode[] = [];
+  let run = '';
+  let runMarked = false;
+
+  const flush = (key: number) => {
+    if (run === '') return;
+    out.push(runMarked ? <span className="hit-match" key={key}>{run}</span> : run);
+    run = '';
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const isMarked = marked.has(i);
+    if (isMarked !== runMarked) {
+      flush(i);
+      runMarked = isMarked;
+    }
+    run += text[i];
+  }
+  flush(text.length);
+  return out;
 }

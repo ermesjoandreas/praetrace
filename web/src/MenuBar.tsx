@@ -72,7 +72,9 @@ export function MenuBar({ menus, trailing }: { menus: Menu[]; trailing?: ReactNo
                     item.run?.();
                   }}
                 >
-                  <span className="menu-check">{item.checked ? '✓' : ''}</span>
+                  <span className="menu-check">
+                    {item.checked && <i className="codicon codicon-check" aria-hidden="true" />}
+                  </span>
                   <span className="menu-label">{item.label}</span>
                   {item.shortcut !== undefined && <kbd>{item.shortcut}</kbd>}
                 </button>

@@ -169,8 +169,18 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 data.onFollowFile(file, !data.followed);
               }}
             />
-            <button type="button" className="box-open" title="Open in editor" onClick={open(1)}>
-              ↗
+            {/* A codicon rather than a glyph: it is monochrome and takes
+                currentColor, so it dims and lights with the button instead of
+                sitting on it as a sticker. The label lives in aria-label now
+                that the button has no text. */}
+            <button
+              type="button"
+              className="box-open"
+              title="Open in editor"
+              aria-label="Open in editor"
+              onClick={open(1)}
+            >
+              <i className="codicon codicon-link-external" aria-hidden="true" />
             </button>
           </>
         )}

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AgentCall, ChangeEntry } from './api';
+import { Section } from './Section';
 
 /**
  * What the agent is doing, right now, and where.
@@ -139,14 +140,16 @@ export function Activity({
   const live = all.length > 0 && now - (all[0]?.at ?? 0) < 6000;
 
   return (
-    <aside className="activity">
-      <header className="activity-head">
-        <h2>Activity</h2>
+    <Section
+      title="Activity"
+      className="activity"
+      status={
         <span className={live ? 'activity-live activity-live-on' : 'activity-live'}>
+          {live && <i className="codicon codicon-circle-filled" aria-hidden="true" />}
           {live ? 'live' : 'idle'}
         </span>
-      </header>
-
+      }
+    >
       {rows.length === 0 ? (
         <p className="activity-empty">
           Nothing yet. Every edit lands here, and so does anything an agent asks codemap
@@ -172,7 +175,12 @@ export function Activity({
                     }
                   >
                     <td className="activity-when">{when(row.at, now)}</td>
-                    <td className="activity-mark">{row.kind === 'change' ? '✎' : '⌕'}</td>
+                    <td className="activity-mark">
+                      <i
+                        className={`codicon codicon-${row.kind === 'change' ? 'edit' : 'search'}`}
+                        aria-hidden="true"
+                      />
+                    </td>
                     <td className="activity-what">
                       {row.kind === 'change' ? nameOf(row.target) : row.tool}
                       {row.times > 1 && <span className="activity-times">×{row.times}</span>}
@@ -207,6 +215,6 @@ export function Activity({
           )}
         </div>
       )}
-    </aside>
+    </Section>
   );
 }

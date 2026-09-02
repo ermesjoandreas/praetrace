@@ -8,13 +8,14 @@ maintain a mental model of the codebase. This tool rebuilds that model continuou
 
 Runs entirely on localhost. Single user. No auth, no cloud, no multi-tenancy.
 
-Three files carry the project, and they answer different questions:
+Four files carry the project, and they answer different questions:
 
 | | |
 |---|---|
 | **CLAUDE.md** (this file) | What to know before touching the code, and what to build next |
 | [VISION.md](VISION.md) | Where the product is going, and why anyone would want it |
 | [DECISIONS.md](DECISIONS.md) | Why things are the way they are, and what has been proven |
+| [DESIGN.md](DESIGN.md) | How it looks — VS Code Dark Modern, and it is binding for `web/` |
 
 When this file and VISION.md disagree, this one wins. VISION.md is the destination;
 this one is the road.
@@ -130,7 +131,8 @@ leak into the server layer, or rendering concerns into the graph engine.
 - **Runtime:** Node.js
 - **Parsing:** `tree-sitter` with `tree-sitter-typescript` grammar
 - **Server:** Fastify (HTTP + websocket)
-- **Frontend:** React + Vite, React Flow for diagram rendering
+- **Frontend:** React + Vite, React Flow for diagram rendering, Codicons for every
+  icon. The look is VS Code Dark Modern, specified in DESIGN.md.
 - **Desktop:** Tauri, with a Node sidecar. SQLite for local state.
 
 ## Non-negotiable design decisions
@@ -292,7 +294,11 @@ web/              the browser page (Vite, built into dist/web)
   src/HookBanner.tsx   offers to install the hook, showing the file first
   src/Welcome.tsx      shown when there is nothing to draw, and from Help
   src/MenuBar.tsx      the menus
-  src/SearchPalette.tsx  ⌘K
+  src/StatusBar.tsx    branch, git base, counts, languages, the agent — what the
+                       project is, read at the bottom the way an editor does it
+  src/Section.tsx      one side bar section: 22px header, a chevron that folds it,
+                       actions hidden until hover. Every panel region is one
+  src/SearchPalette.tsx  ⌘K, in Quick Pick's shape
   src/AgentStatus.tsx  what the agent is doing, and how long ago
   src/layout.ts   dagre layout; React Flow does not place nodes itself
   src/api.ts      fetch + the shared types, imported from src/
@@ -426,14 +432,18 @@ governs membership.
 
 ## The rest of the page
 
-- **The menu bar.** Two rows: menus and project on top, breadcrumb and view controls
+- **The status bar.** 22px at the bottom, and it is where the git control moved to:
+  branch, the base picker, the changed-count toggle, then boxes and files, the
+  language summary and the agent's connection. Every item is information or runs
+  something.
+- **The menu bar.** Two rows: menus and project on top, breadcrumb and filter chips
   below. **Nothing in a menu is decoration.** Every item runs something the app can
   already do, and an item that needs a selection is greyed with the reason in its
   tooltip rather than silently doing nothing.
 - **The welcome screen.** Shown from Help, and when there is genuinely nothing to
-  draw. **Not** when a filter emptied the view — it covers the viewport and only
-  carries a close button when opened deliberately, so showing it there buried the
-  menu bar and the "filtered" chip that were the only ways back out.
+  draw. **Not** when a filter emptied the view. It covers the canvas, not the
+  window — it used to position against the viewport and painted over the menu bar,
+  both side bars and the status bar, which buried every way back out.
 - **Search.** ⌘K searches the **whole graph**, not the slice on screen. Matching is
   a subsequence, the way editors do it: `gst` finds `GraphStore`.
 - **Call edges** are off by default (`?calls=1`). When on, a call edge *replaces* the

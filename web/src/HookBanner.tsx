@@ -39,7 +39,10 @@ export function HookBanner({ root }: { root: string }) {
   return (
     <div className="hook-banner">
       <div className="hook-row">
-        <span className="hook-dot" />
+        <i
+          className={`codicon ${status.unreadable ? 'codicon-error' : 'codicon-warning'} hook-icon`}
+          aria-hidden="true"
+        />
         <span>
           {status.unreadable
             ? 'This project has a settings.json that is not valid JSON, so the hook cannot be merged in.'
@@ -51,8 +54,14 @@ export function HookBanner({ root }: { root: string }) {
             {reviewing ? 'Hide' : 'Review…'}
           </button>
         )}
-        <button type="button" className="hook-dismiss" onClick={() => setDismissed(true)}>
-          Dismiss
+        <button
+          type="button"
+          className="hook-dismiss"
+          onClick={() => setDismissed(true)}
+          title="Dismiss"
+          aria-label="Dismiss"
+        >
+          <i className="codicon codicon-close" aria-hidden="true" />
         </button>
       </div>
 

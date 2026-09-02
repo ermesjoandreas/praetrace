@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { Section } from './Section';
 import {
   fetchDetail,
   openInEditor,
@@ -149,19 +150,46 @@ export function Sidebar({
     };
   }, [selected, revision, root]);
 
+  // The header's actions are what the panel head used to spell out as words:
+  // go to it on the diagram, open it in the editor. Only a file has anywhere
+  // in an editor to open.
+  const actions =
+    detail === null ? null : (
+      <>
+        <button
+          type="button"
+          title={detail.kind === 'file' ? 'Focus on this file' : 'Open this folder'}
+          aria-label={detail.kind === 'file' ? 'Focus on this file' : 'Open this folder'}
+          onClick={() => onFocus(detail.path, detail.kind)}
+        >
+          <i className="codicon codicon-target" aria-hidden="true" />
+        </button>
+        {detail.kind === 'file' && (
+          <button
+            type="button"
+            title="Open in editor"
+            aria-label="Open in editor"
+            onClick={() => void openInEditor(root, detail.path, 1)}
+          >
+            <i className="codicon codicon-go-to-file" aria-hidden="true" />
+          </button>
+        )}
+      </>
+    );
+
   return (
     <aside className="sidebar">
       <Followed following={following} onSelect={onSelect} onFocus={onFocus} />
 
-      <section className="panel">
+      <Section title="Detail" className="panel" actions={actions}>
         {detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
         ) : detail.kind === 'file' ? (
-          <FileView detail={detail} root={root} onSelect={onSelect} onFocus={onFocus} />
+          <FileView detail={detail} root={root} onSelect={onSelect} />
         ) : (
-          <FolderView detail={detail} onSelect={onSelect} onFocus={onFocus} />
+          <FolderView detail={detail} onSelect={onSelect} />
         )}
-      </section>
+      </Section>
 
       <GroupList groups={groups} onDecide={onDecide} onSelect={onSelect} editor={groupEditor} />
     </aside>
@@ -172,25 +200,15 @@ function FileView({
   detail,
   root,
   onSelect,
-  onFocus,
 }: {
   detail: Extract<Detail, { kind: 'file' }>;
   root: string;
   onSelect: (target: string) => void;
-  onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
   return (
     <>
       <header className="panel-head">
         <h2 title={detail.path}>{detail.path}</h2>
-        <div className="panel-actions">
-          <button type="button" onClick={() => onFocus(detail.path, 'file')}>
-            Focus
-          </button>
-          <button type="button" onClick={() => void openInEditor(root, detail.path, 1)}>
-            Open
-          </button>
-        </div>
         <p className="panel-meta">
           {detail.symbols.length} symbols · {detail.lineCount} lines
         </p>
@@ -223,21 +241,14 @@ function FileView({
 function FolderView({
   detail,
   onSelect,
-  onFocus,
 }: {
   detail: Extract<Detail, { kind: 'folder' }>;
   onSelect: (target: string) => void;
-  onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
   return (
     <>
       <header className="panel-head">
         <h2 title={detail.path}>{detail.path}</h2>
-        <div className="panel-actions">
-          <button type="button" onClick={() => onFocus(detail.path, 'folder')}>
-            Open
-          </button>
-        </div>
         <p className="panel-meta">{detail.files.length} files</p>
       </header>
 
@@ -310,29 +321,45 @@ function GroupList({
   if (live.length === 0 && !canCreate) return null;
 
   return (
-    <section className="groups">
-      <h2>Groups</h2>
-
-      {canCreate &&
-        (editor.creating ? (
-          <input
-            autoFocus
-            value={newName}
-            placeholder={`Name a group of ${editor.selection.files.length} files`}
-            onChange={(event) => setNewName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && newName.trim() !== '') {
-                editor.onCreate(newName.trim());
-                setNewName('');
-              } else if (event.key === 'Escape') editor.onCreating(false);
-            }}
-            onBlur={() => editor.onCreating(false)}
-          />
-        ) : (
-          <button type="button" className="group-title" onClick={() => editor.onCreating(true)}>
-            group the {editor.selection.boxes} selected boxes
-          </button>
-        ))}
+    <Section
+      title="Groups"
+      className="groups"
+      // "Group selection" from a menu puts a form in this body; a folded body
+      // would swallow it.
+      expandWhen={editor.creating}
+      actions={
+        // Greyed with the reason rather than absent: a header action that comes
+        // and goes with the selection would never be found.
+        <button
+          type="button"
+          disabled={!canCreate}
+          title={
+            canCreate
+              ? `Group the ${editor.selection.boxes} selected boxes`
+              : 'Select two or more boxes on the diagram to draw a group'
+          }
+          aria-label="Group the selected boxes"
+          onClick={() => editor.onCreating(true)}
+        >
+          <i className="codicon codicon-add" aria-hidden="true" />
+        </button>
+      }
+    >
+      {canCreate && editor.creating && (
+        <input
+          autoFocus
+          value={newName}
+          placeholder={`Name a group of ${editor.selection.files.length} files`}
+          onChange={(event) => setNewName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && newName.trim() !== '') {
+              editor.onCreate(newName.trim());
+              setNewName('');
+            } else if (event.key === 'Escape') editor.onCreating(false);
+          }}
+          onBlur={() => editor.onCreating(false)}
+        />
+      )}
 
       <ul>
         {live.map((group) => {
@@ -396,16 +423,22 @@ function GroupList({
                   {/* Rejecting is remembering that this is not a group, so the
                       next scan stops proposing it. Nothing proposed a drawn
                       group, so there is nothing to remember: it is deleted. */}
-                  <button
-                    type="button"
-                    className="group-drop"
-                    title={manual ? 'Delete this group' : 'Not a group'}
-                    onClick={() =>
-                      manual ? editor.onDelete(group) : onDecide(group, group.name ?? '', 'rejected')
-                    }
-                  >
-                    ✕
-                  </button>
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="group-drop"
+                      title={manual ? 'Delete this group' : 'Not a group'}
+                      aria-label={manual ? 'Delete this group' : 'Not a group'}
+                      onClick={() =>
+                        manual ? editor.onDelete(group) : onDecide(group, group.name ?? '', 'rejected')
+                      }
+                    >
+                      <i
+                        className={`codicon codicon-${manual ? 'trash' : 'close'}`}
+                        aria-hidden="true"
+                      />
+                    </button>
+                  </span>
                 </div>
               )}
 
@@ -415,8 +448,9 @@ function GroupList({
                 // and they were sharing a name and therefore a stylesheet.
                 <div className="group-palette">
                   {/* The only other way out is the swatch that opened it, and
-                      the ✕ next to it deletes the group. Two ✕ that far apart
-                      in meaning need the harmless one to be the near one. */}
+                      the drop button next to it rejects or deletes the group.
+                      Two ways out that far apart in meaning need the harmless
+                      one to be the near one. */}
                   <span className="group-palette-label">Colour</span>
                   <div className="group-swatches">
                     {(Object.keys(COLOR_LABELS) as GroupColor[]).map((color) => (
@@ -434,9 +468,10 @@ function GroupList({
                     type="button"
                     className="group-palette-close"
                     title="Done"
+                    aria-label="Done"
                     onClick={() => setEditing(null)}
                   >
-                    ✕
+                    <i className="codicon codicon-close" aria-hidden="true" />
                   </button>
                 </div>
               )}
@@ -448,24 +483,27 @@ function GroupList({
                       <button type="button" title={file} onClick={() => onSelect(file)}>
                         {file}
                       </button>
-                      <button
-                        type="button"
-                        className="group-drop"
-                        disabled={group.files.length <= 2}
-                        title={
-                          group.files.length <= 2
-                            ? 'A group needs at least two files'
-                            : `Take ${file} out of this group`
-                        }
-                        onClick={() =>
-                          editor.onMembers(
-                            group,
-                            group.files.filter((member) => member !== file),
-                          )
-                        }
-                      >
-                        ✕
-                      </button>
+                      <span className="row-actions">
+                        <button
+                          type="button"
+                          className="group-drop"
+                          disabled={group.files.length <= 2}
+                          title={
+                            group.files.length <= 2
+                              ? 'A group needs at least two files'
+                              : `Take ${file} out of this group`
+                          }
+                          aria-label={`Take ${file} out of this group`}
+                          onClick={() =>
+                            editor.onMembers(
+                              group,
+                              group.files.filter((member) => member !== file),
+                            )
+                          }
+                        >
+                          <i className="codicon codicon-close" aria-hidden="true" />
+                        </button>
+                      </span>
                     </span>
                   ) : (
                     <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
@@ -491,7 +529,7 @@ function GroupList({
           );
         })}
       </ul>
-    </section>
+    </Section>
   );
 }
 
@@ -547,7 +585,7 @@ function Followed({
   if (links.length === 0 && gone.length === 0 && files.length === 0) return null;
 
   // What a press can come back with words for. A gone symbol keeps its row and
-  // its ✕, but the graph cannot resolve it and the server drops it, so counting
+  // its close button, but the graph cannot resolve it and the server drops it, so counting
   // it here would promise an answer that is not coming.
   const answerable = links.length + files.length;
 
@@ -558,9 +596,11 @@ function Followed({
   const sayNothingYet = explanations.size > 0 || running || lastRun !== null || failure !== null;
 
   return (
-    <section className="followed">
+    <Section title="Following" className="followed">
       <div className="followed-one">
-        <div className="followed-head">
+        {/* Not a followed-head: that is a row, and this is the section's one
+            button, which wants the whole width. */}
+        <div className="explain-bar">
           <button
             type="button"
             className="explain-run"
@@ -619,24 +659,28 @@ function Followed({
               {symbol.filePath}
             </span>
             <StateChip state={explanations.get(symbol.id)?.state} />
-            {explanations.has(symbol.id) && (
+            <span className="row-actions">
+              {explanations.has(symbol.id) && (
+                <button
+                  type="button"
+                  className="followed-drop"
+                  title="Forget this reading — it is removed from .codemap/explain.json"
+                  aria-label="Forget this reading"
+                  onClick={() => following.onForget(symbol.id)}
+                >
+                  <i className="codicon codicon-trash" aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="button"
                 className="followed-drop"
-                title="Forget this reading — it is removed from .codemap/explain.json"
-                onClick={() => following.onForget(symbol.id)}
+                title="Stop following this one"
+                aria-label="Stop following this one"
+                onClick={() => following.onDrop(symbol.id)}
               >
-                ⌫
+                <i className="codicon codicon-close" aria-hidden="true" />
               </button>
-            )}
-            <button
-              type="button"
-              className="followed-drop"
-              title="Stop following this one"
-              onClick={() => following.onDrop(symbol.id)}
-            >
-              ✕
-            </button>
+            </span>
           </div>
 
           <Reading
@@ -680,24 +724,28 @@ function Followed({
                 be read rather than to be traced through. */}
             <span className="followed-edge">file</span>
             <StateChip state={explanations.get(file.path)?.state} />
-            {explanations.has(file.path) && (
+            <span className="row-actions">
+              {explanations.has(file.path) && (
+                <button
+                  type="button"
+                  className="followed-drop"
+                  title="Forget this reading — it is removed from .codemap/explain.json"
+                  aria-label="Forget this reading"
+                  onClick={() => following.onForget(file.path)}
+                >
+                  <i className="codicon codicon-trash" aria-hidden="true" />
+                </button>
+              )}
               <button
                 type="button"
                 className="followed-drop"
-                title="Forget this reading — it is removed from .codemap/explain.json"
-                onClick={() => following.onForget(file.path)}
+                title="Stop holding this file"
+                aria-label="Stop holding this file"
+                onClick={() => following.onDrop(file.path)}
               >
-                ⌫
+                <i className="codicon codicon-close" aria-hidden="true" />
               </button>
-            )}
-            <button
-              type="button"
-              className="followed-drop"
-              title="Stop holding this file"
-              onClick={() => following.onDrop(file.path)}
-            >
-              ✕
-            </button>
+            </span>
           </div>
 
           <Reading
@@ -707,7 +755,7 @@ function Followed({
           />
         </div>
       ))}
-    </section>
+    </Section>
   );
 }
 
@@ -745,14 +793,17 @@ function Lost({
         <span className="explain-state" data-state="orphaned" title={STATE_WORDS.orphaned}>
           gone
         </span>
-        <button
-          type="button"
-          className="followed-drop"
-          title="Stop following this one"
-          onClick={onDrop}
-        >
-          ✕
-        </button>
+        <span className="row-actions">
+          <button
+            type="button"
+            className="followed-drop"
+            title="Stop following this one"
+            aria-label="Stop following this one"
+            onClick={onDrop}
+          >
+            <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+        </span>
       </div>
 
       <p className="followed-none">

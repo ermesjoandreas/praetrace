@@ -1,146 +1,508 @@
+/* VS Code Dark Modern. Chrome is darker than the canvas, separation is a 1px
+   line, one accent; every other colour carries a meaning (git, diagnostics,
+   symbol kind). Component rules use these names and never a hex of their own. */
 :root {
-  --bg: #14161a;
-  --panel: #1b1e24;
-  --line: #2a2f38;
-  --line-strong: #3a414d;
-  --text: #e6e8ec;
-  --muted: #8b93a1;
-  --accent: #7aa2f7;
-  --folder: #e0af68;
-  --focus: #9ece6a;
+  --vsc-chrome-bg: #181818;
+  --vsc-editor-bg: #1F1F1F;
+  --vsc-widget-bg: #202020;
+  --vsc-quickinput-bg: #222222;
+  --vsc-input-bg: #313131;
+
+  --vsc-border: #2B2B2B;
+  --vsc-border-input: #3C3C3C;
+  --vsc-border-menu: #454545;
+
+  --vsc-fg: #CCCCCC;
+  --vsc-fg-strong: #FFFFFF;
+  --vsc-fg-muted: #9D9D9D;
+  --vsc-fg-disabled: #868686;
+  --vsc-fg-placeholder: #989898;
+
+  --vsc-accent: #0078D4;
+  --vsc-accent-hover: #026EC1;
+  --vsc-link: #4DAAFC;
+
+  --vsc-error: #F85149;
+  --vsc-warning: #CCA700;
+  --vsc-info: #3794FF;
+
+  --vsc-git-added: #2EA043;
+  --vsc-git-modified: #E2C08D;
+  --vsc-git-deleted: #F85149;
+  --vsc-git-untracked: #73C991;
+
+  --vsc-list-hover: #2A2D2E;
+  --vsc-list-active-sel: #04395E;
+  --vsc-list-inactive-sel: #37373D;
+
+  --vsc-badge-bg: #616161;
+  --vsc-badge-fg: #F8F8F8;
+  --vsc-toolbar-hover: #FFFFFF11;
+
+  --vsc-scrollbar: #79797966;
+  --vsc-scrollbar-hover: #646464B3;
+
+  /* Dark+ syntax colours, because a symbol kind is what they name. */
+  --vsc-sym-class: #4EC9B0;
+  --vsc-sym-interface: #4EC9B0;
+  --vsc-sym-type: #4EC9B0;
+  --vsc-sym-function: #DCDCAA;
+  --vsc-sym-method: #DCDCAA;
+  --vsc-sym-field: #9CDCFE;
+
+  --vsc-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --vsc-font-mono: Menlo, Consolas, "Droid Sans Mono", monospace;
+  --vsc-font-size: 13px;
+  --vsc-font-size-sm: 11px;
+  --vsc-font-size-status: 12px;
+
+  --vsc-radius: 2px;
+  --vsc-radius-widget: 5px;
+  /* Floating layers only: menus, the palette, tooltips, toasts. */
+  --vsc-shadow-widget: 0 2px 8px rgba(0, 0, 0, 0.36);
+
+  --vsc-row-h: 22px;
+  --vsc-statusbar-h: 22px;
+  --vsc-titlebar-h: 35px;
 }
+
+/* --- base ------------------------------------------------------------------ */
 
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
+/* Nothing outside a region scrolls. body alone was not enough: the document was
+   one pixel taller than the window and html still answered for it. */
+html, body { overflow: hidden; }
 
+/* The page itself never scrolls; every region that can overflow scrolls on its
+   own. 1.5 is the prose line-height; rows and bars pin their own. */
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+  overflow: hidden;
+  background: var(--vsc-chrome-bg);
+  color: var(--vsc-fg);
+  font: var(--vsc-font-size)/1.5 var(--vsc-font-ui);
 }
+
+/* Nearly every button here is text or an icon on nothing. The few that are
+   real buttons put their chrome back on. */
+button {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+button:disabled { cursor: default; }
+
+input {
+  height: 26px;
+  padding: 0 6px;
+  font: inherit;
+  color: var(--vsc-fg);
+  background: var(--vsc-input-bg);
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+}
+input::placeholder { color: var(--vsc-fg-placeholder); }
+/* Focus is the border turning the accent — drawn as an inset outline so the
+   box does not change size and nothing glows. */
+input:focus { outline: 1px solid var(--vsc-accent); outline-offset: -1px; }
+
+kbd { font-family: inherit; }
+code, pre { font-family: var(--vsc-font-mono); }
+code { font-size: var(--vsc-font-size-status); }
+
+/* Never removed. Controls ring outside themselves; a list row rings inside its
+   own edge so neighbouring rows do not clip it. */
+:focus-visible { outline: 1px solid var(--vsc-accent); outline-offset: 2px; }
+
+::-webkit-scrollbar { width: 14px; height: 14px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--vsc-scrollbar); border-radius: 0; }
+::-webkit-scrollbar-thumb:hover { background: var(--vsc-scrollbar-hover); }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* --- shared controls ------------------------------------------------------- */
+
+/* An icon button: a 22px square around a 16px codicon, and nothing until it is
+   hovered. inline-flex, not inline-block — an inline icon sits on the text
+   baseline and pushes the line box past 22. */
+.section-actions button,
+.row-actions button,
+.panel-toggle,
+.depth button,
+.hook-dismiss,
+.welcome-close,
+.group-editor-close,
+.group-palette-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+}
+.section-actions button:hover:not(:disabled),
+.row-actions button:hover:not(:disabled),
+.panel-toggle:hover,
+.depth button:hover:not(:disabled),
+.hook-dismiss:hover,
+.welcome-close:hover,
+.group-editor-close:hover,
+.group-palette-close:hover {
+  background: var(--vsc-toolbar-hover);
+  color: var(--vsc-fg);
+}
+.section-actions button:disabled,
+.row-actions button:disabled,
+.depth button:disabled {
+  color: var(--vsc-fg-disabled);
+}
+
+/* Buttons proper: 26px, 12px sides. Primary is the accent under white text;
+   secondary is a hairline around the ordinary text colour. */
+.explain-run,
+.explain-stop,
+.hook-actions button,
+.group-delete {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg);
+  white-space: nowrap;
+}
+.explain-stop:hover,
+.hook-actions button:hover:not(:disabled),
+.group-delete:hover {
+  background: var(--vsc-toolbar-hover);
+}
+.explain-run,
+.hook-actions .hook-install {
+  background: var(--vsc-accent);
+  border-color: transparent;
+  color: var(--vsc-fg-strong);
+}
+.explain-run:hover:not(:disabled),
+.hook-actions .hook-install:hover:not(:disabled) {
+  background: var(--vsc-accent-hover);
+}
+.explain-run:disabled,
+.hook-actions .hook-install:disabled {
+  opacity: 0.4;
+}
+
+/* A keycap, where VS Code draws one: beside a search box and on a Quick Pick
+   row. Menus and the welcome list print their keys as plain muted text. */
+.search-open kbd,
+.hit-keys kbd {
+  display: inline-block;
+  padding: 0 4px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-toolbar-hover);
+  color: var(--vsc-fg);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 14px;
+}
+
+/* Everything that floats, and only what floats, casts a shadow. The error is
+   a notification; the empty-view message is plain text on the canvas. */
+.menu-drop,
+.project-menu,
+.palette,
+.group-editor,
+.error {
+  background: var(--vsc-widget-bg);
+  border: 1px solid var(--vsc-border-menu);
+  border-radius: var(--vsc-radius-widget);
+  box-shadow: var(--vsc-shadow-widget);
+}
+
+/* --- the shell ------------------------------------------------------------- */
 
 .app { display: flex; flex-direction: column; height: 100%; }
 
-header {
+main { display: flex; flex: 1; min-height: 0; }
+
+/* React Flow needs a sized, positioned container of its own. The canvas is the
+   one region that sits on the editor colour; everything around it is chrome. */
+.canvas { position: relative; flex: 1; min-width: 0; background: var(--vsc-editor-bg); }
+
+/* --- menu bar -------------------------------------------------------------- */
+
+.menubar {
   display: flex;
   align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  height: var(--vsc-titlebar-h);
+  flex: none;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  user-select: none;
 }
 
-.brand { font-weight: 600; letter-spacing: 0.02em; }
+.menubar-brand { font-weight: 600; padding-right: 8px; }
 
-.root, .counts, .langs, code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--muted);
+.menu { position: relative; }
+
+.menu-title {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--vsc-radius);
+  cursor: default;
 }
+.menu-title:hover, .menu-title-open { background: var(--vsc-toolbar-hover); }
 
-.counts { margin-left: auto; }
-
-/* What the project is written in. Nothing about it is clickable, so it is given
-   no border, no background and no hover — the things that would make it look
-   like the controls it sits between. It is also the piece of this row that
-   yields when the window is narrow: the bar does not wrap, and a language list
-   is the one thing here that still reads once it has been cut short. */
-.langs {
+.menubar-trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
   min-width: 0;
+}
+
+/* The project path, in a browser tab where there is no picker. */
+.root {
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* --- menus ----------------------------------------------------------------- */
+
+.menu-drop {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 40;
+  min-width: 250px;
+  padding: 4px 0;
+}
+/* Opens upward, for a menu whose anchor sits on the bottom edge of the page. */
+.menu-drop-up { top: auto; bottom: calc(100% + 3px); }
+
+/* The right-click menu wears the menu bar chrome, but is placed against the
+   window rather than under a title. */
+.context-menu { position: fixed; top: auto; left: auto; z-index: 60; min-width: 216px; }
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  cursor: default;
   white-space: nowrap;
 }
+.menu-item:hover:not(:disabled) { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+.menu-item:disabled { color: var(--vsc-fg-disabled); }
+.menu-item:focus-visible { outline-offset: -1px; }
+.menu-sep { height: 27px; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--vsc-border-menu); }
 
-/* Source the tool cannot read. Amber because it is the one thing in this row
-   that is a gap rather than a fact, and quiet because it is still not an error:
-   the project is fine, the diagram is just not all of it. Never shrinks — it is
-   the last thing that should be squeezed out of a narrow window. */
-.unread {
-  flex: none;
-  border: 1px solid #5c4c28;
-  border-radius: 5px;
-  background: #241f14;
-  color: var(--folder);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  padding: 1px 8px;
-  white-space: nowrap;
-}
-
-.trail { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.trail .sep { color: var(--muted); margin: 0 2px; }
-.focus-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-
-.trail button, .depth button {
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  padding: 2px 7px;
-}
-.trail button:hover:not(:disabled), .depth button:hover:not(:disabled) {
-  border-color: var(--line-strong);
-}
-.trail button:disabled { color: var(--text); cursor: default; }
-.depth button:disabled { color: var(--line-strong); cursor: default; }
-
-.depth {
+.menu-check {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  margin-left: 8px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 1px 4px;
+  justify-content: center;
+  flex: none;
+  width: 16px;
 }
-.depth > span { color: var(--muted); font-size: 11px; padding: 0 4px; }
+.menu-label { flex: 1; }
+.menu-item kbd { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
+.menu-item:hover:not(:disabled) kbd { color: var(--vsc-fg-strong); }
+
+/* --- breadcrumb row -------------------------------------------------------- */
+
+.breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--vsc-row-h);
+  flex: none;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.breadcrumb .search-open { margin-left: auto; }
+
+.trail { display: flex; align-items: center; min-width: 0; }
+.trail .sep { color: var(--vsc-fg-disabled); padding: 0 2px; }
+
+.trail button {
+  height: 22px;
+  padding: 0 4px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+}
+.trail button:hover:not(:disabled) { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+/* The crumb you are standing on. */
+.trail button:disabled { color: var(--vsc-fg); }
+
+.focus-label { color: var(--vsc-fg-muted); padding: 0 4px; }
+.trail code { color: var(--vsc-fg); }
+
+.depth { display: inline-flex; align-items: center; margin-left: 4px; }
+.depth > span { color: var(--vsc-fg-muted); padding: 0 2px; font-variant-numeric: tabular-nums; }
 
 .clear { margin-left: 4px; }
 
-main { display: flex; flex: 1; min-height: 0; }
+/* Chips. Following is a mode, and wears the accent like every other mode here;
+   a filter is a count of what was left out, and wears the badge grey. */
+.symbol-chip, .filter-chip, .missed {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: 18px;
+  padding: 0 2px 0 6px;
+  border-radius: var(--vsc-radius);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+  white-space: nowrap;
+}
+.symbol-chip { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+.symbol-chip:hover { background: var(--vsc-accent-hover); }
+/* A symbol nothing links to has to say so; an empty diagram cannot. */
+.symbol-chip-empty, .filter-chip { background: var(--vsc-badge-bg); color: var(--vsc-badge-fg); }
+.symbol-chip-empty:hover, .filter-chip:hover { background: var(--vsc-fg-disabled); }
 
-/* React Flow needs a sized, positioned container of its own. */
-.canvas { position: relative; flex: 1; min-width: 0; }
+/* Changes that landed off screen: the "just written" colour, so the badge and
+   the box it leads to are read as one fact. */
+.missed {
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--vsc-git-modified) 40%, transparent);
+  color: var(--vsc-git-modified);
+}
+.missed:hover { border-color: var(--vsc-git-modified); }
+
+.filter-clear {
+  height: 22px;
+  padding: 0 4px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.filter-clear:hover { color: var(--vsc-fg); }
+
+.search-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  /* The row is 22px including its bottom line, so the control is two short. */
+  height: 20px;
+  padding: 0 4px 0 8px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+}
+.search-open:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+
+/* --- the canvas ------------------------------------------------------------ */
 
 .error, .empty {
   position: absolute;
   z-index: 5;
-  top: 16px;
-  left: 16px;
-  padding: 10px 14px;
-  border-radius: 6px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  top: 8px;
+  left: 8px;
+  padding: 6px 10px;
+  font-size: var(--vsc-font-size-status);
 }
-.error { border: 1px solid #5a2b2b; background: #241a1a; color: #f2a2a2; }
-.empty { border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+.error { color: var(--vsc-error); }
+.empty { color: var(--vsc-fg-muted); }
 
-/* --- boxes --- */
+.react-flow {
+  background: var(--vsc-editor-bg);
+  --xy-background-pattern-color: var(--vsc-border);
+}
+
+.react-flow__handle { opacity: 0; }
+
+/* React Flow ships a shadow under its controls and light-theme fills for the
+   minimap and attribution; all of it is overridden rather than tinted. */
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--vsc-chrome-bg);
+  border-bottom: 1px solid var(--vsc-border);
+  color: var(--vsc-fg);
+  fill: var(--vsc-fg);
+}
+.react-flow__controls-button:hover { background: var(--vsc-list-hover); }
+
+.react-flow__minimap {
+  background: var(--vsc-chrome-bg);
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  overflow: hidden;
+}
+.react-flow__minimap-mask { fill: color-mix(in srgb, var(--vsc-editor-bg) 70%, transparent); }
+.react-flow__minimap-node { fill: var(--vsc-border-input); stroke: none; }
+
+.react-flow__attribution { background: transparent; }
+.react-flow__attribution a { color: var(--vsc-fg-disabled); }
+
+/* --- edges ----------------------------------------------------------------- */
+
+/* An import is structure and stays a hairline. The relationships a class
+   diagram cares about take the colour of the thing they connect: inheritance
+   and implementation the class colour, a call the function colour, a has-a the
+   field colour. */
+.react-flow__edge.edge-imports .react-flow__edge-path { stroke: var(--vsc-border-menu); }
+.react-flow__edge.edge-extends .react-flow__edge-path { stroke: var(--vsc-sym-class); stroke-width: 1.6; }
+.react-flow__edge.edge-implements .react-flow__edge-path { stroke: var(--vsc-sym-interface); stroke-dasharray: 4 3; }
+/* Calls replace the import between the same pair, so they read as the stronger
+   relationship rather than a second line on the same path. */
+.react-flow__edge.edge-calls .react-flow__edge-path { stroke: var(--vsc-sym-function); stroke-width: 1.6; }
+.react-flow__edge.edge-associates .react-flow__edge-path { stroke: var(--vsc-sym-field); stroke-width: 1.6; }
+.react-flow__edge-text { fill: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+.react-flow__edge-textbg { fill: var(--vsc-editor-bg); }
+
+/* --- boxes ----------------------------------------------------------------- */
 
 .box {
   width: 240px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  background: var(--panel);
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-widget-bg);
   overflow: hidden;
   cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--vsc-font-mono);
 }
-.box:hover { border-color: var(--accent); }
+.box:hover { border-color: var(--vsc-border-menu); }
+/* Selection is the accent on the edge, never a fill over the members. */
+.react-flow__node-box.selected .box { border-color: var(--vsc-accent); }
 
+/* 7 + 18 + 7 and a 1px rule: with the box's top border and the 4px the member
+   list starts with, this is HEADER_HEIGHT in layout.ts. The line-height is
+   pinned so nothing above it can move the number. */
 .box-title {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 7px 10px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--line);
+  font-size: var(--vsc-font-size-status);
+  line-height: 18px;
+  border-bottom: 1px solid var(--vsc-border);
 }
 
 /* rtl puts the ellipsis at the front, so a long path keeps its filename. */
@@ -154,41 +516,30 @@ main { display: flex; flex: 1; min-height: 0; }
   text-align: left;
 }
 
-/* What a box is written in: text, no badge and no colour of its own. Four
+/* What a box is written in: text, no badge and no colour of its own. Three
    signals already compete on this surface — amber for just written, blue for
-   the agent just asked, the git letter and the selection ring — and a fifth
-   with any weight to it would cost the four that are about right now. */
-.box-lang {
-  flex: none;
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  opacity: 0.75;
-}
+   the agent just asked, and the git letter — and a fourth with any weight to
+   it would cost the three that are about right now. */
+.box-lang { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
 
+/* Inside the 18px title line, so 16px with no padding at all. */
 .box-open {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
   opacity: 0;
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  padding: 2px 4px;
 }
 .box:hover .box-open { opacity: 1; }
-.box-open:hover { color: var(--accent); background: var(--line); }
+.box-open:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
 
 /* Holding a whole file, to be explained later. It wears the square a member row
-   wears, because it is the same act on a bigger thing — one mark, one meaning,
-   wherever it appears. Hidden until the box is under the cursor, like the
-   editor link beside it: a field of squares across forty boxes would cost the
-   four signals this surface already carries.
-
-   Sized in fixed pixels and never in ems. HEADER_HEIGHT in layout.ts is what
-   dagre places every box from and what every group frame is drawn around, so a
+   wears, because it is the same act on a bigger thing. Sized in fixed pixels
+   and never in ems: HEADER_HEIGHT is what dagre places every box from, so a
    control that grew this row would move frames on the other side of the
    diagram. 15px sits inside the 18px the title text already occupies. */
 .box-follow {
@@ -196,10 +547,6 @@ main { display: flex; flex: 1; min-height: 0; }
   position: relative;
   width: 15px;
   height: 15px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  cursor: pointer;
 }
 .box-follow::after {
   content: '';
@@ -208,39 +555,61 @@ main { display: flex; flex: 1; min-height: 0; }
   left: 4px;
   width: 6px;
   height: 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: 2px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
   opacity: 0;
 }
 .box:hover .box-follow::after { opacity: 1; }
-.box-follow:hover::after { border-color: var(--accent); }
-/* Once the file is on the list the mark stays, hover or not. Hiding it would
-   leave the list with no presence on the diagram at all, and this control is
-   deliberately the one that dims nothing — so the mark is all it has to say
-   with. */
+.box-follow:hover::after { border-color: var(--vsc-accent); }
+/* Once the file is on the list the mark stays, hover or not: it is all the list
+   has to say with on the diagram. */
 .box-follow[aria-pressed='true']::after {
   opacity: 1;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--vsc-accent);
+  border-color: var(--vsc-accent);
 }
 
-.box-folder .box-title { color: var(--folder); }
-.box-folder { border-color: #6b5730; }
+/* A folder stands for many files; the weight is the only thing that says so. */
+.box-folder .box-title-text { font-weight: 600; }
 
-.box-focused { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
-.box-focused .box-title { color: var(--focus); }
+/* Focused is the box you navigated to: brighter, the way an active tab is white
+   rather than coloured. Not the accent — that is the picked ring — and not blue,
+   which is the agent's. Three states, three different things on the surface. */
+.box-focused { border-color: var(--vsc-fg-strong); }
+.box-focused .box-title-text { color: var(--vsc-fg-strong); }
 
-.box-external { opacity: 0.55; border-style: dashed; }
+.box-external { opacity: 0.6; border-style: dashed; }
 
-.box-meta { padding: 5px 10px; font-size: 11px; color: var(--muted); }
+.box-meta { padding: 5px 10px; font-size: var(--vsc-font-size-sm); color: var(--vsc-fg-muted); }
 
+/* Git is a coloured letter beside the name, the way an explorer decorates a
+   file: never a box, never a tint over the surface. */
+.box-git {
+  flex: none;
+  min-width: 10px;
+  font-size: var(--vsc-font-size-sm);
+  line-height: 16px;
+  text-align: center;
+  color: var(--vsc-fg-muted);
+}
+.box-git-modified  { color: var(--vsc-git-modified); }
+.box-git-added     { color: var(--vsc-git-added); }
+.box-git-deleted   { color: var(--vsc-git-deleted); }
+.box-git-untracked { color: var(--vsc-git-untracked); }
+.box-git-renamed   { color: var(--vsc-git-untracked); }
+.box-git-count     { color: var(--vsc-git-modified); }
+
+/* --- members --------------------------------------------------------------- */
+
+/* ROW_HEIGHT in layout.ts. UML compartments, not list rows: 17px, and every
+   control inside is sized to fit that line. */
 .box-members { margin: 0; padding: 4px 0; list-style: none; }
 .member {
   display: flex;
   align-items: baseline;
-  font-size: 11px;
+  font-size: var(--vsc-font-size-sm);
   line-height: 17px;
-  color: var(--muted);
+  color: var(--vsc-fg-muted);
 }
 
 .member-name {
@@ -248,35 +617,28 @@ main { display: flex; flex: 1; min-height: 0; }
   flex: 1;
   min-width: 0;
   padding: 0 4px 0 0;
-  background: transparent;
-  border: none;
   color: inherit;
-  cursor: pointer;
-  font: inherit;
   line-height: 17px;
-  text-align: left;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.member-name:hover { background: var(--line); color: var(--accent); }
+.member-name:hover { background: var(--vsc-list-hover); }
+
+/* A symbol is coloured by what it is, in the colours an editor already taught. */
+.member-class .member-name, .member-interface .member-name { color: var(--vsc-sym-class); }
+.member-type .member-name { color: var(--vsc-sym-type); }
+.member-function .member-name, .member-method .member-name { color: var(--vsc-sym-function); }
+.member-field .member-name { color: var(--vsc-sym-field); }
 
 /* Its own hit area, the full height of the row so nine pixels of mark is not
-   also nine pixels of target. Hidden until the row is under the cursor: twelve
-   members across forty boxes would otherwise be a field of dots on a surface
-   that already carries four signals. */
+   also nine pixels of target. Hidden until the row is under the cursor. Centred
+   rather than on the baseline: an empty button has nothing to sit on. */
 .member-pick {
   flex: none;
-  /* Centred rather than left on the baseline the rest of the row aligns to: an
-     empty button has nothing to sit on, and ROW_HEIGHT in layout.ts is what
-     dagre and every group frame are measured from. */
   align-self: center;
   width: 16px;
   height: 17px;
-  padding: 0;
-  background: transparent;
-  border: none;
-  cursor: pointer;
   position: relative;
 }
 .member-pick::after {
@@ -286,1530 +648,130 @@ main { display: flex; flex: 1; min-height: 0; }
   right: 5px;
   width: 6px;
   height: 6px;
-  border: 1px solid var(--line-strong);
-  border-radius: 2px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
   opacity: 0;
 }
 .member:hover .member-pick::after { opacity: 1; }
-.member-pick:hover::after { border-color: var(--accent); }
+.member-pick:hover::after { border-color: var(--vsc-accent); }
 .member-picked .member-pick::after,
 .member-related .member-pick::after {
   opacity: 1;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--vsc-accent);
+  border-color: var(--vsc-accent);
 }
 
 /* The three states of following a symbol. Everything unrelated recedes rather
    than disappearing: a box that vanished would move the layout, and the shape of
    the diagram is what you were looking at. */
-.member-picked { background: rgba(122, 162, 247, 0.16); }
-.member-picked .member-name { color: var(--text); }
-.member-related .member-name { color: var(--accent); }
+.member-picked { background: var(--vsc-list-active-sel); }
 .member-aside { opacity: 0.35; }
-
-/* Following one symbol dims everything it has no part in — the whole box when
-   nothing inside it takes part, and every edge that does not run between two
-   boxes that do. Receding rather than hiding: a box that vanished would move the
-   layout, and the shape of the diagram is what you were reading.
-
-   Not so faint it stops being a map. You still need to see where the lit thing
-   sits relative to everything else, which is the only reason it is on a diagram
-   rather than in a list. */
 .box-aside { opacity: 0.28; }
 .react-flow__edge.edge-aside { opacity: 0.15; }
 .react-flow__edge.edge-aside .react-flow__edge-text { opacity: 0; }
 
-.member-more { padding: 0 10px; }
-.member-class, .member-interface { color: #bb9af7; }
-.member-type { color: #7dcfff; }
-
-/* A method sits under the class that holds it, dimmer and indented, with a rule
-   down the left so a run of them reads as one class's contents rather than as
-   more top-level symbols. */
+/* A method sits under the class that holds it, indented, with a rule down the
+   left so a run of them reads as one class's contents. */
 .member-nested {
   padding-left: 4px;
   margin-left: 3px;
-  border-left: 1px solid var(--line);
+  border-left: 1px solid var(--vsc-border);
 }
-.member-field .member-name { color: #7dcfff; }
-.member-field .member-name:hover { color: var(--text); }
 
-/* UML's visibility column. Fixed width so the names line up under each other
-   rather than stepping in and out with the marker. */
+/* UML's visibility column. Fixed width so the names line up under each other. */
 .member-vis {
   flex: none;
   width: 9px;
-  color: var(--line-strong);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--vsc-fg-disabled);
   text-align: center;
 }
 
 /* The two UML type styles: static is underlined, abstract is italic. */
 .member-static .member-name { text-decoration: underline; text-underline-offset: 2px; }
 .member-abstract .member-name { font-style: italic; }
-.member-method button { color: var(--muted); }
-.member-method button:hover { color: var(--text); }
-.member-more { color: var(--line-strong); font-style: italic; }
 
-/* The overflow count was a dead label. It is the way into the rest of the file
-   now, so it has to look like something you can press. */
+.member-more { padding: 0 10px; color: var(--vsc-fg-disabled); font-style: italic; }
+
+/* The overflow count is the way into the rest of the file, so it has to look
+   like something you can press. */
 .member-expand {
   width: 100%;
-  padding: 0;
-  background: transparent;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
   font-style: italic;
   line-height: 17px;
-  text-align: left;
 }
-.member-expand:hover { color: var(--accent); }
+.member-expand:hover { color: var(--vsc-link); }
 
-/* --- edges --- */
+/* --- the two live signals -------------------------------------------------- */
 
-.react-flow__edge.edge-imports .react-flow__edge-path { stroke: #4a5162; }
-.react-flow__edge.edge-extends .react-flow__edge-path { stroke: #bb9af7; stroke-width: 1.6; }
-.react-flow__edge.edge-implements .react-flow__edge-path { stroke: #bb9af7; stroke-dasharray: 4 3; }
-.react-flow__edge-text { fill: var(--muted); font-size: 10px; }
-.react-flow__edge-textbg { fill: var(--bg); }
-
-.react-flow__handle { opacity: 0; }
-
-.react-flow__controls-button {
-  background: var(--panel);
-  border-bottom: 1px solid var(--line);
-  fill: var(--text);
-}
-.react-flow__controls-button:hover { background: var(--line); }
-.react-flow__minimap { background: var(--panel); }
-
-/* --- live updates --- */
-
-.live {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--line-strong);
-  flex: none;
-}
-.live-on { background: var(--focus); box-shadow: 0 0 6px var(--focus); }
-
-.missed {
-  border: 1px solid #6b5730;
-  background: #241f14;
-  color: var(--folder);
-  border-radius: 5px;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 9px;
-}
-.missed:hover { border-color: var(--folder); }
-
-/* A touched box pulses, then holds a warm tint long enough to be noticed. */
+/* A touched box pulses, then holds a warm tint long enough to be noticed. The
+   pulse is an outline fading out, not a shadow: nothing that sits on the
+   canvas glows. Amber is the source-control "modified" colour, so the box and
+   the badge on it agree about what just happened. */
 @keyframes box-pulse {
-  0%   { box-shadow: 0 0 0 0 rgba(224, 175, 104, 0.55); }
-  70%  { box-shadow: 0 0 0 10px rgba(224, 175, 104, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(224, 175, 104, 0); }
+  from { outline-color: color-mix(in srgb, var(--vsc-git-modified) 70%, transparent); }
+  to   { outline-color: transparent; }
 }
-
 .box-changed {
-  border-color: var(--folder);
+  border-color: var(--vsc-git-modified);
+  outline: 2px solid transparent;
+  outline-offset: 1px;
   animation: box-pulse 1.1s ease-out 2;
 }
-.box-changed .box-title { color: var(--folder); }
+.box-changed .box-title-text { color: var(--vsc-git-modified); }
+
+/* The agent reading a file, as distinct from the file changing. Blue, and not
+   the accent: this is information about the agent, not a selection. */
+@keyframes box-query {
+  from { outline-color: color-mix(in srgb, var(--vsc-info) 70%, transparent); }
+  to   { outline-color: transparent; }
+}
+.box-queried {
+  border-color: var(--vsc-info);
+  outline: 2px solid transparent;
+  outline-offset: 1px;
+  animation: box-query 1.1s ease-out 2;
+}
+.box-queried .box-title-text { color: var(--vsc-info); }
 
 @media (prefers-reduced-motion: reduce) {
-  .box-changed { animation: none; }
+  .box-changed, .box-queried { animation: none; }
 }
 
-/* React Flow's minimap and attribution ship light-theme fills that ignore the
-   container background, so they are overridden rather than merely re-coloured. */
-.react-flow__minimap {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-}
-.react-flow__minimap-mask { fill: rgba(20, 22, 26, 0.68); }
-.react-flow__minimap-node { fill: var(--line-strong); stroke: none; }
-
-.react-flow__attribution { background: transparent; }
-.react-flow__attribution a { color: var(--line-strong); }
-
-/* --- project picker (desktop only) --- */
-
-.project { position: relative; }
-
-.project-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  padding: 3px 8px;
-}
-.project-button:hover { border-color: var(--line-strong); }
-.chevron { color: var(--muted); font-size: 9px; }
-
-.project-menu {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
-  min-width: 240px;
-  max-width: 420px;
-  padding: 4px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  background: var(--panel);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-}
-.project-menu button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 9px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.project-menu button:hover { background: var(--line); }
-
-.project-sep {
-  padding: 8px 9px 4px;
-  border-top: 1px solid var(--line);
-  margin-top: 4px;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-/* --- Claude Code hook installation --- */
-
-.hook-banner {
-  border-bottom: 1px solid var(--line);
-  background: #1f1c14;
-  font-size: 12px;
-}
-
-.hook-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 16px;
-  color: #d9c68f;
-}
-
-.hook-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--folder);
-  flex: none;
-}
-
-.hook-row button {
-  background: transparent;
-  border: 1px solid #5c4c28;
-  border-radius: 5px;
-  color: var(--folder);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 9px;
-}
-.hook-row button:hover { border-color: var(--folder); }
-.hook-dismiss { margin-left: auto; color: var(--muted) !important; border-color: var(--line-strong) !important; }
-
-.hook-review {
-  padding: 0 16px 12px 32px;
-  border-top: 1px solid #2b2519;
-}
-
-.hook-path {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--muted);
-  padding: 10px 0 6px;
-}
-
-.hook-review pre {
-  margin: 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  /* The hook command is one long line; wrapping shows all of it, and pre-wrap
-     still preserves the JSON indentation. */
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.hook-error {
-  margin-top: 8px;
-  color: #f2a2a2;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-}
-
-.hook-actions { display: flex; gap: 8px; margin-top: 10px; }
-.hook-actions button {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 4px 12px;
-}
-.hook-install { border-color: #5c4c28 !important; color: var(--folder) !important; }
-.hook-install:disabled { opacity: 0.5; cursor: default; }
-
-/* --- side panel --- */
-
-.panel-toggle {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 7px;
-}
-.panel-toggle:hover { color: var(--text); border-color: var(--accent); }
-
-/* --- the activity table (left) ------------------------------------------
-
-   Left is time, right is structure. The two used to share the right-hand panel,
-   which meant watching what the agent was doing cost you the detail of the very
-   thing it was touching. */
-
-.activity {
-  display: flex;
-  flex-direction: column;
-  width: 272px;
-  flex: none;
-  border-right: 1px solid var(--line);
-  background: var(--panel);
-  overflow: hidden;
-}
-
-.activity-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex: none;
-  padding: 12px 14px 8px;
-}
-.activity-head h2 {
-  margin: 0;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
-/* A dot would say "connected", which is not worth a widget. This says whether
-   anything has happened in the last few seconds, which is the question. */
-.activity-live {
-  color: var(--line-strong);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-}
-.activity-live-on { color: var(--focus); }
-.activity-live-on::before {
-  content: '●';
-  margin-right: 4px;
-  font-size: 8px;
-  vertical-align: 1px;
-}
-
-.activity-empty {
-  margin: 0;
-  padding: 4px 14px 14px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-.activity-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 10px; }
-
-.activity-table { width: 100%; border-collapse: collapse; font-size: 11px; }
-
-.activity-table tr { cursor: default; }
-.activity-write { cursor: pointer; }
-.activity-table tr:hover { background: var(--line); }
-
-.activity-table td {
-  padding: 3px 4px;
-  vertical-align: baseline;
-  white-space: nowrap;
-}
-.activity-table td:first-child { padding-left: 14px; }
-.activity-table td:last-child { padding-right: 14px; }
-
-.activity-when {
-  width: 38px;
-  color: var(--line-strong);
-  font-variant-numeric: tabular-nums;
-}
-.activity-mark { width: 12px; color: var(--muted); }
-/* A question the agent asked is not an edit, and the column that says which is
-   the one thing this table cannot afford to blur. */
-.activity-ask .activity-mark { color: var(--accent); }
-.activity-ask .activity-what { color: var(--accent); }
-
-.activity-what {
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  max-width: 118px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Where it happened. Dimmer than the name, because you scan the names and only
-   fall back to the directory when two of them look alike. */
-.activity-where {
-  color: var(--muted);
-  direction: rtl;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  max-width: 92px;
-  overflow: hidden;
-  text-align: left;
-  text-overflow: ellipsis;
-}
-
-/* The same two colours every source-control view uses, so the sign is legible
-   before the number is read. */
-/* The count a fold stands for. Quiet: it is a detail about the row, not the row. */
-.activity-times { margin-left: 5px; color: var(--line-strong); font-size: 10px; }
-
-.activity-lines { text-align: right; font-variant-numeric: tabular-nums; font-size: 10px; white-space: nowrap; }
-.activity-added { color: #9ece6a; }
-.activity-deleted { color: #f7768e; margin-left: 4px; }
-
-.activity-more {
-  margin: 6px 0 0;
-  padding: 0 14px;
-  color: var(--line-strong);
-  font-size: 10px;
-}
-
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  width: 330px;
-  flex: none;
-  border-left: 1px solid var(--line);
-  background: var(--panel);
-  overflow: hidden;
-}
-
-.panel { flex: 1; overflow-y: auto; padding: 14px 16px; min-height: 0; }
-
-/* --- what is being followed ---------------------------------------------
-
-   Above the detail panel, because it is the thing you are actively holding.
-   The diagram can only light a related symbol that is on screen, and most are
-   not, so this is where the rest of the answer lives. */
-
-.followed {
-  flex: none;
-  max-height: 45%;
-  overflow-y: auto;
-  border-bottom: 1px solid var(--line);
-  padding: 10px 16px 12px;
-  background: rgba(122, 162, 247, 0.05);
-}
-
-.followed-one + .followed-one { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
-
-.followed-head { display: flex; align-items: baseline; gap: 7px; }
-.followed-name {
-  color: var(--accent);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-}
-.followed-where {
-  flex: 1;
-  min-width: 0;
-  color: var(--line-strong);
-  direction: rtl;
-  font-size: 10px;
-  overflow: hidden;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.followed-drop {
-  background: transparent;
-  border: none;
-  color: var(--line-strong);
-  cursor: pointer;
-  font-size: 10px;
-  padding: 0 2px;
-}
-.followed-drop:hover { color: var(--text); }
-
-.followed-none { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
-
-.followed-kind {
-  margin: 9px 0 3px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-.followed-kind span { color: var(--line-strong); font-weight: 400; }
-
-.followed-rows { list-style: none; margin: 0; padding: 0; }
-.followed-rows button {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  width: 100%;
-  padding: 1px 4px;
-  margin-left: -4px;
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  text-align: left;
-}
-.followed-rows button:hover { background: var(--line); }
-.followed-symbol {
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  flex: none;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Which relationship it is. A call and an inheritance are not the same fact. */
-.followed-edge { flex: none; color: var(--line-strong); font-size: 9px; }
-.followed-file {
-  flex: 1;
-  min-width: 0;
-  color: var(--muted);
-  direction: rtl;
-  font-size: 10px;
-  overflow: hidden;
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* --- what the followed things are for ------------------------------------
-
-   A model's reading of the symbols and files being held, inside the followed
-   section rather than beside it: an explanation parted from the thing it
-   explains is how a rotted one gets believed. */
-
-/* It spends the user's quota, so it reads as a press you decided to make —
-   bordered, like the panel's other actions — never as a link you might hit
-   twice on the way past. */
-.explain-run {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 11px;
-}
-.explain-run:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.explain-run:disabled { border-color: var(--line); color: var(--line-strong); cursor: default; }
-/* A run is a minute long. The button holds its place and says so, because the
-   alternative is a screen where nothing happens and nothing to point at. */
-.explain-run[aria-busy='true'] { border-color: #4a6b8a; color: var(--accent); }
-
-/* What the last run cost. Information, not a warning — the weight of the file
-   path beside a symbol name, not of the symbol. It has to stay readable, though:
-   the whole case for showing a price instead of asking permission every time is
-   that the price is actually visible. */
-/* The answer landing. Monospace and dim: it is not the finished reading, it is
-   evidence that something is happening, and it is replaced by the parsed
-   entries the moment the run ends. */
-.explain-stream {
-  margin: 6px 0 0;
-  max-height: 160px;
-  overflow-y: auto;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-}
-
-.explain-stop {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-  padding: 2px 7px;
-}
-.explain-stop:hover { border-color: var(--accent); color: var(--text); }
-
-.explain-cost {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-/* How much of the reading still holds, set from data-state. Two grades and they
-   are not shades of one thing: drifted is grey because the words are still true
-   and merely no longer complete, stale is amber because the source moved under
-   them and they may now be false. Amber is this stylesheet's colour for a gap
-   rather than an error, which is what both are — the run succeeded; the code
-   went on without it. Orphaned is dashed and grey, the way an out-of-scope box
-   and an unaccepted group already are: still here, no longer derived from
-   anything. */
-.explain-state {
-  flex: none;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  color: var(--muted);
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  line-height: 14px;
-  padding: 0 5px;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-/* The only state worth no attention at all, so it is given none. The panel is
-   better off rendering nothing for it; this is what it costs if it does. */
-.explain-state[data-state='current']  { border-color: transparent; color: var(--line-strong); }
-.explain-state[data-state='drifted']  { color: var(--muted); }
-.explain-state[data-state='stale']    { border-color: #5c4c28; background: #241f14; color: var(--folder); }
-.explain-state[data-state='orphaned'] { border-style: dashed; color: var(--muted); }
-.explain-state[data-state='unknown']  { border-style: dashed; color: var(--muted); }
-
-/* The answer, and the only prose in this panel: not monospace, and a step
-   brighter than the metadata around it, because it is the thing you opened the
-   panel to read rather than something you scan past. */
-.explain-short {
-  margin: 5px 0 0;
-  color: var(--text);
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-/* The fuller reading, folded away until asked for. The rule down the left is
-   the one a method wears under its class: it belongs to the line above it. */
-.explain-long {
-  margin: 6px 0 0;
-  padding-left: 8px;
-  border-left: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.6;
-}
-
-/* Inline at the end of the short text, so it reads as the sentence carrying on
-   rather than as a control with business of its own. */
-.explain-more {
-  background: transparent;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-  padding: 0 0 0 4px;
-}
-.explain-more:hover { text-decoration: underline; text-underline-offset: 2px; }
-
-/* Dimmed, never deleted: a rewritten function is exactly when the old reading
-   is worth having, and most of it is usually still right. Put on the block that
-   holds the text — the state chip stays at full strength, since it is the part
-   that says why the rest is faded. */
-.explain-stale .explain-short,
-.explain-stale .explain-long { opacity: 0.55; }
-
-/* A failed run names its reason. 'claude' is not on the PATH and a login that
-   expired are both fixable and "failed" is not, so the detail is given room:
-   bordered like the canvas error, monospace because it is usually a path or a
-   line of stderr, and wrapping because the useful ones are long. */
-.explain-failed {
-  margin: 6px 0 0;
-  padding: 6px 8px;
-  border: 1px solid #5a2b2b;
-  border-radius: 5px;
-  background: #241a1a;
-  color: #f2a2a2;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  line-height: 1.5;
-  word-break: break-word;
-}
-
-.panel-empty {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
-
-.panel-head h2 {
-  margin: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 13px;
-  font-weight: 600;
-  word-break: break-all;
-}
-
-.panel-actions { display: flex; gap: 6px; margin: 10px 0 6px; }
-.panel-actions button {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 11px;
-}
-.panel-actions button:hover { border-color: var(--accent); color: var(--accent); }
-
-.panel-meta { margin: 0 0 4px; color: var(--muted); font-size: 11px; }
-
-.panel-list { margin-top: 16px; }
-.panel-list h3 {
-  margin: 0 0 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.panel-list ul { margin: 0; padding: 0; list-style: none; }
-
-.panel-list button {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 19px;
-  padding: 0 6px;
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.panel-list button:hover { background: var(--line); color: var(--accent); }
-
-.sym-class, .sym-interface { color: #bb9af7; }
-.sym-type { color: #7dcfff; }
-.sym-line { color: var(--line-strong); flex: none; }
-
-/* --- change feed --- */
-
-.feed {
-  flex: none;
-  max-height: 44%;
-  overflow-y: auto;
-  border-top: 1px solid var(--line);
-  padding: 12px 16px 16px;
-}
-.feed h2 {
-  margin: 0 0 8px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.feed ol { margin: 0; padding: 0; list-style: none; }
-.feed li { display: flex; gap: 8px; padding: 3px 0; }
-.feed time {
-  flex: none;
-  color: var(--line-strong);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  line-height: 18px;
-}
-.feed-files { display: flex; flex-direction: column; min-width: 0; }
-.feed-files button {
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 18px;
-  padding: 0 4px;
-  text-align: left;
-  direction: rtl;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.feed-files button:hover { background: var(--line); color: var(--accent); }
-
-/* --- search palette --- */
-
-.search-open {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 9px;
-}
-.search-open:hover { border-color: var(--accent); color: var(--text); }
-.search-open kbd {
-  border: 1px solid var(--line-strong);
-  border-radius: 3px;
-  font-family: inherit;
-  font-size: 10px;
-  padding: 0 4px;
-}
-
-.calls-toggle {
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 10px;
-}
-.calls-toggle:hover { border-color: var(--accent); }
-.calls-on { border-color: var(--focus); color: var(--focus); }
-
-.palette-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  justify-content: center;
-  padding-top: 14vh;
-  background: rgba(10, 11, 13, 0.55);
-}
-
-.palette {
-  width: min(640px, 92vw);
-  max-height: 66vh;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--line-strong);
-  border-radius: 9px;
-  background: var(--panel);
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
-  overflow: hidden;
-}
-
-.palette input {
-  border: none;
-  border-bottom: 1px solid var(--line);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: 14px;
-  outline: none;
-  padding: 14px 16px;
-}
-.palette input::placeholder { color: var(--line-strong); }
-
-.palette ul { margin: 0; padding: 6px; list-style: none; overflow-y: auto; }
-
-.hit {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 5px;
-  cursor: pointer;
-  font: inherit;
-  padding: 5px 10px;
-  text-align: left;
-}
-.hit-active { background: var(--line); }
-
-.hit-name {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--text);
-  flex: none;
-}
-.kind-class, .kind-interface { color: #bb9af7; }
-.kind-type { color: #7dcfff; }
-.kind-file { color: var(--accent); }
-
-.hit-path {
-  flex: 1;
-  min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  direction: rtl;
-  text-align: left;
-}
-.hit-kind { flex: none; font-size: 10px; color: var(--line-strong); }
-
-.palette footer {
-  display: flex;
-  gap: 14px;
-  padding: 8px 16px;
-  border-top: 1px solid var(--line);
-  font-size: 10px;
-  color: var(--line-strong);
-}
-
-/* Calls replace the import between the same pair, so they read as the stronger
-   relationship rather than a second line on the same path. */
-.react-flow__edge.edge-calls .react-flow__edge-path { stroke: #9ece6a; stroke-width: 1.6; }
-/* Association: a has-a, drawn apart from both the import it replaces and the
-   call edge it sits beside. */
-.react-flow__edge.edge-associates .react-flow__edge-path { stroke: #7dcfff; stroke-width: 1.6; }
-
-/* --- suggested groups --- */
+/* --- group frames ---------------------------------------------------------- */
 
+/* A frame sits behind the boxes it encloses, so its tint has to stay under
+   them: 6% of its colour as a fill, 40% as an edge — enough to tell two
+   neighbours apart, not enough to change what a box looks like. A group that
+   has chosen no colour is drawn in slate. */
 .group {
+  --group-color: 107, 115, 134;
+  position: relative;
   width: 100%;
   height: 100%;
-  border: 1px dashed var(--line-strong);
-  border-radius: 10px;
-  background: rgba(122, 162, 247, 0.035);
+  border: 1px dashed rgba(var(--group-color), 0.4);
+  border-radius: var(--vsc-radius);
+  background: rgba(var(--group-color), 0.06);
   /* The frame must never swallow a click meant for a box behind it. */
   pointer-events: none;
 }
 
-.group-accepted {
-  border-style: solid;
-  border-color: #4a5a7a;
-  background: rgba(122, 162, 247, 0.06);
-}
+/* A suggestion is dashed until someone decides. */
+.group-accepted, .group-manual, .group-locked { border-style: solid; }
 
-.group-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin: 5px 0 0 10px;
-  pointer-events: all;
-}
-
-.group-name {
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  padding: 1px 5px;
-}
-.group-accepted .group-name { color: var(--accent); }
-.group-name:hover { background: var(--line); color: var(--text); }
-
-.group-meta { color: var(--line-strong); font-size: 10px; }
-
-.group-reject {
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  color: var(--line-strong);
-  cursor: pointer;
-  font-size: 10px;
-  line-height: 1;
-  padding: 2px 4px;
-}
-.group-reject:hover { color: #f2a2a2; background: var(--line); }
-
-.group-label input {
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  outline: none;
-  padding: 2px 6px;
-  width: 190px;
-}
-
-/* React Flow sets pointer-events on the node wrapper inline; a frame must let
-   clicks through to the boxes it encloses, and only its own label catch them. */
-.react-flow__node-frame { pointer-events: none !important; }
-.group-label { pointer-events: auto; }
-
-/* --- group list in the panel --- */
-
-.groups {
-  flex: none;
-  max-height: 30%;
-  overflow-y: auto;
-  border-top: 1px solid var(--line);
-  padding: 12px 16px;
-}
-.groups h2 {
-  margin: 0 0 8px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.groups ul { margin: 0; padding: 0; list-style: none; }
-.groups li { margin-bottom: 10px; }
-
-.group-row { display: flex; align-items: center; gap: 6px; }
-.group-title {
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 12px;
-  padding: 1px 5px;
-}
-.group-title.named { color: var(--accent); }
-.group-title:hover { background: var(--line); color: var(--text); }
-.group-cohesion { color: var(--line-strong); font-size: 10px; margin-left: auto; }
-.group-drop {
-  background: transparent;
-  border: none;
-  color: var(--line-strong);
-  cursor: pointer;
-  font-size: 10px;
-  padding: 2px 3px;
-}
-.group-drop:hover { color: #f2a2a2; }
-
-.group-files { display: flex; flex-direction: column; margin-top: 2px; }
-.group-files button {
-  background: transparent;
-  border: none;
-  color: var(--line-strong);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  line-height: 16px;
-  padding: 0 5px;
-  text-align: left;
-  direction: rtl;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.group-files button:hover { color: var(--accent); background: var(--line); }
-
-.groups input {
-  background: var(--bg);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  outline: none;
-  padding: 2px 6px;
-  width: 100%;
-}
-
-/* An outer group is a container for the inner ones, so it should read as a
-   region rather than compete with them for attention. */
+/* An outer group is a container for the inner ones, so it reads as a region
+   rather than competing with them for attention. */
 .group-depth-0 {
-  border-color: #2f3542;
-  background: rgba(122, 162, 247, 0.02);
-}
-.group-depth-0 .group-name { font-size: 12px; letter-spacing: 0.06em; }
-.group-depth-1 { background: rgba(122, 162, 247, 0.05); }
-
-/* --- menu bar --- */
-
-.menubar {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 0 10px;
-  height: 34px;
-  flex: none;
-  border-bottom: 1px solid var(--line);
-  background: var(--panel);
-  user-select: none;
+  border-color: rgba(var(--group-color), 0.35);
+  background: rgba(var(--group-color), 0.045);
 }
 
-.menubar-brand {
-  font-weight: 600;
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  padding-right: 12px;
+/* Drawn by a person, not found in the imports. A second line inside the first
+   says "decided" without a shadow, while the label says "by hand" — a frame
+   that looked derived would claim an authority the graph never gave it. */
+.group-manual {
+  outline: 1px solid rgba(var(--group-color), 0.4);
+  outline-offset: -3px;
 }
-
-.menu { position: relative; }
-
-.menu-title {
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--text);
-  cursor: default;
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 9px;
-}
-.menu-title:hover, .menu-title-open { background: var(--line); }
-
-/* The right-click menu wears the menu bar chrome, but is placed against the
-   window rather than under a title. */
-.context-menu { position: fixed; top: auto; left: auto; z-index: 60; min-width: 216px; }
-
-.menu-drop {
-  position: absolute;
-  top: calc(100% + 3px);
-  left: 0;
-  z-index: 40;
-  min-width: 250px;
-  padding: 4px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  background: var(--panel);
-  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.5);
-}
-
-.menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--text);
-  cursor: default;
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 8px;
-  text-align: left;
-}
-.menu-item:hover:not(:disabled) { background: var(--accent); color: #101216; }
-.menu-item:disabled { color: var(--line-strong); }
-.menu-sep { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 8px; }
-
-.menu-check { width: 10px; flex: none; font-size: 10px; }
-.menu-label { flex: 1; }
-.menu-item kbd {
-  border: none;
-  color: var(--muted);
-  font-family: inherit;
-  font-size: 11px;
-}
-.menu-item:hover:not(:disabled) kbd { color: #101216; }
-
-.menubar-trailing {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-left: auto;
-}
-
-/* --- breadcrumb row --- */
-
-.breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 6px 14px;
-  flex: none;
-  border-bottom: 1px solid var(--line);
-  background: var(--bg);
-}
-.breadcrumb .search-open { margin-left: auto; }
-
-.filter-chip {
-  background: #241f14;
-  border: 1px solid #5c4c28;
-  border-radius: 5px;
-  color: var(--folder);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 9px;
-}
-/* Following a symbol. Blue rather than the filters amber, because it narrows
-   nothing — everything is still drawn, some of it just receded. */
-.symbol-chip {
-  background: rgba(122, 162, 247, 0.12);
-  border: 1px solid rgba(122, 162, 247, 0.45);
-  border-radius: 5px;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 9px;
-}
-.symbol-chip:hover { border-color: var(--accent); }
-.symbol-chip span { margin-left: 5px; opacity: 0.7; }
-/* A symbol nothing links to has to say so; an empty diagram cannot. */
-.symbol-chip-empty { background: transparent; border-color: var(--line-strong); color: var(--muted); }
-
-.filter-chip span { margin-left: 5px; opacity: 0.7; }
-.filter-chip:hover { border-color: var(--folder); }
-
-.filter-clear {
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 4px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-.filter-clear:hover { color: var(--text); }
-
-/* --- welcome --- */
-
-.welcome {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
-  overflow-y: auto;
-  background: var(--bg);
-}
-
-.welcome-inner { position: relative; width: min(920px, 92vw); padding: 8vh 24px 40px; }
-
-.welcome-close {
-  position: absolute;
-  top: 6vh;
-  right: 18px;
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 3px 8px;
-}
-.welcome-close:hover { color: var(--text); border-color: var(--accent); }
-
-.welcome h1 { margin: 0; font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
-.welcome-sub { margin: 6px 0 40px; color: var(--muted); font-size: 14px; }
-
-/* Sits between the strapline and the actions, because on a project of nothing
-   but unreadable source it is the only true thing on this screen. */
-.welcome-warn {
-  margin: -24px 0 32px;
-  padding: 10px 14px;
-  border: 1px solid #5c4c28;
-  border-radius: 6px;
-  background: #241f14;
-  color: var(--folder);
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-.welcome-columns {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 40px;
-}
-.welcome h2 {
-  margin: 0 0 12px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.welcome h3 {
-  margin: 18px 0 6px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--line-strong);
-}
-
-.welcome-action {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 5px;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  font-size: 13px;
-  margin-bottom: 2px;
-  padding: 5px 8px;
-  text-align: left;
-}
-.welcome-action:hover { background: var(--line); }
-.welcome-action kbd { color: var(--line-strong); font-family: inherit; font-size: 11px; }
-
-.welcome-recent {
-  display: block;
-  width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 5px;
-  color: var(--muted);
-  cursor: pointer;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  padding: 4px 8px;
-  text-align: left;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.welcome-recent:hover { background: var(--line); color: var(--accent); }
-
-.welcome-note { margin: 10px 0 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
-.welcome-note code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  color: var(--text);
-}
-
-.welcome-keys { border-collapse: collapse; font-size: 12px; }
-.welcome-keys td { padding: 3px 14px 3px 0; color: var(--muted); }
-.welcome-keys kbd {
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 11px;
-  padding: 1px 6px;
-}
-
-/* --- what the agent is doing --- */
-
-.agent-status {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 7px;
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 2px 8px;
-  font-size: 11px;
-  white-space: nowrap;
-}
-.agent-status-key {
-  font-weight: 600;
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: var(--line-strong);
-}
-.agent-status-tool {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: var(--muted);
-}
-.agent-status-age { color: var(--line-strong); font-size: 10px; }
-.agent-status-idle { color: var(--line-strong); }
-
-/* A call in the last few seconds is the one moment this is worth noticing. */
-.agent-status-active { border-color: #4a6b8a; background: rgba(122, 162, 247, 0.08); }
-.agent-status-active .agent-status-key { color: var(--accent); }
-.agent-status-active .agent-status-tool { color: var(--text); }
-.agent-status-active .agent-status-age { color: var(--accent); }
-
-/* The agent reading a file, as distinct from the file changing. */
-@keyframes box-query {
-  0%   { box-shadow: 0 0 0 0 rgba(122, 162, 247, 0.5); }
-  70%  { box-shadow: 0 0 0 9px rgba(122, 162, 247, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(122, 162, 247, 0); }
-}
-.box-queried {
-  border-color: var(--accent);
-  animation: box-query 1.1s ease-out 2;
-}
-.box-queried .box-title { color: var(--accent); }
-
-@media (prefers-reduced-motion: reduce) {
-  .box-queried { animation: none; }
-}
-
-.feed-mark {
-  color: var(--line-strong);
-  font-size: 10px;
-  padding-left: 4px;
-}
-.feed-agent .feed-mark { color: var(--accent); }
-.feed-tool {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  line-height: 18px;
-  color: var(--muted);
-  padding: 0 4px;
-}
-.feed-target {
-  display: block;
-  background: transparent;
-  border: none;
-  color: var(--line-strong);
-  cursor: pointer;
-  font: inherit;
-  padding: 0;
-  text-align: left;
-  direction: rtl;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 100%;
-}
-.feed-target:hover { color: var(--accent); }
-
-/* --- where a file stands against a commit --- */
-
-/* Small and beside the name, never a wash over the box: the surface already
-   carries amber for "just written" and blue for "the agent just asked", and a
-   third tint would leave all three unreadable. */
-.box-git {
-  --git-color: 139, 147, 161;
-  flex: none;
-  min-width: 16px;
-  padding: 0 3px;
-  border: 1px solid rgba(var(--git-color), 0.45);
-  border-radius: 3px;
-  background: rgba(var(--git-color), 0.12);
-  color: rgb(var(--git-color));
-  font-size: 10px;
-  line-height: 14px;
-  text-align: center;
-}
-
-.box-git-modified  { --git-color: 224, 175, 104; }
-.box-git-added     { --git-color: 158, 206, 106; }
-.box-git-deleted   { --git-color: 247, 118, 142; }
-.box-git-untracked { --git-color: 139, 147, 161; }
-.box-git-renamed   { --git-color: 187, 154, 247; }
-.box-git-count     { --git-color: 122, 162, 247; }
-
-/* --- the git control ---------------------------------------------------
-
-   One segmented control rather than two loose ones: a branch button and a
-   count, joined, the way VS Code's status bar and GitHub's branch picker put
-   them. The parts belong together — the count is meaningless without knowing
-   what it counted against — and separating them said otherwise. */
-
-.git {
-  position: relative;
-  display: inline-flex;
-  align-items: stretch;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
-  /* So the segments clip to the radius instead of squaring off the corners. */
-  overflow: hidden;
-  font-size: 11px;
-  line-height: 1;
-}
-
-.git-base,
-.git-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  border: none;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  padding: 4px 9px;
-}
-
-.git-base:hover, .git-count:hover { background: var(--line); color: var(--text); }
-
-.git-base-open { background: var(--line); color: var(--text); }
-.git-base-name { color: var(--text); font-weight: 500; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.git-icon { flex: none; opacity: 0.75; }
-.git-base:hover .git-icon, .git-base-open .git-icon { opacity: 1; }
-.git-caret { font-size: 8px; opacity: 0.6; }
-
-/* The divider that makes two buttons read as one control. */
-.git-count { border-left: 1px solid var(--line-strong); }
-.git-count-n { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
-
-/* Filtering to the changed files is a mode, not a click, so it holds a filled
-   state — the same one the menus use for a highlighted row, rather than a
-   fourth colour nobody has learned yet. */
-.git-count[aria-pressed='true'] { background: var(--accent); color: #101216; }
-.git-count[aria-pressed='true'] .git-count-n { color: #101216; }
-.git-count[aria-pressed='true']:hover { background: #8fb3ff; }
-
-.git-drop { min-width: 210px; }
-.git-drop-head {
-  color: var(--muted);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  padding: 5px 8px 6px;
-  text-transform: uppercase;
-}
-.git-drop .menu-item kbd {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  opacity: 0.7;
-}
-
-/* --- naming, colouring and sizing a group --- */
 
 /* Palette keys, resolved once as channels so both a frame and its swatch can
    tint from the same value. The stylesheet owns what 'teal' means; the project
@@ -1823,148 +785,65 @@ main { display: flex; flex: 1; min-height: 0; }
 [data-color="red"]    { --group-color: 247, 118, 142; }
 [data-color="violet"] { --group-color: 187, 154, 247; }
 
-/* A frame sits behind the boxes it encloses, so its tint has to stay under
-   them: enough colour to tell two neighbouring groups apart, not enough to
-   change what a box looks like. */
-.group[data-color] {
-  border-color: rgba(var(--group-color), 0.5);
-  background: rgba(var(--group-color), 0.055);
-}
-.group[data-color].group-accepted { border-color: rgba(var(--group-color), 0.75); }
-.group[data-color] .group-name { color: rgb(var(--group-color)); }
-
-/* Drawn by a person, not found in the imports. It reads as decided — solid,
-   with its own inner stroke — while saying so in the label, because a frame
-   that looked derived would claim an authority the graph never gave it. */
-.group-manual {
-  border-style: solid;
-  box-shadow: inset 0 0 0 1px rgba(var(--group-color, 139, 147, 161), 0.2);
-}
-.group-manual .group-meta {
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-/* The handle is positioned against the frame's own corner. */
-.group { position: relative; }
-
-/* The label is the control, so it has to look like one. */
-.group-name-open { background: var(--line); color: var(--text); }
-
-/* A small panel, not a strip of controls: the name, the palette and what can be
-   done to the group read as one thing to work through, the way an editor's
-   properties popover does. */
-.group-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-left: 8px;
-  min-width: 208px;
-  padding: 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: 7px;
-  background: var(--panel);
-  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
-}
-
-.group-editor-name {
-  background: var(--bg);
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  outline: none;
-  padding: 4px 7px;
-  width: 100%;
-}
-.group-editor-name:focus { border-color: var(--accent); }
-
-.group-editor-top { display: flex; align-items: center; gap: 6px; }
-.group-editor-top .group-editor-name { flex: 1; min-width: 0; }
-
-.group-editor-close {
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  flex: none;
-  font-size: 10px;
-  line-height: 1;
-  padding: 4px 5px;
-}
-.group-editor-close:hover { background: var(--line); color: var(--text); }
-
-.group-editor-foot {
-  display: flex;
+/* LABEL_HEIGHT in layout.ts is 18: everything on this line is 18 or less and
+   carries no vertical padding. React Flow sets pointer-events on the node
+   wrapper inline; the frame lets clicks through and only its label catches
+   them. */
+.react-flow__node-frame { pointer-events: none !important; }
+.group-label {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  justify-content: space-between;
+  gap: 4px;
+  margin: 5px 0 0 10px;
+  pointer-events: auto;
 }
 
-.group-editor-hint { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.group-name {
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+}
+.group-name:hover, .group-name-open { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+.group-accepted .group-name, .group-manual .group-name { color: rgb(var(--group-color)); }
+.group-depth-0 .group-name { font-size: var(--vsc-font-size-status); }
 
-.group-swatches { display: flex; gap: 5px; }
+.group-meta { color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); line-height: 16px; }
 
-/* The palette inside the panel's group list. Distinct from .group-editor, which
-   is the popover that floats over the diagram: same controls, different room. */
-.group-palette {
-  display: flex;
+.group-lock, .group-reject {
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
-  margin: 4px 0 2px;
-  padding: 5px 7px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--bg);
-}
-.group-palette .group-swatches { flex: 1; }
-.group-palette-label { color: var(--muted); font-size: 10px; }
-
-.group-palette-close {
-  background: transparent;
-  border: none;
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
+  justify-content: center;
   flex: none;
-  font-size: 10px;
-  line-height: 1;
-  padding: 3px 5px;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--vsc-radius);
 }
-.group-palette-close:hover { background: var(--line); color: var(--text); }
+.group-lock { color: rgba(var(--group-color), 0.55); }
+.group-lock:hover { color: rgb(var(--group-color)); background: var(--vsc-toolbar-hover); }
+.group-lock[aria-pressed='true'] { color: rgb(var(--group-color)); }
+.group-reject { color: var(--vsc-fg-disabled); }
+.group-reject:hover { color: var(--vsc-error); background: var(--vsc-toolbar-hover); }
 
-.group-swatch {
-  width: 13px;
-  height: 13px;
-  padding: 0;
-  border: 1px solid rgba(var(--group-color), 0.6);
-  border-radius: 3px;
-  background: rgba(var(--group-color), 0.5);
-  cursor: pointer;
-}
-.group-swatch:hover { background: rgb(var(--group-color)); }
-/* Ringed rather than merely brighter: eight saturated squares in a row leave
-   no room for "slightly more vivid" to be the difference that matters. */
-.group-swatch-active {
-  background: rgb(var(--group-color));
-  box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px rgb(var(--group-color));
+/* The price of the lock: a frame held in place can stop containing what it
+   names, and it has to say so rather than quietly cropping. */
+.group-outside {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 16px;
+  color: var(--vsc-warning);
+  font-size: var(--vsc-font-size-sm);
+  white-space: nowrap;
 }
 
-.group-delete {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  color: var(--muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 10px;
-  padding: 1px 7px;
-}
-.group-delete:hover { border-color: #5a2b2b; color: #f2a2a2; }
+/* A locked frame is dragged by its label, the way a window moves by its title
+   bar, so the label has to say it can be grabbed. */
+.group-locked > .group-label { cursor: grab; }
+.group-locked > .group-label:active { cursor: grabbing; }
 
 /* React Flow's own resize handles. The frame body is pointer-events:none so it
    never swallows a click meant for a box behind it, which would leave the
@@ -1973,44 +852,846 @@ main { display: flex; flex: 1; min-height: 0; }
 .react-flow__node .group-resize-dot {
   pointer-events: all;
 }
-
-.group-resize-line { border-color: rgba(var(--group-color, 122, 162, 247), 0.5); }
-
-.group-resize-dot {
+/* Prefixed like the rule above: React Flow paints its own blue on these with
+   two classes, and a bare class would lose to it. */
+.react-flow__node .group-resize-line { border-color: rgba(var(--group-color), 0.5); }
+.react-flow__node .group-resize-dot {
   width: 8px;
   height: 8px;
-  border: 1px solid var(--panel);
-  border-radius: 2px;
-  background: rgb(var(--group-color, 122, 162, 247));
+  border: 1px solid var(--vsc-editor-bg);
+  border-radius: var(--vsc-radius);
+  background: rgb(var(--group-color));
 }
 
-/* A locked frame is dragged by its label, the way a window moves by its title
-   bar, so the label has to say it can be grabbed. */
-.group-locked > .group-label { cursor: grab; }
-.group-locked > .group-label:active { cursor: grabbing; }
-.group-locked { border-style: solid; }
+/* --- the group editor popover --------------------------------------------- */
 
-.group-lock {
+/* A small panel beside the label: the name, the palette and what can be done
+   to the group, the way an editor's properties popover reads. */
+.group-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 8px;
+  min-width: 216px;
+  padding: 6px;
+}
+
+.group-editor-top { display: flex; align-items: center; gap: 4px; }
+.group-editor-name {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+}
+
+.group-editor-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+.group-editor-hint { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); line-height: 1.4; }
+
+.group-delete { font-size: var(--vsc-font-size-status); }
+.group-delete:hover { border-color: var(--vsc-error); color: var(--vsc-error); }
+
+.group-swatches { display: flex; gap: 4px; }
+.group-swatch {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(var(--group-color), 0.6);
+  border-radius: var(--vsc-radius);
+  background: rgba(var(--group-color), 0.5);
+}
+.group-swatch:hover { background: rgb(var(--group-color)); }
+/* Ringed rather than merely brighter: eight saturated squares in a row leave
+   no room for "slightly more vivid" to be the difference that matters. */
+.group-swatch-active {
+  background: rgb(var(--group-color));
+  outline: 1px solid rgb(var(--group-color));
+  outline-offset: 1px;
+}
+
+/* --- side bar sections ----------------------------------------------------- */
+
+/* One shape for every section, left and right: a 22px header with a chevron,
+   an uppercase title and, at the right edge, actions that stay out of sight
+   until the section is under the cursor or holds the focus. */
+.sidebar-section { display: flex; flex-direction: column; flex: none; min-height: 0; }
+.sidebar-section + .sidebar-section > .section-head { border-top: 1px solid var(--vsc-border); }
+
+.section-head {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--vsc-row-h);
+  padding: 0 4px 0 2px;
+  user-select: none;
+}
+
+/* Title case, not uppercase. The brief said uppercase; the user's own VS Code
+   (Dark Modern, 2026) says "Open Editors", "Outline", "Timeline". Bold at 11px
+   is what makes it a header, not the case. */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  color: var(--vsc-fg);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.section-title:focus-visible { outline-offset: -1px; }
+
+.section-actions { display: flex; align-items: center; opacity: 0; }
+.sidebar-section:hover .section-actions,
+.sidebar-section:focus-within .section-actions { opacity: 1; }
+
+.section-body { min-height: 0; overflow-y: auto; }
+
+/* Per-row actions follow the same rule as a section's. */
+.row-actions { display: inline-flex; align-items: center; flex: none; opacity: 0; }
+.followed-head:hover .row-actions,
+.followed-head:focus-within .row-actions,
+.group-row:hover .row-actions,
+.group-row:focus-within .row-actions { opacity: 1; }
+
+/* --- the activity column (left) -------------------------------------------- */
+
+/* Left is time, right is structure. The two used to share the right-hand panel,
+   which meant watching what the agent was doing cost you the detail of the very
+   thing it was touching. */
+.activity {
+  width: 272px;
+  flex: none;
+  border-right: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  overflow: hidden;
+}
+.activity .section-body { display: flex; flex-direction: column; flex: 1; }
+
+/* Not a dot for "connected": whether anything has happened in the last few
+   seconds, which is the question. A status, so it is never hidden. */
+.activity-live {
   display: inline-flex;
   align-items: center;
-  background: transparent;
-  border: none;
-  border-radius: 3px;
-  /* Falls back to the frame's default blue when the group has no colour of its
-     own, so the lock is never the one thing on the frame that ignores it. */
-  color: rgba(var(--group-color, 122, 162, 247), 0.55);
-  cursor: pointer;
-  line-height: 1;
-  padding: 2px 3px;
+  gap: 2px;
+  padding-right: 4px;
+  color: var(--vsc-fg-disabled);
+  font-size: var(--vsc-font-size-sm);
 }
-.group-lock:hover { color: rgb(var(--group-color, 122, 162, 247)); background: var(--line); }
-.group-lock[aria-pressed='true'] { color: rgb(var(--group-color, 122, 162, 247)); }
+.activity-live-on { color: var(--vsc-git-untracked); }
 
-/* The price of the lock: a frame held in place can stop containing what it
-   names, and it has to say so rather than quietly cropping. */
-.group-outside {
-  color: var(--folder);
-  font-size: 10px;
+.activity-empty {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  line-height: 1.5;
+}
+
+.activity-scroll { flex: 1; min-height: 0; overflow-y: auto; }
+
+.activity-table { width: 100%; border-collapse: collapse; font-size: var(--vsc-font-size-status); }
+.activity-table tr { cursor: default; }
+.activity-write { cursor: pointer; }
+.activity-table tr:hover { background: var(--vsc-list-hover); }
+
+.activity-table td {
+  height: var(--vsc-row-h);
+  padding: 0 4px;
+  line-height: 22px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.activity-table td:first-child { padding-left: 8px; }
+.activity-table td:last-child { padding-right: 8px; }
+
+.activity-when {
+  width: 34px;
+  color: var(--vsc-fg-disabled);
+  font-size: var(--vsc-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+.activity-mark { width: 24px; color: var(--vsc-fg-muted); }
+/* A block, not an inline: an inline 16px icon sits on the text baseline and
+   grows the row past 22. */
+.activity-mark .codicon { display: block; }
+/* A question the agent asked is not an edit, and the column that says which is
+   the one thing this table cannot afford to blur. */
+.activity-ask .activity-mark, .activity-ask .activity-what { color: var(--vsc-info); }
+
+.activity-what {
+  color: var(--vsc-fg);
+  font-family: var(--vsc-font-mono);
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The count a fold stands for. Quiet: it is a detail about the row, not the row. */
+.activity-times { margin-left: 4px; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+
+/* Where it happened. Dimmer than the name, because you scan the names and only
+   fall back to the directory when two of them look alike. */
+.activity-where {
+  color: var(--vsc-fg-muted);
+  direction: rtl;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  max-width: 92px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+/* The same two colours every source-control view uses, so the sign is legible
+   before the number is read. */
+.activity-lines { text-align: right; font-variant-numeric: tabular-nums; font-size: var(--vsc-font-size-sm); }
+.activity-added { color: var(--vsc-git-added); }
+.activity-deleted { color: var(--vsc-git-deleted); margin-left: 4px; }
+
+.activity-more {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--vsc-fg-disabled);
+  font-size: var(--vsc-font-size-sm);
+}
+
+/* --- the side bar (right) -------------------------------------------------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 330px;
+  flex: none;
+  border-left: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  overflow: hidden;
+}
+
+/* What is being held sits above the detail, because it is the thing you are
+   actively holding; groups sit below. The detail takes whatever is left. */
+.followed { max-height: 45%; }
+.panel { flex: 1; }
+.groups { max-height: 30%; }
+
+/* --- detail ---------------------------------------------------------------- */
+
+.panel-empty {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--vsc-fg-muted);
+  line-height: 1.5;
+}
+
+.panel-head { padding: 4px 8px 0; }
+.panel-head h2 {
+  margin: 0;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  font-weight: 600;
+  line-height: 18px;
+  word-break: break-all;
+}
+.panel-meta { margin: 0; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); line-height: 18px; }
+
+.panel-list { margin-top: 4px; }
+.panel-list h3 {
+  margin: 0;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 600;
+  line-height: 22px;
+}
+.panel-list ul { margin: 0; padding: 0; list-style: none; }
+
+/* Tree rows: one indent under their heading, full width to the edge. */
+.panel-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px 0 16px;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.panel-list .path { display: block; line-height: 22px; }
+.panel-list button:hover { background: var(--vsc-list-hover); }
+.panel-list button:focus-visible { outline-offset: -1px; }
+
+.sym-class, .sym-interface { color: var(--vsc-sym-class); }
+.sym-type { color: var(--vsc-sym-type); }
+.sym-function, .sym-method { color: var(--vsc-sym-function); }
+.sym-field { color: var(--vsc-sym-field); }
+.sym-line { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+
+/* --- what is being followed ------------------------------------------------ */
+
+.followed-one { padding: 2px 0; }
+.followed-one + .followed-one { border-top: 1px solid var(--vsc-border); }
+
+.followed-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 8px;
+}
+.followed-head:hover { background: var(--vsc-list-hover); }
+.followed-name {
+  flex: none;
+  color: var(--vsc-fg);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  font-weight: 600;
+}
+.followed-where {
+  flex: 1;
+  min-width: 0;
+  color: var(--vsc-fg-disabled);
+  direction: rtl;
+  font-size: var(--vsc-font-size-sm);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.followed-none {
+  margin: 0;
+  padding: 2px 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  line-height: 1.5;
+}
+
+.followed-kind {
+  margin: 0;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 600;
+  line-height: 22px;
+}
+.followed-kind span { margin-left: 4px; color: var(--vsc-fg-disabled); font-weight: 400; }
+
+.followed-rows { list-style: none; margin: 0; padding: 0; }
+.followed-rows button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px 0 16px;
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
+}
+.followed-rows button:hover { background: var(--vsc-list-hover); }
+.followed-rows button:focus-visible { outline-offset: -1px; }
+.followed-symbol {
+  flex: none;
+  max-width: 130px;
+  color: var(--vsc-fg);
+  font-family: var(--vsc-font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Which relationship it is. A call and an inheritance are not the same fact. */
+.followed-edge { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+.followed-file {
+  flex: 1;
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  direction: rtl;
+  font-size: var(--vsc-font-size-sm);
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- what the followed things are for -------------------------------------- */
+
+/* It spends the user's quota, so it is the section's one real button — the
+   primary, full width — never a link you might hit twice on the way past. */
+.explain-bar { display: flex; align-items: center; gap: 6px; padding: 4px 8px; }
+.explain-run { flex: 1; justify-content: center; gap: 6px; }
+.explain-run > span { opacity: 0.6; }
+/* A run is a minute long. The button holds its place and says so. */
+.explain-run[aria-busy='true'] { opacity: 1; background: var(--vsc-badge-bg); color: var(--vsc-badge-fg); }
+.explain-stop { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
+.explain-stop:hover { color: var(--vsc-fg); }
+
+/* The answer landing. Monospace and dim: evidence that something is happening,
+   replaced by the parsed entries the moment the run ends. */
+.explain-stream {
+  margin: 0;
+  padding: 2px 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* How much of the reading still holds, set from data-state. Drifted is grey
+   because the words are still true and merely no longer complete; stale is the
+   warning colour because the source moved under them and they may now be
+   false. Orphaned is dashed: still here, no longer derived from anything. */
+.explain-state {
+  flex: none;
+  height: 16px;
+  padding: 0 4px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 14px;
+  white-space: nowrap;
+}
+.explain-state[data-state='current']  { border-color: transparent; color: var(--vsc-fg-disabled); }
+.explain-state[data-state='stale'] {
+  border-color: color-mix(in srgb, var(--vsc-warning) 40%, transparent);
+  color: var(--vsc-warning);
+}
+.explain-state[data-state='orphaned'],
+.explain-state[data-state='unknown'] { border-style: dashed; }
+
+/* The answer, and the only prose in this panel: not monospace, and a step
+   brighter than the metadata around it. */
+.explain-short { margin: 0; padding: 2px 8px; color: var(--vsc-fg); line-height: 1.5; }
+
+/* The fuller reading, folded away until asked for. The rule down the left is
+   the one a method wears under its class: it belongs to the line above it. */
+.explain-long {
+  margin: 2px 8px 4px 12px;
+  padding-left: 8px;
+  border-left: 1px solid var(--vsc-border);
+  color: var(--vsc-fg-muted);
+  line-height: 1.5;
+}
+
+/* Inline at the end of the short text, so it reads as the sentence carrying on. */
+.explain-more { padding-left: 4px; color: var(--vsc-link); font-size: var(--vsc-font-size-status); }
+.explain-more:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* Dimmed, never deleted: most of an old reading is usually still right. The
+   state chip stays at full strength, since it is what says why the rest faded. */
+.explain-stale .explain-short,
+.explain-stale .explain-long { opacity: 0.55; }
+
+/* A failed run names its reason, in full: the useful ones are a path or a line
+   of stderr, and long. */
+.explain-failed {
+  margin: 0;
+  padding: 2px 8px;
+  color: var(--vsc-error);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+/* --- groups ---------------------------------------------------------------- */
+
+.groups input { display: block; width: calc(100% - 16px); margin: 4px 8px; }
+.groups ul { margin: 0; padding: 0; list-style: none; }
+
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 8px;
+}
+.group-row:hover { background: var(--vsc-list-hover); }
+
+.group-title {
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-title.named, .group-title:hover { color: var(--vsc-fg); }
+.group-cohesion { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+
+/* The palette inside the list: one row under the group, indented like its
+   files. Distinct from .group-editor, the popover over the diagram. */
+.group-palette {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 24px;
+}
+.group-palette .group-swatches { flex: 1; }
+.group-palette-label { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+
+/* A group's files: child rows, one indent in. Direct children only — the row
+   actions inside a member row are icon buttons and must not become rows. */
+.group-files { display: flex; flex-direction: column; }
+.group-files > button,
+.group-files .group-row > button {
+  display: block;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px 0 24px;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  line-height: 22px;
+  direction: rtl;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.group-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
+.group-files > button:focus-visible { outline-offset: -1px; }
+.group-files .group-row { padding-left: 0; }
+.group-files .group-row > button { flex: 1; min-width: 0; }
+.group-files .group-row:hover > button { color: var(--vsc-fg); }
+
+/* --- status bar ------------------------------------------------------------ */
+
+/* The project's state in one line. Left is what the working tree is; right is
+   what is on screen and who else is looking at it. Nothing here is decoration. */
+.statusbar {
+  display: flex;
+  align-items: center;
+  flex: none;
+  height: var(--vsc-statusbar-h);
+  border-top: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  font-size: var(--vsc-font-size-status);
+  user-select: none;
+  /* No overflow clipping here: the base picker opens upward out of this bar. */
+  white-space: nowrap;
+}
+.statusbar-left { display: flex; align-items: center; flex: none; padding-left: 4px; }
+/* The right half is the one that yields when the window is narrow, and the
+   language list is the one item in it that still reads once cut short. */
+.statusbar-right { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; margin-left: auto; padding-right: 4px; }
+
+.status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 22px;
+  padding: 0 5px;
+  color: var(--vsc-fg);
+  white-space: nowrap;
+}
+button.status-item:hover { background: var(--vsc-toolbar-hover); }
+button.status-item:focus-visible { outline-offset: -1px; }
+
+/* Disconnected is the one state here that is a problem, and says so. */
+.live { color: var(--vsc-warning); }
+.live-on { color: var(--vsc-fg); }
+.live-on .codicon { color: var(--vsc-git-untracked); }
+
+/* The base and the count belong together — the count is meaningless without
+   knowing what it counted against — so they sit as one control. */
+.git { position: relative; display: inline-flex; align-items: stretch; }
+.git-base-open { background: var(--vsc-toolbar-hover); }
+.git-base-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-caret { color: var(--vsc-fg-muted); }
+.git-count-n { font-variant-numeric: tabular-nums; }
+.git-count-word { color: var(--vsc-fg-muted); }
+/* Filtering to the changed files is a mode, not a click, so it holds a filled
+   state — the accent, like every other mode here. */
+.git-count[aria-pressed='true'] { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+.git-count[aria-pressed='true'] .git-count-word { color: var(--vsc-fg-strong); }
+.git-count[aria-pressed='true']:hover { background: var(--vsc-accent-hover); }
+
+.git-drop { min-width: 210px; }
+.git-drop-head {
+  height: 22px;
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 22px;
+}
+.git-drop .menu-item kbd { font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); }
+
+/* Source the tool cannot read: a gap rather than a fact, and still not an error. */
+.unread { color: var(--vsc-warning); }
+
+.counts, .langs { color: var(--vsc-fg-muted); }
+.langs { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* What the agent last asked, and how long ago. Naming the tool tells you what
+   it is actually doing, which is the thing worth glancing at. */
+.agent-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 22px;
+  padding: 0 5px;
+  white-space: nowrap;
+}
+.agent-status-key, .agent-status-age, .agent-status-idle { color: var(--vsc-fg-muted); }
+.agent-status-tool { font-family: var(--vsc-font-mono); }
+/* A call in the last few seconds is the one moment this is worth noticing. */
+.agent-status-active .agent-status-key,
+.agent-status-active .agent-status-age { color: var(--vsc-info); }
+
+/* --- search palette -------------------------------------------------------- */
+
+/* Quick Pick: anchored under the title bar, no dimming behind it. The backdrop
+   only exists to close on a click away. */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: var(--vsc-titlebar-h);
+}
+
+.palette {
+  width: min(600px, 92vw);
+  max-height: 66vh;
+  display: flex;
+  flex-direction: column;
+  padding-top: 6px;
+  background: var(--vsc-quickinput-bg);
+  overflow: hidden;
+}
+
+.palette input { flex: none; margin: 0 6px 6px; }
+
+.palette ul { margin: 0; padding: 0 0 4px; list-style: none; overflow-y: auto; }
+
+.hit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.hit:hover { background: var(--vsc-list-hover); }
+.hit-active, .hit-active:hover { background: var(--vsc-list-active-sel); color: var(--vsc-fg-strong); }
+.hit:focus-visible { outline-offset: -1px; }
+
+/* The kind is the icon's colour; the name stays plain, as an outline draws it. */
+.hit-icon { flex: none; color: var(--vsc-fg-muted); }
+.hit-icon.kind-class, .hit-icon.kind-interface { color: var(--vsc-sym-class); }
+.hit-icon.kind-type { color: var(--vsc-sym-type); }
+.hit-icon.kind-function, .hit-icon.kind-method { color: var(--vsc-sym-function); }
+.hit-icon.kind-field { color: var(--vsc-sym-field); }
+
+.hit-name { flex: none; font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-status); }
+.hit-path {
+  flex: 1;
+  min-width: 0;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+.hit-active .hit-path { color: var(--vsc-fg); }
+/* Where the query landed: coloured, not painted behind. */
+.hit-match { color: var(--vsc-link); font-weight: 600; }
+
+.hit-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  margin-left: 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+}
+.hit-active .hit-keys { color: var(--vsc-fg); }
+
+/* --- project picker (desktop only) ----------------------------------------- */
+
+.project { position: relative; }
+
+.project-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+}
+.project-button:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+.chevron { color: var(--vsc-fg-muted); }
+
+.project-menu {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  z-index: 10;
+  min-width: 240px;
+  max-width: 420px;
+  padding: 4px 0;
+}
+.project-menu button {
+  display: block;
+  width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  line-height: 22px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.project-menu button:hover { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+
+.project-sep {
+  height: 27px;
+  margin-top: 4px;
+  padding: 4px 8px 0;
+  border-top: 1px solid var(--vsc-border-menu);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 22px;
+}
+
+/* --- Claude Code hook installation ----------------------------------------- */
+
+.hook-banner {
+  flex: none;
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+}
+
+.hook-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.hook-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.hook-icon { flex: none; color: var(--vsc-warning); }
+.hook-icon.codicon-error { color: var(--vsc-error); }
+/* The banner's action is a link, the way a notification's is. */
+.hook-row button:not(.hook-dismiss) {
+  height: 22px;
+  padding: 0 4px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-link);
+}
+.hook-row button:not(.hook-dismiss):hover { background: var(--vsc-toolbar-hover); }
+.hook-dismiss { margin-left: auto; }
+
+.hook-review { padding: 0 8px 8px 32px; border-top: 1px solid var(--vsc-border); }
+.hook-path { color: var(--vsc-fg-muted); font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); line-height: 22px; }
+
+.hook-review pre {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 6px 8px;
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  background: var(--vsc-editor-bg);
+  color: var(--vsc-fg);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+  /* The hook command is one long line; wrapping shows all of it, and pre-wrap
+     still preserves the JSON indentation. */
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hook-error { margin-top: 6px; color: var(--vsc-error); font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-sm); }
+
+.hook-actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* --- welcome --------------------------------------------------------------- */
+
+/* The empty editor's list: a label on the left, its key on the right, and a
+   row that runs on click is a link. */
+.welcome {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-y: auto;
+  background: var(--vsc-editor-bg);
+}
+
+.welcome-inner { width: min(460px, 92vw); padding: 24px 0; }
+
+.welcome-close { position: absolute; top: 8px; right: 8px; }
+
+.welcome-sub { margin: 0 0 8px; padding: 0 8px; color: var(--vsc-fg-muted); }
+
+/* On a project of nothing but unreadable source it is the only true thing on
+   this screen. */
+.welcome-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 4px 8px;
+  color: var(--vsc-warning);
+  line-height: 1.5;
+}
+.welcome-warn .codicon { flex: none; margin-top: 2px; }
+
+.welcome h2 {
+  margin: 12px 0 0;
+  padding: 0 8px;
+  color: var(--vsc-fg);
+  font-size: var(--vsc-font-size);
+  font-weight: 600;
+  line-height: 22px;
+}
+
+.welcome-list { margin: 0; padding: 0; list-style: none; }
+
+.welcome-action, .welcome-row, .welcome-recent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.welcome-action, .welcome-recent { color: var(--vsc-link); }
+.welcome-action:hover, .welcome-recent:hover { background: var(--vsc-list-hover); }
+.welcome-action:focus-visible, .welcome-recent:focus-visible { outline-offset: -1px; }
+.welcome-row { color: var(--vsc-fg); }
+
+.welcome-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.welcome-list kbd, .welcome-path { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
+.welcome-list code { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+.welcome-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- the side panel toggle -------------------------------------------------- */
+
+.panel-toggle { flex: none; }
