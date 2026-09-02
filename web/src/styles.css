@@ -1776,12 +1776,15 @@ main { display: flex; flex: 1; min-height: 0; }
    language list is the one item in it that still reads once cut short. */
 .statusbar-right { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; margin-left: auto; padding-right: 4px; }
 
+/* 21, not 22: the bar is 22 including its top line, so a 22px item stood
+   half a pixel proud of it above and below, and the document was a pixel
+   taller than the window. The same sum the breadcrumb's search box does. */
 .status-item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   flex: none;
-  height: 22px;
+  height: 21px;
   padding: 0 5px;
   color: var(--vsc-fg);
   white-space: nowrap;
@@ -1861,7 +1864,7 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
   align-items: center;
   gap: 4px;
   flex: none;
-  height: 22px;
+  height: 21px;
   padding: 0 5px;
   white-space: nowrap;
 }
