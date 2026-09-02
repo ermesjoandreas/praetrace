@@ -27,11 +27,11 @@ export type BoxData = {
   /** Showing every member rather than the first twelve. */
   expanded: boolean;
   onExpand: (id: string, expanded: boolean) => void;
-  /** The symbol whose relations are being shown, if any is. */
-  highlight: string | null;
-  /** Symbol ids related to it, so a row knows whether to light or fade. */
+  /** The symbols being followed. More than one is a union, not a comparison. */
+  following: ReadonlySet<string>;
+  /** Symbol ids any of them relate to, so a row knows whether to light or fade. */
   related: ReadonlySet<string>;
-  onHighlight: (id: string | null) => void;
+  onFollow: (id: string, on: boolean) => void;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
@@ -162,9 +162,11 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 member.owner === null ? '' : 'member-nested',
                 member.isStatic ? 'member-static' : '',
                 member.isAbstract ? 'member-abstract' : '',
-                data.highlight === member.id ? 'member-picked' : '',
+                data.following.has(member.id) ? 'member-picked' : '',
                 data.related.has(member.id) ? 'member-related' : '',
-                data.highlight !== null && data.highlight !== member.id && !data.related.has(member.id)
+                data.following.size > 0 &&
+                !data.following.has(member.id) &&
+                !data.related.has(member.id)
                   ? 'member-aside'
                   : '',
               ]
@@ -193,15 +195,15 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
               <button
                 type="button"
                 className="member-pick"
-                aria-pressed={data.highlight === member.id}
+                aria-pressed={data.following.has(member.id)}
                 title={
-                  data.highlight === member.id
+                  data.following.has(member.id)
                     ? 'Stop following this symbol'
-                    : `Show what ${member.name} uses, and what uses it`
+                    : `Show what ${member.name} uses, and what uses it — hold on to several at once`
                 }
                 onClick={(event) => {
                   event.stopPropagation();
-                  data.onHighlight(data.highlight === member.id ? null : member.id);
+                  data.onFollow(member.id, !data.following.has(member.id));
                 }}
               />
             </li>

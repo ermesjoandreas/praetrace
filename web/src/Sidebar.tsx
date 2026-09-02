@@ -5,6 +5,8 @@ import {
   type Detail,
   type GroupColor,
   type GroupSuggestion,
+  type SymbolLinks,
+  type SymbolRelation,
 } from './api';
 
 /**
@@ -43,6 +45,14 @@ const COLOR_LABELS: Record<GroupColor, string> = {
   violet: 'Violet',
 };
 
+export interface Following {
+  /** One entry per followed symbol, in the order they were picked. */
+  links: SymbolLinks[];
+  /** True once every followed symbol has an answer, however empty. */
+  settled: boolean;
+  onDrop: (id: string) => void;
+}
+
 interface SidebarProps {
   root: string;
   /** The box the user clicked, or null. Navigation is a separate gesture. */
@@ -55,6 +65,7 @@ interface SidebarProps {
   groups: GroupSuggestion[];
   onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
   groupEditor: GroupEditor;
+  following: Following;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {
@@ -72,6 +83,7 @@ export function Sidebar({
   groups,
   onDecide,
   groupEditor,
+  following,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
 
@@ -96,6 +108,8 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
+      <Followed following={following} onSelect={onSelect} onFocus={onFocus} />
+
       <section className="panel">
         {detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
@@ -435,5 +449,97 @@ function GroupList({
         })}
       </ul>
     </section>
+  );
+}
+
+/**
+ * What is being followed, listed.
+ *
+ * The diagram can only light a related symbol that happens to be on screen, and
+ * most are not: a caller two directories away sits in a box the current scope
+ * does not draw. So the highlighting answers "where does this sit" and this
+ * answers "what is there", and neither is much use without the other.
+ */
+function Followed({
+  following,
+  onSelect,
+  onFocus,
+}: {
+  following: Following;
+  onSelect: (target: string) => void;
+  onFocus: (target: string, kind: 'file' | 'folder') => void;
+}) {
+  if (following.links.length === 0) return null;
+
+  return (
+    <section className="followed">
+      {following.links.map((symbol) => (
+        <div className="followed-one" key={symbol.id}>
+          <div className="followed-head">
+            <span className="followed-name">{symbol.name}</span>
+            <span className="followed-where" title={symbol.filePath}>
+              {symbol.filePath}
+            </span>
+            <button
+              type="button"
+              className="followed-drop"
+              title="Stop following this one"
+              onClick={() => following.onDrop(symbol.id)}
+            >
+              ✕
+            </button>
+          </div>
+
+          {symbol.usedBy.length === 0 && symbol.uses.length === 0 ? (
+            <p className="followed-none">
+              Nothing here references it, and nothing it references resolved. Method calls
+              are under-reported on purpose.
+            </p>
+          ) : (
+            <>
+              <Relations title="used by" rows={symbol.usedBy} onSelect={onSelect} onFocus={onFocus} />
+              <Relations title="uses" rows={symbol.uses} onSelect={onSelect} onFocus={onFocus} />
+            </>
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function Relations({
+  title,
+  rows,
+  onSelect,
+  onFocus,
+}: {
+  title: string;
+  rows: SymbolRelation[];
+  onSelect: (target: string) => void;
+  onFocus: (target: string, kind: 'file' | 'folder') => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <>
+      <h3 className="followed-kind">
+        {title} <span>{rows.length}</span>
+      </h3>
+      <ul className="followed-rows">
+        {rows.map((row) => (
+          <li key={row.id + row.edge}>
+            <button
+              type="button"
+              title={`${row.filePath}:${row.line} — ${row.edge}`}
+              onClick={() => onSelect(row.filePath)}
+              onDoubleClick={() => onFocus(row.filePath, 'file')}
+            >
+              <span className="followed-symbol">{row.name}</span>
+              <span className="followed-edge">{row.edge}</span>
+              <span className="followed-file">{row.filePath}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

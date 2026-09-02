@@ -687,6 +687,103 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .panel { flex: 1; overflow-y: auto; padding: 14px 16px; min-height: 0; }
 
+/* --- what is being followed ---------------------------------------------
+
+   Above the detail panel, because it is the thing you are actively holding.
+   The diagram can only light a related symbol that is on screen, and most are
+   not, so this is where the rest of the answer lives. */
+
+.followed {
+  flex: none;
+  max-height: 45%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px 12px;
+  background: rgba(122, 162, 247, 0.05);
+}
+
+.followed-one + .followed-one { border-top: 1px solid var(--line); margin-top: 10px; padding-top: 10px; }
+
+.followed-head { display: flex; align-items: baseline; gap: 7px; }
+.followed-name {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.followed-where {
+  flex: 1;
+  min-width: 0;
+  color: var(--line-strong);
+  direction: rtl;
+  font-size: 10px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.followed-drop {
+  background: transparent;
+  border: none;
+  color: var(--line-strong);
+  cursor: pointer;
+  font-size: 10px;
+  padding: 0 2px;
+}
+.followed-drop:hover { color: var(--text); }
+
+.followed-none { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+
+.followed-kind {
+  margin: 9px 0 3px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.followed-kind span { color: var(--line-strong); font-weight: 400; }
+
+.followed-rows { list-style: none; margin: 0; padding: 0; }
+.followed-rows button {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  padding: 1px 4px;
+  margin-left: -4px;
+  background: transparent;
+  border: none;
+  border-radius: 3px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+}
+.followed-rows button:hover { background: var(--line); }
+.followed-symbol {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  flex: none;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Which relationship it is. A call and an inheritance are not the same fact. */
+.followed-edge { flex: none; color: var(--line-strong); font-size: 9px; }
+.followed-file {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  direction: rtl;
+  font-size: 10px;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .panel-empty {
   margin: 0;
   color: var(--muted);

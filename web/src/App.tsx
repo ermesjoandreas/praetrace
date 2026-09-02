@@ -183,8 +183,21 @@ export function App() {
     });
   }, []);
 
-  const [highlight, setHighlight] = useState<string | null>(null);
-  const [links, setLinks] = useState<SymbolLinks | null>(null);
+  const [following, setFollowing] = useState<ReadonlySet<string>>(() => new Set());
+  /**
+   * One entry per followed symbol; null once the server has said it knows
+   * nothing about it, which is different from not having asked yet.
+   */
+  const [links, setLinks] = useState<ReadonlyMap<string, SymbolLinks | null>>(() => new Map());
+
+  const toggleFollowing = useCallback((id: string, on: boolean) => {
+    setFollowing((was) => {
+      const next = new Set(was);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
   const baseMenu = useRef<HTMLDivElement>(null);
   /** Bumped whenever the graph changes, so the panel refetches rather than lie. */
   const [revision, setRevision] = useState(0);
@@ -495,30 +508,45 @@ export function App() {
 
   // Re-read whenever the graph moves: the server polls git every 3 seconds and
   // publishes when it changes, and that push is what bumps the revision.
+  // A re-parse can give a symbol a new id or drop it, so nothing cached survives it.
   useEffect(() => {
-    if (highlight === null) {
-      setLinks(null);
-      return;
-    }
+    setLinks(new Map());
+  }, [revision]);
+
+  useEffect(() => {
+    const missing = [...following].filter((id) => !links.has(id));
+    if (missing.length === 0) return;
     let cancelled = false;
-    fetchSymbol(highlight).then(
-      (result) => {
-        if (!cancelled) setLinks(result);
-      },
-      () => {
-        if (!cancelled) setLinks(null);
-      },
-    );
+    Promise.all(missing.map((id) => fetchSymbol(id).catch(() => null))).then((results) => {
+      if (cancelled) return;
+      setLinks((was) => {
+        const next = new Map(was);
+        missing.forEach((id, index) => next.set(id, results[index] ?? null));
+        return next;
+      });
+    });
     return () => {
       cancelled = true;
     };
-    // revision, because a re-parse can give the symbol a new id or drop it.
-  }, [highlight, revision]);
+  }, [following, links]);
 
+  /**
+   * The union of what every followed symbol touches, not the intersection.
+   *
+   * Union answers "what do I reach if I take hold of these", which is the
+   * question someone about to change three things has. Intersection answers a
+   * different one — whether they share anything — and would need its own mode
+   * rather than quietly changing what the same gesture means.
+   */
   const relatedIds = useMemo(() => {
-    if (links === null) return new Set<string>();
-    return new Set([...links.uses, ...links.usedBy].map((relation) => relation.id));
-  }, [links]);
+    const found = new Set<string>();
+    for (const id of following) {
+      const entry = links.get(id);
+      if (!entry) continue;
+      for (const relation of [...entry.uses, ...entry.usedBy]) found.add(relation.id);
+    }
+    return found;
+  }, [following, links]);
 
   /**
    * The boxes any of it lands in — the followed symbol's own file and every file
@@ -528,10 +556,41 @@ export function App() {
    * nothing relevant still read as fully present, and so did every edge on the
    * canvas, so the thing being followed had nothing to stand out against.
    */
+  /**
+   * What the chip says. Whether the answers have ARRIVED matters as much as the
+   * counts: before they do, zero means "not asked yet"; after, it means "nothing
+   * links to this" — and the diagram looks identical either way.
+   */
+  const reach = useMemo(() => {
+    const ids = [...following];
+    const settled = ids.every((id) => links.has(id));
+    const found = ids
+      .map((id) => links.get(id))
+      .filter((entry): entry is SymbolLinks => entry != null);
+    const uses = found.reduce((total, entry) => total + entry.uses.length, 0);
+    const usedBy = found.reduce((total, entry) => total + entry.usedBy.length, 0);
+    const only = found.length === 1 ? found[0] : undefined;
+    return {
+      settled,
+      uses,
+      usedBy,
+      total: uses + usedBy,
+      label: only === undefined ? ids.length + ' symbols' : only.name,
+      found,
+    };
+  }, [following, links]);
+
   const relatedFiles = useMemo(() => {
-    if (links === null) return null;
-    return new Set([links.filePath, ...links.uses.map((r) => r.filePath), ...links.usedBy.map((r) => r.filePath)]);
-  }, [links]);
+    if (following.size === 0) return null;
+    const found = new Set<string>();
+    for (const id of following) {
+      const entry = links.get(id);
+      if (!entry) continue;
+      found.add(entry.filePath);
+      for (const relation of [...entry.uses, ...entry.usedBy]) found.add(relation.filePath);
+    }
+    return found;
+  }, [following, links]);
 
   useEffect(() => {
     let cancelled = false;
@@ -687,9 +746,9 @@ export function App() {
         language: node.language,
         showLanguage: mixedProject,
         root: data?.root ?? '',
-        highlight,
+        following,
         related: relatedIds,
-        onHighlight: setHighlight,
+        onFollow: toggleFollowing,
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
         aside: relatedFiles !== null && !node.files.some((file) => relatedFiles.has(file)),
@@ -819,7 +878,8 @@ export function App() {
     view,
     changedBoxIds,
     queriedBoxIds,
-    highlight,
+    following,
+    toggleFollowing,
     relatedIds,
     relatedFiles,
     expanded,
@@ -1022,7 +1082,7 @@ export function App() {
         fitRef.current?.();
       } else if (event.key === 'Escape') {
         clearSelection();
-        setHighlight(null);
+        setFollowing(new Set());
         setShowWelcome(false);
       }
     };
@@ -1528,26 +1588,22 @@ export function App() {
         {/* What is being followed, and — the part that matters — whether the
             answer is "nothing uses this" or "nothing could be resolved". Those
             look identical on the diagram and mean opposite things. */}
-        {highlight !== null && (
+        {following.size > 0 && (
           <button
             type="button"
-            className={
-              links !== null && links.uses.length + links.usedBy.length === 0
-                ? 'symbol-chip symbol-chip-empty'
-                : 'symbol-chip'
-            }
-            onClick={() => setHighlight(null)}
+            className={reach.total === 0 && reach.settled ? 'symbol-chip symbol-chip-empty' : 'symbol-chip'}
+            onClick={() => setFollowing(new Set())}
             title={
-              links === null
-                ? 'Looking up what this symbol is connected to'
-                : links.uses.length + links.usedBy.length === 0
-                  ? 'Nothing in this project references it, and nothing it references resolved. Method calls in particular are under-reported on purpose — see CLAUDE.md.'
-                  : 'Click to stop following it'
+              !reach.settled
+                ? 'Looking up what these are connected to'
+                : reach.total === 0
+                  ? 'Nothing in this project references them, and nothing they reference resolved. Method calls in particular are under-reported on purpose — see CLAUDE.md.'
+                  : 'Click to stop following'
             }
           >
-            {links === null
+            {!reach.settled
               ? 'following…'
-              : `${links.name} — ${links.usedBy.length} in, ${links.uses.length} out`}
+              : `${reach.label} — ${reach.usedBy} in, ${reach.uses} out`}
             <span aria-hidden="true">✕</span>
           </button>
         )}
@@ -1702,6 +1758,11 @@ export function App() {
             groups={clusters}
             onDecide={decide}
             groupEditor={groupEditor}
+            following={{
+              links: reach.found,
+              settled: reach.settled,
+              onDrop: (id: string) => toggleFollowing(id, false),
+            }}
           />
         )}
       </main>
