@@ -17,9 +17,13 @@ const MAX_OVERLAP = 0.25;
  * needs dimensions up front and React Flow would otherwise lay out on stale
  * sizes for a frame.
  */
-export function boxHeight(memberCount: number, isFolder: boolean): number {
+export function boxHeight(memberCount: number, isFolder: boolean, expanded = false): number {
   if (isFolder) return HEADER_HEIGHT + ROW_HEIGHT + 8;
-  const shown = Math.min(memberCount, MAX_MEMBERS);
+  // Expanding is a layout change, not a CSS reveal. dagre places boxes from
+  // these numbers and every group frame is drawn around where they land, so a
+  // box that grew without saying so would sit outside its own frame.
+  const shown = expanded ? memberCount : Math.min(memberCount, MAX_MEMBERS);
+  // The row is still there when expanded — it is how you fold the box back up.
   const overflowRow = memberCount > MAX_MEMBERS ? 1 : 0;
   return HEADER_HEIGHT + (shown + overflowRow) * ROW_HEIGHT + 10;
 }

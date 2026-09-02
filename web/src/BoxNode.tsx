@@ -22,6 +22,9 @@ export type BoxData = {
   showLanguage: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
+  /** Showing every member rather than the first twelve. */
+  expanded: boolean;
+  onExpand: (id: string, expanded: boolean) => void;
   /** The symbol whose relations are being shown, if any is. */
   highlight: string | null;
   /** Symbol ids related to it, so a row knows whether to light or fade. */
@@ -68,7 +71,7 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
 };
 
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
-  const shown = data.members.slice(0, MAX_MEMBERS);
+  const shown = data.expanded ? data.members : data.members.slice(0, MAX_MEMBERS);
   const hidden = data.members.length - shown.length;
   const file = data.kind === 'file' ? data.files[0] : undefined;
   // Muted text and nothing else. The box surface already carries amber for just
@@ -165,24 +168,6 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 .filter(Boolean)
                 .join(' ')}
             >
-              {/* Its own target, because clicking the name already opens an
-                  editor. Nine pixels is a small thing to hit, so the button is
-                  the full height of the row and only its mark is that size. */}
-              <button
-                type="button"
-                className="member-pick"
-                aria-pressed={data.highlight === member.id}
-                title={
-                  data.highlight === member.id
-                    ? 'Stop following this symbol'
-                    : `Show what ${member.name} uses, and what uses it`
-                }
-                onClick={(event) => {
-                  event.stopPropagation();
-                  data.onHighlight(data.highlight === member.id ? null : member.id);
-                }}
-              />
-
               <span className="member-vis" aria-hidden="true">
                 {member.owner === null ? '' : VISIBILITY[member.visibility ?? 'public']}
               </span>
@@ -197,9 +182,48 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                   ? `${member.name}()`
                   : member.name}
               </button>
+
+              {/* On the right, where the box already puts its editor link, and
+                  because the left gutter is the visibility column — a mark that
+                  means something different sitting in it read as a fourth
+                  visibility symbol. */}
+              <button
+                type="button"
+                className="member-pick"
+                aria-pressed={data.highlight === member.id}
+                title={
+                  data.highlight === member.id
+                    ? 'Stop following this symbol'
+                    : `Show what ${member.name} uses, and what uses it`
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  data.onHighlight(data.highlight === member.id ? null : member.id);
+                }}
+              />
             </li>
           ))}
-          {hidden > 0 && <li className="member member-more">+{hidden} more</li>}
+          {/* The count was a label, which meant the twelfth symbol was the last
+              one the diagram would ever admit to. It is the way in now. */}
+          {(hidden > 0 || data.expanded) && (
+            <li className="member member-more">
+              <button
+                type="button"
+                className="member-expand"
+                title={
+                  data.expanded
+                    ? 'Show the first ' + MAX_MEMBERS + ' again'
+                    : 'Show all ' + data.members.length + ' — the box grows and the diagram re-lays out'
+                }
+                onClick={(event) => {
+                  event.stopPropagation();
+                  data.onExpand(data.files[0] ?? data.label, !data.expanded);
+                }}
+              >
+                {data.expanded ? 'show fewer' : '+' + hidden + ' more'}
+              </button>
+            </li>
+          )}
         </ul>
       )}
 

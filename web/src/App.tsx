@@ -171,6 +171,18 @@ export function App() {
    * them onto the files that hold them — so this asks the question the diagram
    * cannot: not which two boxes are coupled, but which two rows made them so.
    */
+  /** Boxes showing every member rather than the first twelve. */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
+
+  const toggleExpanded = useCallback((id: string, open: boolean) => {
+    setExpanded((was) => {
+      const next = new Set(was);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
   const [highlight, setHighlight] = useState<string | null>(null);
   const [links, setLinks] = useState<SymbolLinks | null>(null);
   const baseMenu = useRef<HTMLDivElement>(null);
@@ -631,7 +643,7 @@ export function App() {
       type: 'box',
       position: { x: 0, y: 0 },
       width: NODE_WIDTH,
-      height: boxHeight(node.members.length, node.kind === 'folder'),
+      height: boxHeight(node.members.length, node.kind === 'folder', expanded.has(node.id)),
       // The selection is held here, not inside React Flow: it re-reads the
       // nodes prop on every update, so a selection it kept to itself would be
       // wiped the moment the agent saved a file.
@@ -654,6 +666,8 @@ export function App() {
         highlight,
         related: relatedIds,
         onHighlight: setHighlight,
+        expanded: expanded.has(node.id),
+        onExpand: toggleExpanded,
       },
     }));
 
@@ -662,7 +676,7 @@ export function App() {
     // corner or taking a file out of a hand-drawn group changes no id, so a key
     // of ids alone would hand back the cached bounds and the frame would never
     // move.
-    const clusterKey = shown
+    const shapeKey = shown
       .map((group) => {
         const pad = group.padding;
         const slack = pad === undefined ? '' : `${pad.x}x${pad.y}`;
@@ -673,14 +687,18 @@ export function App() {
         const placed = box === undefined ? '' : `${box.x},${box.y},${box.width},${box.height}`;
         return `${group.id}~${group.files.join(',')}~${group.color ?? ''}~${slack}~${placed}~${group.locked === true ? 'L' : ''}`;
       })
-      .join('|');
+      .join('|')
+      // A box that expanded is taller and nothing about its id says so, which is
+      // the same trap a group's colour and padding fell into: the cached bounds
+      // come back and the growth never appears.
+      .concat('#', [...expanded].sort().join(','));
     const previous = layoutRef.current;
 
     // The groups arrive from their own request, after the first layout. Without
     // comparing them too, that first cluster-less layout would be reused for
     // ever and no frame would ever appear.
     const sameShape =
-      clusterKey === previous.clusterKey &&
+      shapeKey === previous.clusterKey &&
       boxes.length === previous.positions.size &&
       boxes.every((box) => previous.positions.has(box.id));
 
@@ -698,7 +716,7 @@ export function App() {
     layoutRef.current = {
       positions: new Map(laid.nodes.map((box) => [box.id, box.position])),
       clusters: laid.clusters,
-      clusterKey,
+      clusterKey: shapeKey,
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
@@ -778,6 +796,8 @@ export function App() {
     queriedBoxIds,
     highlight,
     relatedIds,
+    expanded,
+    toggleExpanded,
     picked,
     mixedProject,
     data?.root,

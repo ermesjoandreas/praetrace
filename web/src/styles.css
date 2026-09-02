@@ -204,7 +204,7 @@ main { display: flex; flex: 1; min-height: 0; }
   display: block;
   flex: 1;
   min-width: 0;
-  padding: 0 10px 0 0;
+  padding: 0 4px 0 0;
   background: transparent;
   border: none;
   color: inherit;
@@ -224,7 +224,11 @@ main { display: flex; flex: 1; min-height: 0; }
    that already carries four signals. */
 .member-pick {
   flex: none;
-  width: 11px;
+  /* Centred rather than left on the baseline the rest of the row aligns to: an
+     empty button has nothing to sit on, and ROW_HEIGHT in layout.ts is what
+     dagre and every group frame are measured from. */
+  align-self: center;
+  width: 16px;
   height: 17px;
   padding: 0;
   background: transparent;
@@ -236,7 +240,7 @@ main { display: flex; flex: 1; min-height: 0; }
   content: '';
   position: absolute;
   top: 6px;
-  left: 2px;
+  right: 5px;
   width: 6px;
   height: 6px;
   border: 1px solid var(--line-strong);
@@ -291,6 +295,22 @@ main { display: flex; flex: 1; min-height: 0; }
 .member-method button { color: var(--muted); }
 .member-method button:hover { color: var(--text); }
 .member-more { color: var(--line-strong); font-style: italic; }
+
+/* The overflow count was a dead label. It is the way into the rest of the file
+   now, so it has to look like something you can press. */
+.member-expand {
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-style: italic;
+  line-height: 17px;
+  text-align: left;
+}
+.member-expand:hover { color: var(--accent); }
 
 /* --- edges --- */
 
