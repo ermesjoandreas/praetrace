@@ -566,3 +566,78 @@ test('a member carries its owner on the node, and a top-level name with a dot in
   assert.equal(graph.nodes.get('lib/application.js#app.init')?.owner, undefined);
   assert.equal(graph.nodes.get('lib/application.js#App.init')?.owner, 'App');
 });
+
+// --- a file as the caller ---------------------------------------------------
+
+test("a call written outside every symbol is the file's own edge", () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'z', specifier: './core/schemas', imported: '*' }],
+      // `const schema = z.map(); z.ZodType.parse(x);` at the top level.
+      calls: ['z.map', 'z.ZodType.parse'],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), [
+    'app.ts -> core/schemas.ts#ZodType.parse',
+    'app.ts -> core/schemas.ts#map',
+  ]);
+});
+
+test('a file never calls what it declares itself, nor itself', () => {
+  const graph = graphOf(
+    file('app.ts', {
+      symbols: [symbol('helper', 'function'), symbol('App', 'class'), symbol('run', 'method', { owner: 'App' })],
+      calls: ['helper', 'App', 'App.run'],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), []);
+});
+
+test('a file and a symbol calling the same thing are two edges, not one', () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'ZodType', specifier: './core/schemas', imported: 'ZodType' }],
+      calls: ['ZodType'],
+      symbols: [symbol('build', 'function', { calls: ['ZodType'] })],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), [
+    'app.ts -> core/schemas.ts#ZodType',
+    'app.ts#build -> core/schemas.ts#ZodType',
+  ]);
+});
+
+test("a file's calls reach no further than a symbol's do", () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'ZodType', specifier: './core/schemas', imported: 'ZodType' }],
+      // `rows.map(...)` and a bare `parse` arrive as tails nothing bound; only
+      // the qualified member is an answer.
+      calls: ['map', 'parse', 'ZodType.parse', 'Nobody.parse'],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), ['app.ts -> core/schemas.ts#ZodType.parse']);
+});
+
+test('a file that recorded no top-level calls draws none', () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'ZodType', specifier: './core/schemas', imported: 'ZodType' }],
+      symbols: [symbol('build', 'function', { calls: ['ZodType'] })],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), ['app.ts#build -> core/schemas.ts#ZodType']);
+});

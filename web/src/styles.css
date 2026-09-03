@@ -716,6 +716,34 @@ main { display: flex; flex: 1; min-height: 0; }
   border-color: var(--vsc-accent);
 }
 
+/* A symbol the test suite never executed. Muted, because it is not a fault:
+   the warning colour is spoken for by the tool's own gaps, and code no test
+   reaches is a fact about the suite. A dot and not a codicon for the same
+   reason `.member-pick` is one — a 16px glyph does not fit a 17px compartment,
+   and every mark on this row is drawn to that line. Sized and placed like the
+   pick square so the two read as one column, and it sits to its left so
+   hovering the row cannot move it. */
+.member-never {
+  flex: none;
+  align-self: center;
+  position: relative;
+  width: 9px;
+  height: 17px;
+}
+.member-never::after {
+  content: '';
+  position: absolute;
+  top: 7px;
+  left: 2px;
+  width: 5px;
+  height: 5px;
+  /* Clamps to a circle on a 5px box, and stays a plain value under 6px. Round
+     rather than the pick square, or the two marks in this column would be the
+     same shape meaning different things. */
+  border-radius: 3px;
+  background: var(--vsc-fg-disabled);
+}
+
 /* The three states of following a symbol. Everything unrelated recedes rather
    than disappearing: a box that vanished would move the layout, and the shape of
    the diagram is what you were looking at. */
@@ -1436,6 +1464,24 @@ main { display: flex; flex: 1; min-height: 0; }
   text-overflow: ellipsis;
 }
 
+/* The agent's own words. Not mono and not clipped to a column: the other rows
+   are identifiers, this is a sentence, and the proportional face is what says
+   so before a word of it is read. One line with the rest in the title, because
+   a paragraph in this table would push the row it explains off the screen. */
+.activity-words {
+  /* A hard width for the same reason the two columns above have one: this cell
+     holds text nobody here wrote, and a table cell sized to its content would
+     let a long sentence widen the whole table and put a horizontal scrollbar
+     under the panel. */
+  max-width: 200px;
+  color: var(--vsc-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The row is not a click target — `files` is whatever the agent typed, and
+     nothing here can be navigated to honestly. */
+  cursor: default;
+}
+
 /* The same two colours every source-control view uses, so the sign is legible
    before the number is read. */
 .activity-lines { text-align: right; font-variant-numeric: tabular-nums; font-size: var(--vsc-font-size-sm); }
@@ -1705,6 +1751,11 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* A caller that is a whole file — a call written outside every symbol in it.
+   Its own flex item rather than a glyph inside the name, so a 16px icon cannot
+   lift the 22px row and the name keeps its ellipsis. */
+.followed-icon { flex: none; color: var(--vsc-fg-muted); }
+
 /* Which relationship it is. A call and an inheritance are not the same fact. */
 .followed-edge { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
 .followed-file {

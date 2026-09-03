@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { countUnreadable, NO_EXTENSION, unreadExtension } from './walk.js';
+import { fileURLToPath } from 'node:url';
+import { countUnreadable, findSourceFiles, NO_EXTENSION, unreadExtension } from './walk.js';
 
 test('program text no language reads is counted under its extension', () => {
   // The kinds git/git is made of that the curated list never named.
@@ -74,4 +75,31 @@ test('the census walks what the scan walks, skips what it skips, and counts noth
 
 test('a root that cannot be read is an empty census, not a failure', async () => {
   assert.deepEqual(await countUnreadable(path.join(os.tmpdir(), 'codemap-walk-does-not-exist')), []);
+});
+
+/**
+ * The names in `IGNORED_DIRECTORIES` are output directories, and they are
+ * ignored at any depth, which is right: a monorepo's `packages/x/dist` is as
+ * generated as the root one. The trap is that four of them are also ordinary
+ * English — `src/coverage/` reads as "the coverage feature" and scans as "the
+ * report nyc left behind". A module put in one is invisible to codemap, in the
+ * project codemap is pointed at, and it does not look broken: the imports of it
+ * simply resolve to nothing and the module is drawn nowhere. That is the
+ * failure this repository exists to refuse, so its own layout is pinned here.
+ */
+test('every module this project has is a module the scan can reach', async () => {
+  const root = fileURLToPath(new URL('../..', import.meta.url));
+  const scanned = new Set((await findSourceFiles(root)).map((file) => file.filePath));
+
+  const onDisk: string[] = [];
+  const visit = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(path.join(root, dir), { withFileTypes: true })) {
+      const child = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) await visit(child);
+      else if (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx')) onDisk.push(child);
+    }
+  };
+  await visit('src');
+
+  assert.deepEqual(onDisk.filter((file) => !scanned.has(file)), []);
 });

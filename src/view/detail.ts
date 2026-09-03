@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { REACHES, type ReachingEdgeKind } from '../graph/edges.js';
 import type { Graph, NodeKind } from '../graph/types.js';
 
 /**
@@ -22,6 +23,19 @@ export interface FileDetail {
   symbols: SymbolDetail[];
   imports: string[];
   importedBy: string[];
+  /**
+   * Files this one calls into from a statement that belongs to no symbol.
+   *
+   * A file is the source of a `calls` edge when the call was written outside
+   * every function, class and method — see `GraphEdge.from`. Kept beside
+   * `imports` rather than folded into it because the two make different
+   * claims: an import says this file mentions that one, a call says it runs
+   * something in it, and a reader who could not tell them apart would read the
+   * stronger claim off the weaker evidence. The overlap is expected — a file
+   * nearly always imports what it calls — and listing a path twice under two
+   * honest headings is better than picking one and losing the other.
+   */
+  calls: string[];
 }
 
 export interface FolderDetail {
@@ -67,6 +81,7 @@ function describeFile(graph: Graph, target: string): FileDetail {
     symbols,
     imports: importsOf(graph, (from) => from === target).sort(),
     importedBy: importedByOf(graph, (to) => to === target).sort(),
+    calls: callsOf(graph, target),
   };
 }
 
@@ -100,6 +115,25 @@ function importedByOf(graph: Graph, matches: (to: string) => boolean): string[] 
   return graph.edges.filter((edge) => edge.kind === 'imports' && matches(edge.to)).map((e) => e.from);
 }
 
+/**
+ * The distinct files `target` calls into with its own top-level statements.
+ *
+ * Lifted to files because that is the currency the rest of a FileDetail is in,
+ * and the only one the panel can act on — a symbol id is not a box to select.
+ * A file calling what it declares is already refused by the store; the test
+ * here is what keeps an edge whose target the graph has since dropped from
+ * putting an empty path in the list.
+ */
+function callsOf(graph: Graph, target: string): string[] {
+  const called = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== 'calls' || edge.from !== target) continue;
+    const to = graph.nodes.get(edge.to)?.filePath;
+    if (to !== undefined && to !== target) called.add(to);
+  }
+  return [...called].sort();
+}
+
 /** Directory a path belongs to, for grouping a change feed. */
 export function directoryOf(filePath: string): string {
   return path.posix.dirname(filePath);
@@ -121,11 +155,20 @@ export interface SymbolRelation {
   /** The other symbol's id, so the page can light the exact row. */
   id: string;
   name: string;
+  /**
+   * `'file'` on a caller, and only there.
+   *
+   * A call written outside every symbol belongs to the file, so `usedBy` can
+   * name a box rather than a row — the file's `name` is its basename and its
+   * `line` is 1. It cannot happen on `uses`: a call resolves through the
+   * export tables, which hold symbols only, so nothing in the graph calls a
+   * file.
+   */
   kind: NodeKind;
   filePath: string;
   line: number;
   /** Which relationship, so a call can read differently from an inheritance. */
-  edge: 'calls' | 'extends' | 'implements' | 'associates';
+  edge: ReachingEdgeKind;
 }
 
 export interface SymbolLinks {
@@ -160,8 +203,6 @@ export interface SymbolLinks {
   /** The sentence the panel shows beside the count, in the graph's own words. */
   coverageNote: string;
 }
-
-const RELATED: ReadonlySet<string> = new Set(['calls', 'extends', 'implements', 'associates']);
 
 type Coverage = Pick<SymbolLinks, 'coverage' | 'coverageNote'>;
 
@@ -201,9 +242,13 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
   const symbol = graph.nodes.get(id);
   if (!symbol || symbol.kind === 'file') return null;
 
+  // A file used to be dropped here, which quietly threw away every caller that
+  // was a top-level statement — the largest class of call the graph knows
+  // about, 1560 edges on zod. `contains` is the only edge that would put a
+  // symbol's own file in this list, and REACHES already leaves it out.
   const relate = (otherId: string, edge: string): SymbolRelation | null => {
     const other = graph.nodes.get(otherId);
-    if (!other || other.kind === 'file') return null;
+    if (!other) return null;
     return {
       id: other.id,
       name: other.name,
@@ -218,7 +263,7 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
   const usedBy: SymbolRelation[] = [];
 
   for (const edge of graph.edges) {
-    if (!RELATED.has(edge.kind)) continue;
+    if (!REACHES.has(edge.kind)) continue;
     if (edge.from === id) {
       const found = relate(edge.to, edge.kind);
       if (found) uses.push(found);

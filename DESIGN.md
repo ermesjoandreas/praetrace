@@ -115,9 +115,12 @@ Each one is a different *kind* of mark, not just a different hue:
 | a file that would not fully parse | a 16px `codicon-warning` in the title, before the language tag | warning |
 | too many boxes to place quickly | a chip in the breadcrumb row, `⚠ 289 boxes — depth 1 is quicker` | warning |
 | a stored name that matches nothing | a row under "Stored, matches nothing" in Categories | muted |
+| a symbol the test suite never ran | a 5px dot in the member row, left of the follow mark | disabled grey |
 
 `--vsc-warning` means one thing: **the tool's own gap** — cannot read, could not
-parse, too many to place. Do not give it a fourth meaning.
+parse, too many to place. Do not give it a fourth meaning. Coverage is not a fault
+and does not get it: a never-executed symbol wears the disabled grey, and a symbol
+with no measurement wears nothing at all, because absent is not zero.
 
 Blue is the agent's. Amber is the file system's. The accent is yours. Do not give a
 new signal one of those three hues — the frozen chip was blue for a day and shared

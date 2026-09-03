@@ -53,6 +53,16 @@ await mkdir(staging, { recursive: true });
 
 await cp(path.join(repoRoot, 'dist'), path.join(staging, 'dist'), { recursive: true });
 
+// The oracle is a measurement harness, not part of the app: nothing under
+// dist/server or dist/cli reaches it, and `checker.js` opens with
+// `import ts from 'typescript'` — a devDependency the production install below
+// deliberately does not keep. Left in, it is 80 KB that cannot load, and a
+// module that fails at load is the symptom this file's pruning notes warn is
+// indistinguishable from a worker that crashed. tsconfig keeps its fixtures out
+// of dist; this is the other half, and it has to live here because `npm test`
+// runs the checker's own test out of dist/.
+await rm(path.join(staging, 'dist', 'oracle'), { recursive: true, force: true });
+
 // A manifest of its own, so `npm install` here resolves a production-only tree
 // rather than the repository's full one.
 await writeFile(

@@ -56,6 +56,23 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
+  /**
+   * A node id, and for a `calls` edge that may be a *file*. A call written
+   * outside every function, class and method — a bare statement, a top-level
+   * `const schema = z.object(...)`, an IIFE's arguments — has no symbol to
+   * hang on, so the file carries it. The alternative was a node for every
+   * top-level constant, which would put a box on the diagram for something
+   * nobody calls by name; the file already has one.
+   *
+   * It says *this file calls that*, not *this file calls that at load*: a call
+   * inside an unnamed function nothing declares — a method of an object
+   * literal, the arrow handed to `test(...)` — is outside every symbol too,
+   * and lands here for want of anywhere better. Two of fifteen sampled from
+   * zod were of that shape. The coupling is real either way; the timing is
+   * what the edge cannot promise.
+   *
+   * Every other kind is written by a declaration and so starts at a symbol.
+   */
   from: string;
   to: string;
   kind: EdgeKind;

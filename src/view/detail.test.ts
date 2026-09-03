@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Graph, GraphNode, NodeKind } from '../graph/types.js';
-import { describeSymbol } from './detail.js';
+import { describe, describeSymbol, type Detail } from './detail.js';
 
 /** A node named after its id, unless told otherwise: a member's name is bare. */
 function node(id: string, kind: NodeKind, filePath: string, name = id.slice(id.indexOf('#') + 1)): GraphNode {
@@ -69,4 +69,72 @@ test('a function or a class is full, and the note says what full leaves out', ()
     describeSymbol(graph, 'command.ts#Command')?.usedBy.map((relation) => [relation.id, relation.edge]),
     [['command.ts#run', 'calls']],
   );
+});
+
+/**
+ * A call written outside every symbol: main.ts calls two things in lib.ts from
+ * top-level statements, and imports it as well — which is the ordinary case,
+ * and the reason the two lists have to stay apart.
+ */
+const topLevel: Graph = {
+  nodes: new Map(
+    [
+      node('lib.ts', 'file', 'lib.ts'),
+      node('lib.ts#helper', 'function', 'lib.ts'),
+      node('lib.ts#other', 'function', 'lib.ts'),
+      node('main.ts', 'file', 'main.ts'),
+      node('main.ts#run', 'function', 'main.ts'),
+    ].map((n) => [n.id, n]),
+  ),
+  edges: [
+    { from: 'main.ts', to: 'lib.ts', kind: 'imports' },
+    { from: 'main.ts', to: 'lib.ts#helper', kind: 'calls' },
+    { from: 'main.ts', to: 'lib.ts#other', kind: 'calls' },
+    { from: 'main.ts', to: 'main.ts#run', kind: 'contains' },
+  ],
+};
+
+/** `describe` narrowed to the file half of the union, without a cast. */
+function fileDetail(graph: Graph, target: string): Extract<Detail, { kind: 'file' }> {
+  const detail = describe(graph, target);
+  if (detail?.kind !== 'file') throw new Error(`no file detail for ${target}`);
+  return detail;
+}
+
+test('a file is a caller, and the symbol it calls says so', () => {
+  assert.deepEqual(
+    describeSymbol(topLevel, 'lib.ts#helper')?.usedBy.map((r) => [r.id, r.kind, r.edge]),
+    [['main.ts', 'file', 'calls']],
+  );
+  // Its `contains` is not a relation, so a symbol never lists its own file.
+  assert.deepEqual(describeSymbol(topLevel, 'main.ts#run')?.usedBy, []);
+  // And nothing calls a file: a call resolves through the export tables, which
+  // hold symbols only.
+  assert.deepEqual(describeSymbol(topLevel, 'main.ts#run')?.uses, []);
+});
+
+test("a file's own calls are listed apart from its imports, one entry per file", () => {
+  const detail = fileDetail(topLevel, 'main.ts');
+  // Two calls into lib.ts, one path — and the same path under both headings,
+  // because both statements are true and neither implies the other.
+  assert.deepEqual(detail.calls, ['lib.ts']);
+  assert.deepEqual(detail.imports, ['lib.ts']);
+  assert.deepEqual(detail.importedBy, []);
+  // The called file's own list is empty; it is the callee, not the caller.
+  assert.deepEqual(fileDetail(topLevel, 'lib.ts').calls, []);
+});
+
+test('a file never calls itself, and a target the graph has lost is dropped', () => {
+  const stale: Graph = {
+    nodes: topLevel.nodes,
+    edges: [
+      // A re-parse can drop a node while an edge still names it. A dangling
+      // target has no file path, so it cannot become one.
+      { from: 'main.ts', to: 'gone.ts#vanished', kind: 'calls' },
+      // The store refuses this one for the same reason the panel would: a box
+      // pointing at a row inside itself says nothing that `contains` did not.
+      { from: 'main.ts', to: 'main.ts#run', kind: 'calls' },
+    ],
+  };
+  assert.deepEqual(fileDetail(stale, 'main.ts').calls, []);
 });

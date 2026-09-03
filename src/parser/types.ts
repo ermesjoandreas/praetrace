@@ -143,6 +143,26 @@ export interface ParsedFile {
    */
   defaultExport?: string;
   symbols: ParsedSymbol[];
+  /**
+   * The file's own call list: names invoked outside every symbol, in exactly
+   * the reference forms `ParsedSymbol.calls` uses, deduplicated and unresolved.
+   *
+   * A call written at the top level has no caller node to hang on. A bare
+   * `app.listen(3000)`, a `const schema = z.date().min(1)` whose value is not a
+   * function, an IIFE's arguments, a decorator — none of them is a symbol, and
+   * every call inside them was dropped. Measured against the TypeScript
+   * checker, that is where most of what we miss lives: 133 of express's 218
+   * missing call edges, 3264 of zod's 6013, 1869 of query's 2572, plus 1439
+   * more in zod from top-level constants alone.
+   *
+   * The file is the caller, because the file is what runs them at load. No new
+   * NodeKind: a top-level constant does not become a node, its calls become the
+   * file's — the graph model is unchanged and a file was always a node.
+   *
+   * Absent when the language does not collect them (Java, Go, C# and Rust
+   * today) and when the file has none; nothing reads the difference.
+   */
+  calls?: string[];
   lineCount: number;
   /** Unix milliseconds from the filesystem, so "changed recently" survives a
    * restart and covers edits made before the app was even open. */

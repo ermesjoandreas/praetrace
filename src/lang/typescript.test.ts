@@ -468,3 +468,143 @@ test('a type parameter is not a written class type', () => {
   assert.deepEqual(byName(symbols, 'outer').calls, ['Item.go']);
   assert.equal(symbols.find((s) => s.owner === 'Shape' && s.name === 'item')?.typeName, undefined);
 });
+
+test('a call written outside every symbol is the file’s own', () => {
+  const parsed = parse(`
+    import * as z from './z'
+    import { Store } from './store'
+    import { register } from './registry'
+
+    register(new Store())
+    const schema = z.date().min(1)
+    const build = () => make()
+    export const started = boot()
+    ;(function () { warm() })()
+
+    export class Runner {
+      go() { inside() }
+    }
+    export function run() { alsoInside() }
+  `);
+  // A `const` whose value is a function is already a symbol and keeps its own
+  // calls; everything else at the top level runs when the module loads.
+  assert.deepEqual(parsed.calls, ['register', 'Store', 'z.date', 'boot', 'warm']);
+  assert.deepEqual(byName(parsed.symbols, 'build').calls, ['make']);
+  assert.deepEqual(byName(parsed.symbols, 'go').calls, ['inside']);
+  assert.deepEqual(byName(parsed.symbols, 'run').calls, ['alsoInside']);
+});
+
+test('a decorator on an exported class is the file’s call, and on a plain one the class’s', () => {
+  // The grammar puts a decorator inside the class it decorates — except when
+  // the class is exported, where it sits beside it under the `export`. Skipping
+  // the statement because the class was already a symbol lost it entirely.
+  const exported = parse(`
+    @Injectable({ useFactory: make() })
+    export class Service {}
+  `);
+  assert.deepEqual(exported.calls, ['Injectable', 'make']);
+
+  const plain = parse(`
+    @Other()
+    class Plain {}
+  `);
+  assert.deepEqual(plain.calls, []);
+  assert.deepEqual(byName(plain.symbols, 'Plain').calls, ['Other']);
+});
+
+test('a parameter hides the class of the same name the file declares', () => {
+  // zod's util.ts: `new Class(...)` inside a function taking a parameter called
+  // Class was drawn as a call on the file's own `export abstract class Class`.
+  // Two of the three edges the TypeScript checker called lies were this one.
+  const { symbols } = parse(`
+    export abstract class Class {
+      constructor(..._args: any[]) {}
+    }
+    export function partial(Class, schema) {
+      return new Class({ type: 'optional' })
+    }
+    export function required(Class: SchemaClass | null, schema) {
+      return new Class({ type: 'nonoptional' })
+    }
+    export function unshadowed(schema) {
+      return new Class({ type: 'optional' })
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'partial').calls, []);
+  assert.deepEqual(byName(symbols, 'required').calls, []);
+  assert.deepEqual(byName(symbols, 'unshadowed').calls, ['Class']);
+});
+
+test('a name a symbol declared itself is never the module’s', () => {
+  const { symbols } = parse(`
+    import { helper, View, Store } from './lib'
+    export function outer() {
+      function helper() {}
+      helper()
+      class Store {}
+      new Store()
+      { const View = pick(); new View() }
+    }
+    export function elsewhere() { helper(); new Store(); new View() }
+    export function recurse(n: number) { return n > 0 ? recurse(n - 1) : 0 }
+  `);
+  assert.deepEqual(byName(symbols, 'outer').calls, ['pick']);
+  assert.deepEqual(byName(symbols, 'elsewhere').calls, ['helper', 'Store', 'View']);
+  // A symbol's own name is the module's, not a local: `recurse` is the file's.
+  assert.deepEqual(byName(symbols, 'recurse').calls, ['recurse']);
+});
+
+test('a type is only the imported one while the name still means it', () => {
+  // The lie one step on: `var view = new View(...)` under a rebound `View`
+  // types view as the local, and `view.render()` was drawn on the import.
+  const { symbols } = parse(`
+    import { View } from './view'
+    export function render() {
+      const View = pick()
+      const view = new View('name')
+      view.draw()
+    }
+    export function honest() {
+      const view = new View('name')
+      view.draw()
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'render').calls, ['pick']);
+  assert.deepEqual(byName(symbols, 'honest').calls, ['View.draw', 'View']);
+});
+
+test('a destructuring default is a value, not a binding', () => {
+  // query's streamedQuery: every identifier in the pattern was read as a name
+  // the function had bound, so the real call to the imported `addToEnd` read
+  // as a call on something local and went missing.
+  const { symbols } = parse(`
+    import { addToEnd, seed } from './utils'
+    export function streamed({ reducer = (items, chunk) => addToEnd(items, chunk), initial = seed() }) {
+      return reducer(initial, 1)
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'streamed').calls, ['addToEnd', 'seed']);
+});
+
+test('a class declared in a namespace is the file’s symbol, not a name the namespace hid', () => {
+  // The namespace's body is a statement_block, so the block-scoping rule above
+  // read `Item` as a local and the one edge the box had went missing: the
+  // graph gives every namespace member a node under the file, so a call beside
+  // it is a call the graph can draw.
+  const { symbols } = parse(`
+    export namespace Bag {
+      export class Item { use() { return helper() } }
+      export const first = new Item()
+    }
+    declare global { class Glob {} }
+    export function outside() { return new Glob() }
+  `);
+  assert.deepEqual(byName(symbols, 'Bag').calls, ['Item']);
+  assert.deepEqual(byName(symbols, 'outside').calls, ['Glob']);
+  // And a body that really is a scope still hides what it declares.
+  const scoped = parse(`
+    import { Item } from './bag'
+    export function build() { class Item {}; return new Item() }
+  `);
+  assert.deepEqual(byName(scoped.symbols, 'build').calls, []);
+});

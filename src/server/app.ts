@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
+import type { Coverage } from '../report/types.js';
 import type { Graph, GraphNode } from '../graph/types.js';
 import type { Session } from './session.js';
 import { LANGUAGES } from '../lang/registry.js';
@@ -21,7 +22,7 @@ import {
   type RemoteStatus,
   readBranch,
 } from '../project/git.js';
-import { changeFromHook, type HookPayload } from '../project/hook.js';
+import { changeFromHook, couplingNote, type HookPayload } from '../project/hook.js';
 import { portFilePath } from '../project/port-file.js';
 import { countUnreadable } from '../project/walk.js';
 import {
@@ -48,7 +49,7 @@ import { search } from '../view/search.js';
 import { projectLanguages, selectView } from '../view/select.js';
 import type { LanguageCount, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
-import type { ExplainRun, SessionHost, SuggestResult } from './session.js';
+import type { AgentCall, ExplainRun, SessionHost, SuggestResult } from './session.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
 const WEB_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
@@ -105,6 +106,37 @@ const MAX_CONTEXT = 20;
  */
 const MAX_LOG = 1000;
 
+/**
+ * The most of an agent's note to keep. It is a row in a timeline beside the
+ * file changes it explains, so it has to fit on one — and a tool that asks for
+ * a sentence and stores a page has asked for the wrong thing.
+ */
+const MAX_AGENT_NOTE = 200;
+
+/**
+ * What the PostToolUse hook gets back.
+ *
+ * `hookSpecificOutput` is Claude Code's own shape, and the hook script echoes
+ * this body to stdout unchanged rather than reassembling it — which is why the
+ * server, not a line of shell, decides what the agent is told. It is absent
+ * when the graph has nothing worth saying, and then the hook prints a body
+ * Claude Code finds nothing in, which is the same as saying nothing.
+ *
+ * Verified against a real run: `additionalContext` reaches the model wrapped in
+ * a system reminder, capped at 10,000 characters, and a PostToolUse hook's
+ * plain stdout does not reach it at all.
+ */
+export interface HookResponse {
+  /** Whether the payload named a source file inside the project. */
+  accepted: boolean;
+  hookSpecificOutput?: { hookEventName: 'PostToolUse'; additionalContext: string };
+}
+
+/** What the test suite ran, or null: a project with no report is the ordinary case. */
+export interface CoverageResponse {
+  coverage: Coverage | null;
+}
+
 /** What `git log` answers, plus which commit is checked out. */
 export interface LogResponse {
   commits: Commit[];
@@ -141,6 +173,13 @@ export interface RepoInfo {
   /** Where the hook finds this server; written only while `.claude/` exists. */
   portFile: string;
   agent: { lastAt: number | null; total: number };
+  /**
+   * Where the coverage numbers came from and when it was written, or null when
+   * nothing was found. Only the provenance: the counts themselves are
+   * `/api/coverage`, and shipping a map of every file and symbol twice to
+   * render one row would cost more than the read that produced it.
+   */
+  coverage: { at: number; source: string } | null;
   languages: {
     /** What the project is written in, biggest first. */
     found: LanguageCount[];
@@ -231,10 +270,23 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     // The cutoff for "changed recently" is computed per request, so a stored
     // spec does not freeze time at the moment it was set.
     const git = spec.at === null ? session.gitStatus() : null;
+
+    // Coverage is refused at a commit for the same reason, and a sharper one.
+    // The report on disk describes the working tree, and a commit's graph is
+    // built with the ids the live one uses — so the numbers would land on last
+    // week's symbols and look entirely at home there. The refresh is three
+    // stats, which is what makes a reload after a test run show the new
+    // numbers rather than waiting for the next save.
+    let coverage: Coverage | null = null;
+    if (spec.at === null) {
+      await session.refreshCoverage();
+      coverage = session.coverage();
+    }
+
     // The view carries the graph's own `fileCount`, so the Repository panel
     // can say the frozen number: "Files 1128" under a commit was the live
     // count, beside a status bar that said 712.
-    return { root: session.root, view: selectView(graph, spec, Date.now(), git) };
+    return { root: session.root, view: selectView(graph, spec, Date.now(), git, coverage) };
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
@@ -519,7 +571,12 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       readRemote(root),
       readHookStatus(root),
       countUnreadable(root),
+      session.refreshCoverage(),
     ]);
+    // Through the session, so the row naming the report and the boxes drawing
+    // its numbers are one answer. Two reads of the same file a moment apart is
+    // one read too many, and two chances to disagree.
+    const coverage = session.coverage();
     const calls = session.agentCalls();
 
     return {
@@ -530,6 +587,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       hook,
       portFile: portFilePath(root),
       agent: { lastAt: calls[calls.length - 1]?.at ?? null, total: calls.length },
+      coverage: coverage === null ? null : { at: coverage.at, source: coverage.source },
       languages: { found: projectLanguages(session.store.graph), unreadable },
     };
   });
@@ -581,13 +639,75 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     }
   });
 
-  app.post('/api/hook', async (request, reply) => {
+  app.post('/api/hook', async (request, reply): Promise<HookResponse> => {
     const session = host.current();
     const change = await changeFromHook((request.body ?? {}) as HookPayload, session.root);
     if (change) session.queue(change);
+
+    // Read from the graph as it stands, which is the file as it was a moment
+    // before this edit. The agent's tool call is held open until this answers,
+    // so waiting for the re-parse would put the parser's queue on the agent's
+    // critical path — and who imports a file does not change because its body
+    // did. What is known now is both fast and true.
+    const context = change === null ? '' : couplingNote(session.store.graph, change.filePath);
+
     // A hook must never fail the agent's tool call, so a payload we cannot use
-    // is still a success.
-    return reply.code(200).send({ accepted: change !== null });
+    // is still a success. `accepted` is unchanged, and `hookSpecificOutput` is
+    // the part Claude Code reads out of the body the hook echoes: anything else
+    // in it, this field included, is ignored by the reader that matters.
+    reply.code(200);
+    return {
+      accepted: change !== null,
+      ...(context === ''
+        ? {}
+        : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } }),
+    };
+  });
+
+  /**
+   * The agent's own words about what it just did.
+   *
+   * Its own route rather than a marked request, unlike everything else the MCP
+   * server calls: the mark is two headers, and a sentence with an agent's
+   * punctuation in it does not belong in an HTTP header. So this records the
+   * call itself, and `note_change` is the one tool that does not mark.
+   */
+  app.post('/api/note', async (request, reply) => {
+    const body = (request.body ?? {}) as { files?: unknown; note?: unknown };
+    if (typeof body.note !== 'string' || body.note.trim() === '') {
+      return reply.code(400).send({ error: 'note must be a non-empty string' });
+    }
+
+    const note = body.note.trim();
+    const call: AgentCall = {
+      at: Date.now(),
+      tool: 'note_change',
+      target: null,
+      // Clipped rather than refused. The tool asks for 200 characters and a
+      // few over is not worth a second round trip on the agent's dime — but a
+      // paragraph would take over the panel it is a row in.
+      note: note.slice(0, MAX_AGENT_NOTE),
+      files: readStrings(body.files),
+    };
+
+    host.current().recordAgentCall(call);
+    hub.agentActed(call);
+    return { ok: true, clipped: note.length > MAX_AGENT_NOTE };
+  });
+
+  /**
+   * What the test suite executed, as the artefact CI already wrote says.
+   *
+   * The session's copy, stamped on the way in so a run that finished thirty
+   * seconds ago is read and one that has not is not. It is the same object the
+   * boxes were drawn from, which is the point: this answers "why is that
+   * symbol grey", and a second read could answer about a different report.
+   * Null is the ordinary case — most projects have no report at all.
+   */
+  app.get('/api/coverage', async (): Promise<CoverageResponse> => {
+    const session = host.current();
+    await session.refreshCoverage();
+    return { coverage: session.coverage() };
   });
 
   app.register(async (scoped) => {

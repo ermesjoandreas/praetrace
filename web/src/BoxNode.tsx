@@ -1,6 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { MouseEvent } from 'react';
-import { openInEditor, type GitFileStatus, type LanguageId, type ViewMember } from './api';
+import { openInEditor, type GitFileStatus, type LanguageId, type ViewMember, type ViewNode } from './api';
 import { MAX_MEMBERS } from './layout';
 
 export type BoxData = {
@@ -28,6 +28,16 @@ export type BoxData = {
    * like an empty file, and an M badge beside it read as a finished edit.
    */
   parseError: boolean;
+  /**
+   * What the test report measured here, on a file box and when there is any.
+   *
+   * It never reaches the face of the box. A percentage on every box is a number
+   * nobody asked for on the one surface the diagram uses for what is happening
+   * now, and it would be absent from most of them anyway — 391 of zod's 510
+   * boxes have no entry, so the diagram would read as broken rather than as
+   * unmeasured. In the title, it is there when you go looking for it.
+   */
+  coverage: ViewNode['coverage'];
   /** Needed to build an absolute path for an editor link. */
   root: string;
   /** Nothing in this box takes part in what is being followed. */
@@ -103,6 +113,17 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       ? 'mixed'
       : LANGUAGE_TAG[data.language];
 
+  // `lines` is what the report had a count for, not what the file holds, so the
+  // sentence says "measured" rather than leaving the reader to assume the file
+  // is 122 lines long. A report entry with nothing in it says nothing.
+  const measured = data.coverage === undefined || data.coverage.lines === 0 ? null : data.coverage;
+  const title =
+    measured === null
+      ? data.label
+      : `${data.label} — ${measured.covered} of ${measured.lines} measured lines ran (${Math.round(
+          (measured.covered / measured.lines) * 100,
+        )}%)`;
+
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
   if (data.changed) classes.push('box-changed');
@@ -122,7 +143,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       <Handle type="target" position={Position.Left} />
 
       <div className="box-title">
-        <span className="box-title-text" title={data.label}>
+        <span className="box-title-text" title={title}>
           {data.label}
         </span>
         {data.gitStatus !== null && (
@@ -267,6 +288,23 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                   ? `${member.name}()`
                   : member.name}
               </button>
+
+              {/* Only `never`, and never `covered`. The muted dot is worth its
+                  pixel because it is rare — 99 of zod's 4201 symbols — and
+                  because it is the one answer worth acting on; a mark on
+                  everything the suite did run would fill the diagram with dots
+                  that say "measured". Absent is the common answer and means
+                  unknown, so it is drawn as nothing rather than as 0%. Muted
+                  and not the warning colour: code the tests never reach is a
+                  fact about the suite, not a fault in the file. */}
+              {member.coverage === 'never' && (
+                <span
+                  className="member-never"
+                  role="img"
+                  title="never executed by the test suite"
+                  aria-label="never executed by the test suite"
+                />
+              )}
 
               {/* On the right, where the box already puts its editor link, and
                   because the left gutter is the visibility column — a mark that

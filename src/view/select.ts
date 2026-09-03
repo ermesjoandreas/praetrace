@@ -1,3 +1,4 @@
+import type { Coverage, FileCoverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import type { Graph } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
@@ -24,18 +25,23 @@ const GROUP_THRESHOLD = 40;
  * status arrives as an argument: reading it shells out, and the view layer is
  * the wrong place for I/O. It defaults to null because a project that is not a
  * work tree is normal, not an error.
+ *
+ * Coverage arrives the same way and for the same reason — it is read off a file
+ * CI left behind — and null is again the ordinary case: most projects have no
+ * report, and one that has none is not one where nothing ran.
  */
 export function selectView(
   graph: Graph,
   spec: ViewSpec,
   now: number,
   git: GitStatus | null = null,
+  coverage: Coverage | null = null,
 ): ViewGraph {
   // One set, built once and threaded down: every lookup below is a membership
   // test, and Object.keys on each file would be the whole cost of the view.
   const changed = git ? new Set(Object.keys(git.files)) : null;
 
-  const files = collectFiles(graph, spec.filter, now, changed);
+  const files = collectFiles(graph, spec.filter, now, changed, coverage);
   // Edges to a file the filter removed would point at a box that is not there.
   const edges = liftEdgesToFiles(graph, spec.filter).filter(
     (edge) => files.has(edge.from) && files.has(edge.to),
@@ -67,6 +73,12 @@ type Slice = Omit<ViewGraph, 'languages' | 'at' | 'fileCount' | 'hiddenTests' | 
 interface FileFacts {
   members: ViewMember[];
   parseError: boolean;
+  /**
+   * Carried here rather than looked up again where the box is built: focus
+   * mode and scope mode make their file boxes in two different places, and the
+   * report is joined once for both.
+   */
+  coverage?: FileCoverage;
 }
 
 function countFiles(graph: Graph): number {
@@ -173,6 +185,7 @@ function collectFiles(
   filter: ViewFilter,
   now: number,
   changed: ReadonlySet<string> | null,
+  coverage: Coverage | null,
 ): Map<string, FileFacts> {
   const files = new Map<string, FileFacts>();
 
@@ -180,11 +193,20 @@ function collectFiles(
     if (node.kind !== 'file') continue;
     if (!keepsFile(node.filePath, node.modifiedAt ?? 0, filter, now, changed)) continue;
     if (!files.has(node.filePath)) {
-      files.set(node.filePath, { members: [], parseError: node.parseError === true });
+      const measured = coverage?.files[node.filePath];
+      files.set(node.filePath, {
+        members: [],
+        parseError: node.parseError === true,
+        // Spread rather than assigned, because `exactOptionalPropertyTypes`
+        // holds the line this whole feature rests on: no data is no property,
+        // and never an explicit nothing that reads as a measured zero.
+        ...(measured === undefined ? {} : { coverage: measured }),
+      });
     }
   }
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
+    const measured = coverage?.symbols[node.id];
     files.get(node.filePath)?.members.push({
       id: node.id,
       name: node.name,
@@ -194,6 +216,9 @@ function collectFiles(
       visibility: node.visibility ?? null,
       isStatic: node.isStatic === true,
       isAbstract: node.isAbstract === true,
+      // 'unknown' is 3107 of zod's 4201 symbols, so it is the answer the row
+      // is drawn without rather than one it carries.
+      ...(measured === 'covered' || measured === 'never' ? { coverage: measured } : {}),
     });
   }
 
@@ -267,6 +292,7 @@ function fileNode(
     language: languageOf(filePath),
     test: isTestFile(filePath),
     parseError: facts?.parseError === true,
+    ...(facts?.coverage === undefined ? {} : { coverage: facts.coverage }),
   };
 }
 
@@ -365,6 +391,11 @@ function scopeView(
     const existing = nodes.get(target.id);
     if (existing) return existing;
 
+    // A folder box gets none: its files may have been measured by different
+    // runs, or not at all, and one number over the pile would claim more than
+    // the report said.
+    const measured = target.kind === 'file' ? files.get(filePath)?.coverage : undefined;
+
     const created: ViewNode = {
       id: target.id,
       kind: target.kind,
@@ -380,6 +411,7 @@ function scopeView(
       language: null,
       test: false,
       parseError: false,
+      ...(measured === undefined ? {} : { coverage: measured }),
     };
     nodes.set(target.id, created);
     return created;

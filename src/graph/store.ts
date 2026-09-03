@@ -545,6 +545,25 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         if (target) addEdge(owner, target, 'associates');
       }
     });
+
+    // A call written outside every function, class and method is the file's
+    // own: there is no symbol to hang it on, so until now the graph had no
+    // caller for it at all, and that is where most of what it misses was —
+    // 61% of express's absent call edges, 54% of zod's and 73% of
+    // TanStack/query's, plus 1439 more in zod written as a top-level `const`
+    // bound to something that is not a function. Resolved through the same
+    // `lookupCall` a symbol's calls are, because a name means what it means
+    // wherever it is written. What the edge claims is in GraphEdge.from.
+    for (const name of parsed.calls ?? []) {
+      const target = lookupCall(name);
+      // A file never calls what it declares itself: `contains` already says
+      // the symbol is here, and an edge from a box to a row inside it draws a
+      // loop that says nothing. A file node's id is its path, so the same test
+      // covers the file reaching itself.
+      if (target !== null && nodes.get(target)?.filePath !== parsed.filePath) {
+        addEdge(parsed.filePath, target, 'calls');
+      }
+    }
   }
 
   return { nodes, edges };

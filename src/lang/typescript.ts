@@ -199,17 +199,38 @@ function typeParametersOf(declaration: SyntaxNode): string[] {
   return names;
 }
 
-/** Every name a pattern binds, with its type: `x`, `x = 1`, `{ x, y }`, `[x]`, `...x`. */
+/**
+ * Every name a pattern binds, with its type: `x`, `x = 1`, `{ x, y }`, `[x]`,
+ * `...x`.
+ *
+ * Walked structurally rather than by sweeping the subtree for identifiers,
+ * because a default is a *value* and not a binding. Every name in it used to
+ * be recorded as one, so query's
+ * `{ reducer = (items, chunk) => addToEnd(items, chunk) }` bound `addToEnd`,
+ * and once a rebound name stopped resolving that took a true edge with it.
+ */
 function patternBindings(pattern: SyntaxNode, type: string | null): [string, string | null][] {
-  if (pattern.type === 'identifier') return [[pattern.text, type]];
-  if (pattern.type === 'assignment_pattern') {
-    const left = pattern.childForFieldName('left');
-    return left ? patternBindings(left, type) : [];
+  const of = (node: SyntaxNode | null, bound: string | null): [string, string | null][] =>
+    node === null ? [] : patternBindings(node, bound);
+
+  switch (pattern.type) {
+    case 'identifier':
+    case 'shorthand_property_identifier_pattern':
+      return [[pattern.text, type]];
+    case 'assignment_pattern':
+    case 'object_assignment_pattern':
+      return of(pattern.childForFieldName('left'), type);
+    case 'pair_pattern':
+      return of(pattern.childForFieldName('value'), null);
+    case 'rest_pattern':
+      return pattern.namedChildren.flatMap((child) => patternBindings(child, type));
+    case 'object_pattern':
+    case 'array_pattern':
+      // A destructured name has the property's type, which is not written here.
+      return pattern.namedChildren.flatMap((child) => patternBindings(child, null));
+    default:
+      return [];
   }
-  // A destructured name has the property's type, which is not written here.
-  return pattern
-    .descendantsOfType(['identifier', 'shorthand_property_identifier_pattern'])
-    .map((name) => [name.text, null]);
 }
 
 /**
@@ -252,6 +273,61 @@ function innermostAt(scopes: readonly SyntaxNode[], at: number): SyntaxNode | nu
 }
 
 /**
+ * The innermost of `scopes` that contains `node` and is not `node` itself.
+ *
+ * A `function` and a `class` are scopes as well as declarations, so the plain
+ * innermost-at test hands one back its own body: `walk` would bind `walk`, and
+ * its own recursive call would read as a name it declared locally. Requiring a
+ * *proper* container also settles what a top-level declaration means — nothing
+ * inside the file encloses it, so it stays the module's name, which is the one
+ * a reference in another file is meant to reach.
+ */
+function enclosingScope(scopes: readonly SyntaxNode[], node: SyntaxNode): SyntaxNode | null {
+  let found: SyntaxNode | null = null;
+  for (const scope of scopes) {
+    if (scope.startIndex > node.startIndex || scope.endIndex < node.endIndex) continue;
+    if (scope.startIndex === node.startIndex && scope.endIndex === node.endIndex) continue;
+    if (found === null || scope.startIndex > found.startIndex) found = scope;
+  }
+  return found;
+}
+
+/**
+ * Blocks whose contents are the file's own symbols, not names it hid.
+ *
+ * `collectTopLevel` reads the body of a `namespace`, a `declare module` and a
+ * `declare global` straight into the file's symbol list, so a class written in
+ * one has a node under the file's name — and calling that name a local hides
+ * the node from every reference beside it. `namespace Bag { class Item {}
+ * const first = new Item() }` lost the edge Bag has on Item, which is the only
+ * edge a namespace box was drawing.
+ */
+const PACKAGING_NODES: string[] = ['internal_module', 'module', 'ambient_declaration'];
+
+/** The declarations that bind their own name where they are written. */
+const NAMED_DECLARATIONS: string[] = [
+  'function_declaration',
+  'generator_function_declaration',
+  'class_declaration',
+  'abstract_class_declaration',
+];
+
+/** Everything scopeOf looks for, asked of the grammar in one pass. */
+const SCOPE_NODES: string[] = [
+  ...BLOCK_NODES,
+  ...NAMED_DECLARATIONS,
+  ...PACKAGING_NODES,
+  'lexical_declaration',
+  'variable_declaration',
+  'for_in_statement',
+  'catch_clause',
+];
+const FUNCTION_NODE_SET: ReadonlySet<string> = new Set(FUNCTION_NODES);
+const BLOCK_NODE_SET: ReadonlySet<string> = new Set(BLOCK_NODES);
+const PACKAGING_NODE_SET: ReadonlySet<string> = new Set(PACKAGING_NODES);
+const NAMED_DECLARATION_SET: ReadonlySet<string> = new Set(NAMED_DECLARATIONS);
+
+/**
  * The bindings written inside one subtree, over an outer scope. A parameter
  * is visible in its function, a `var` in its function, a `let` or `const` in
  * its block, and the reader picks the innermost at the point of use — which
@@ -260,8 +336,13 @@ function innermostAt(scopes: readonly SyntaxNode[], at: number): SyntaxNode | nu
  */
 export function scopeOf(node: SyntaxNode, outer: Scope): Scope {
   const locals: LocalBinding[] = [];
-  const functions = node.descendantsOfType(FUNCTION_NODES);
-  const blocks = node.descendantsOfType(BLOCK_NODES);
+  // One walk, then sorted here. Six calls into the grammar cost six passes over
+  // the subtree and six arrays of nodes marshalled back, and since the file's
+  // own calls are read a statement at a time this now runs thousands of times
+  // per project rather than once per symbol.
+  const found = node.descendantsOfType(SCOPE_NODES);
+  const functions = found.filter((child) => FUNCTION_NODE_SET.has(child.type));
+  const blocks = found.filter((child) => BLOCK_NODE_SET.has(child.type));
   // A `<T>` is in force in the function that declares it, the way its
   // parameters are; `node` is among `functions` whenever it is one.
   const generics = functions.flatMap((fn) =>
@@ -291,7 +372,8 @@ export function scopeOf(node: SyntaxNode, outer: Scope): Scope {
     const single = fn.childForFieldName('parameter');
     if (single) record(fn, single, null);
   }
-  for (const declaration of node.descendantsOfType(['lexical_declaration', 'variable_declaration'])) {
+  for (const declaration of found) {
+    if (declaration.type !== 'lexical_declaration' && declaration.type !== 'variable_declaration') continue;
     const scopes = declaration.type === 'lexical_declaration' ? blocks : functions;
     const visible = innermostAt(scopes, declaration.startIndex) ?? node;
     for (const declarator of declaration.namedChildren) {
@@ -310,17 +392,56 @@ export function scopeOf(node: SyntaxNode, outer: Scope): Scope {
   // no place to write one, so a call through it says nothing. Left unrecorded,
   // the `store` of the loop was the module's typed `store` outside it, and the
   // call landed on that type.
-  for (const loop of node.descendantsOfType('for_in_statement')) {
+  for (const loop of found) {
+    if (loop.type !== 'for_in_statement') continue;
     const left = loop.childForFieldName('left');
     if (left) record(loop, left, null);
   }
-  for (const clause of node.descendantsOfType('catch_clause')) {
+  for (const clause of found) {
+    if (clause.type !== 'catch_clause') continue;
     const parameter = clause.childForFieldName('parameter');
     if (parameter) record(clause, parameter, null);
   }
+  // A `function` or `class` written inside another one is that scope's name.
+  // Block-scoped for both, which is what a module says: a helper declared in an
+  // `if` is not the top-level helper of the same name, and calling it is not a
+  // call on the one the file declares or imported. Not in a namespace's body,
+  // though — see PACKAGING_NODES. Held by position, because the grammar hands
+  // back a fresh object for the same node on every access.
+  const packaged = new Set(
+    found
+      .filter((child) => PACKAGING_NODE_SET.has(child.type))
+      .flatMap((child) => child.namedChildren)
+      .filter((child) => child.type === 'statement_block')
+      .map((body) => body.startIndex),
+  );
+  for (const declaration of found) {
+    if (!NAMED_DECLARATION_SET.has(declaration.type)) continue;
+    const name = nameOf(declaration.childForFieldName('name'));
+    const visible = enclosingScope(blocks, declaration);
+    if (name === null || visible === null || packaged.has(visible.startIndex)) continue;
+    locals.push({ name, type: null, start: visible.startIndex, end: visible.endIndex });
+  }
 
   if (locals.length === 0) return outer;
-  return { ...outer, locals: [...outer.locals, ...locals] };
+
+  // A written type is a name too. `var view = new View(...)` in a function that
+  // rebound `View` types view as the *local* View, and a call through it would
+  // be drawn on the import — the same lie one step further along. A local that
+  // names itself is the exception and the common one: `const q = require('q')`
+  // binds the module under its own name, and that is what the type means here.
+  // Which names are rebound is only known once they have all been collected, so
+  // it is settled here rather than as each type is read.
+  const all = [...outer.locals, ...locals];
+  const bound = new Set(all.map((local) => local.name));
+  const scope = { ...outer, locals: all };
+  const rebound = (local: LocalBinding): boolean =>
+    local.type !== null &&
+    bound.has(local.type) &&
+    isLocal(local.type, local.start, scope) &&
+    boundTypeOf(local.type, local.start, scope) !== local.type;
+
+  return { ...outer, locals: all.map((local) => (rebound(local) ? { ...local, type: null } : local)) };
 }
 
 /**
@@ -341,6 +462,24 @@ function boundTypeOf(name: string, at: number, scope: Scope): string | null {
     }
   }
   return innermost === null ? (scope.bindings.get(name) ?? null) : type;
+}
+
+/**
+ * Whether `name` at position `at` was bound inside the symbol itself.
+ *
+ * A rebinding hides the module's name whatever it was bound to, and a type is
+ * not what decides it. `boundTypeOf` already stops an untyped local describing
+ * a *type*; this stops it reaching a *name*, which is the other half and the
+ * one that produced every lie the checker found. express's
+ * `var View = this.get('view')` shadows the `View` the file requires, and its
+ * `new View(...)` was drawn as a call into lib/view.js; zod's
+ * `partial(Class, …)` takes a parameter named `Class` beside a top-level
+ * `export abstract class Class`, and `new Class(…)` was drawn as a call on it.
+ * Both are the file calling something it was handed, which names nothing the
+ * graph can point at — so it points at nothing.
+ */
+function isLocal(name: string, at: number, scope: Scope): boolean {
+  return scope.locals.some((local) => local.name === name && at >= local.start && at < local.end);
 }
 
 /**
@@ -452,13 +591,20 @@ function receiverOf(
  * beside express's own `stringify` — five lies across zod, TanStack/query and
  * express, against two edges true by accident. Go and Java refuse an untyped
  * receiver already; this makes the JS family do the same.
+ *
+ * A bare name is refused for the same reason once the symbol rebound it; see
+ * `isLocal`.
  */
 function calleeOf(
   callee: SyntaxNode | null,
   scope: Scope,
   rebound: (node: SyntaxNode) => boolean,
 ): string | null {
-  if (callee?.type !== 'member_expression') return nameOf(callee);
+  if (callee?.type !== 'member_expression') {
+    const name = nameOf(callee);
+    // A bare name the symbol bound itself is the symbol's, not the module's.
+    return name === null || (callee !== null && isLocal(name, callee.startIndex, scope)) ? null : name;
+  }
   const receiver = receiverOf(callee.childForFieldName('object'), scope, rebound);
   if (receiver === null) return null;
   const property = nameOf(callee.childForFieldName('property'));
@@ -755,7 +901,51 @@ export function markExports(symbols: readonly ParsedSymbol[], exports: Exports):
 export interface ModuleParse extends LanguageParse {
   reexports: Reexport[];
   bindings: ImportBinding[];
+  calls: string[];
   defaultExport?: string;
+}
+
+/**
+ * The calls written outside every symbol, which are the file's own.
+ *
+ * `claimed` is every subtree that already became a symbol, so what is left is
+ * what runs when the module is loaded: a bare `app.listen(3000)`, the
+ * `z.date().min(1)` of a top-level constant that is not a function, an IIFE's
+ * arguments, a decorator. None of them had a caller node, so all of them were
+ * dropped — 133 of express's 218 missing call edges, 3264 of zod's 6013, 1869
+ * of query's 2572, and 1439 more in zod from constants alone.
+ *
+ * Read one top-level statement at a time, not once over the whole file. A
+ * statement that *is* a symbol is skipped outright, and the rest are given a
+ * scope built from themselves — so a parameter inside a top-level IIFE still
+ * types the calls made through it, without every local in every method of the
+ * file being scanned for each of them. Read once over the whole file instead,
+ * zod's parse went from 1.3 ms to 3.9 ms a file; a statement at a time it is
+ * 2.8 ms.
+ */
+export function collectFileCalls(root: SyntaxNode, claimed: readonly SyntaxNode[], scope: Scope): string[] {
+  const names = new Set<string>();
+  for (const statement of root.namedChildren) {
+    // `export class C {}` claims the class, not the `export` around it, and
+    // asking the declaration is what keeps this off every exported symbol in
+    // the file rather than walking each one to find nothing.
+    const body =
+      statement.type === 'export_statement'
+        ? (statement.childForFieldName('declaration') ?? statement)
+        : statement;
+    // A decorator on an exported class is written inside the export and outside
+    // the class, so it belongs to neither and used to be lost. It runs at load
+    // like any other top-level call: `@Injectable({ useFactory: make() })`.
+    const decorated = statement.namedChildren.some((child) => child.type === 'decorator');
+    if (within(body, claimed) && !decorated) continue;
+    // Building a scope is the expensive half of this, and most of what is left
+    // at the top level of a module — an import, a plain object, a bare
+    // assignment — has no call in it to build one for.
+    const sites = statement.descendantsOfType(['call_expression', 'new_expression']);
+    if (sites.every((site) => within(site, claimed))) continue;
+    for (const name of collectCalls(statement, claimed, scopeOf(statement, scope))) names.add(name);
+  }
+  return [...names];
 }
 
 /** An expression that is a function, whichever of the grammars' spellings. */
@@ -1276,6 +1466,7 @@ export const typescript = {
       symbols: markExports(withoutOverloads(out.symbols, out.signatures), exports),
       reexports: out.reexports,
       bindings,
+      calls: collectFileCalls(root, out.claimed, out.scope),
       ...(exports.defaultExport === null ? {} : { defaultExport: exports.defaultExport }),
     };
   },

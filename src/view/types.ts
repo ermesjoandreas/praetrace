@@ -1,3 +1,4 @@
+import type { FileCoverage, SymbolCoverage } from '../report/types.js';
 import type { GitFileStatus } from '../git/types.js';
 import type { EdgeKind, NodeKind } from '../graph/types.js';
 import type { LanguageId } from '../lang/types.js';
@@ -51,6 +52,17 @@ export interface ViewMember {
   visibility: 'public' | 'private' | 'protected' | null;
   isStatic: boolean;
   isAbstract: boolean;
+  /**
+   * Whether the test suite ever ran this symbol, when a report said so.
+   *
+   * Absent is the ordinary answer, not a missing one: most of a graph has no
+   * runtime function to count — a field, an interface and a type never do —
+   * and a run that never imported the file says nothing about it either. So
+   * `unknown` is spelled as no property at all, and a row without this must
+   * never be drawn as 0%. `never` is the answer worth having and it is rare:
+   * 99 of zod's 4201 symbols, none of express's 145.
+   */
+  coverage?: Exclude<SymbolCoverage, 'unknown'>;
 }
 
 export interface ViewNode {
@@ -88,6 +100,17 @@ export interface ViewNode {
    * "0 symbols" is otherwise indistinguishable from an empty one.
    */
   parseError: boolean;
+  /**
+   * The lines the test report has a count for, and how many of them ran.
+   *
+   * `lines` is what the report measured, not what the file holds, so the
+   * percentage is `covered / lines`. File boxes only: a folder stands for
+   * files a run may have reached one at a time, and one number over the pile
+   * would read as a claim about all of them. Absent means the report has no
+   * entry for this file — vitest 4 reports only what a run imported, nyc omits
+   * what the script excluded — and absent is not zero.
+   */
+  coverage?: FileCoverage;
 }
 
 export interface ViewEdge {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Graph, GraphNode } from '../graph/types.js';
+import type { Coverage } from '../report/types.js';
 import { NO_FILTER } from './filter.js';
 import { selectView } from './select.js';
 import type { ViewSpec } from './types.js';
@@ -138,6 +139,91 @@ test('a member nests under the owner its node names, and a dotted top-level name
     [
       [`${filePath}#app.init`, null],
       [`${filePath}#App.init`, 'App'],
+    ],
+  );
+});
+
+/** Two files with symbols in them, so a member row has something to carry. */
+function withSymbols(): Graph {
+  const range = { startLine: 1, endLine: 1 };
+  const nodes = new Map<string, GraphNode>();
+  const declare = (filePath: string, names: readonly string[]): void => {
+    nodes.set(filePath, { id: filePath, kind: 'file', name: filePath, filePath, range });
+    for (const name of names) {
+      const id = `${filePath}#${name}`;
+      nodes.set(id, { id, kind: 'function', name, filePath, range });
+    }
+  };
+  declare('src/app.ts', ['run', 'assertNever', 'Options']);
+  declare('src/lib/util.ts', ['helper']);
+  return { nodes, edges: [] };
+}
+
+/**
+ * What a report says, and — as loudly — what it does not. src/lib/util.ts has
+ * no entry because the run never imported it, and `Options` has none because a
+ * type has no runtime function to count.
+ */
+const measured: Coverage = {
+  at: 0,
+  source: 'coverage/lcov.info',
+  files: { 'src/app.ts': { lines: 10, covered: 7 } },
+  symbols: {
+    'src/app.ts#run': 'covered',
+    'src/app.ts#assertNever': 'never',
+    'src/app.ts#Options': 'unknown',
+    'src/lib/util.ts#helper': 'unknown',
+  },
+};
+
+test('a file box carries the lines the report measured, and a file with no entry carries none', () => {
+  const view = selectView(withSymbols(), root, 0, null, measured);
+  assert.deepEqual(
+    view.nodes.map((node) => [node.id, node.coverage]),
+    [
+      ['src/app.ts', { lines: 10, covered: 7 }],
+      // Absent, and emphatically not { lines: 0, covered: 0 }: the run never
+      // imported this file, which says nothing about what it would have run.
+      ['src/lib/util.ts', undefined],
+    ],
+  );
+  // Focus mode builds its boxes somewhere else, and must reach the same answer.
+  const focused = selectView(withSymbols(), { ...root, focus: 'src/app.ts' }, 0, null, measured);
+  assert.deepEqual(focused.nodes[0]?.coverage, { lines: 10, covered: 7 });
+});
+
+test("a member row says 'covered' or 'never', and carries nothing for unknown", () => {
+  const view = selectView(withSymbols(), root, 0, null, measured);
+  assert.deepEqual(
+    view.nodes.flatMap((node) => node.members.map((member) => [member.id, member.coverage])),
+    [
+      ['src/app.ts#run', 'covered'],
+      ['src/app.ts#assertNever', 'never'],
+      ['src/app.ts#Options', undefined],
+      ['src/lib/util.ts#helper', undefined],
+    ],
+  );
+});
+
+test('with no report nothing is measured, which is not the same as nothing running', () => {
+  const view = selectView(withSymbols(), root, 0);
+  assert.deepEqual(view.nodes.map((node) => node.coverage), [undefined, undefined]);
+  assert.deepEqual(
+    view.nodes.flatMap((node) => node.members.map((member) => member.coverage)),
+    [undefined, undefined, undefined, undefined],
+  );
+});
+
+test('a folder box carries no coverage, however much of it was measured', () => {
+  // `many` puts src/app.ts inside a folder box, and the report has a number
+  // for it. Summing it over 41 files would claim the other 40 were measured.
+  const folders = selectView(graphOf(many, []), root, 0, null, measured);
+  assert.equal(folders.grouped, true);
+  assert.deepEqual(
+    folders.nodes.map((node) => [node.id, node.coverage]),
+    [
+      ['src', undefined],
+      ['test', undefined],
     ],
   );
 });

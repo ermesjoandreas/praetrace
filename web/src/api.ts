@@ -203,6 +203,15 @@ export type Detail =
       symbols: SymbolDetail[];
       imports: string[];
       importedBy: string[];
+      /**
+       * Files this one calls into from a statement belonging to no symbol.
+       *
+       * Listed apart from `imports` because the two claims differ in strength:
+       * an import says this file mentions that one, a call says it runs
+       * something in it. The same path under both headings is the ordinary
+       * case, and it is honest twice.
+       */
+      calls: string[];
     }
   | { kind: 'folder'; path: string; files: string[]; imports: string[]; importedBy: string[] };
 
@@ -222,7 +231,13 @@ export async function fetchDetail(target: string, at: string | null = null): Pro
 export interface SymbolRelation {
   id: string;
   name: string;
-  kind: 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
+  /**
+   * `'file'` on a caller, and only there: a call written outside every symbol
+   * belongs to the file, so a row can name a box rather than a symbol. Its
+   * `name` is the basename and its `line` is 1, which is where such a call
+   * sits. Nothing in the graph *uses* a file, so it never appears under `uses`.
+   */
+  kind: 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
   filePath: string;
   line: number;
   edge: 'calls' | 'extends' | 'implements' | 'associates';
@@ -460,6 +475,19 @@ export interface AgentCall {
   at: number;
   tool: string;
   target: string | null;
+  /**
+   * The agent's own words about what it just changed, through `note_change`.
+   * Absent on every other entry, and its presence is what makes a row a note —
+   * `tool` is the literal `note_change` and `target` is null, so neither can
+   * tell one apart on its own.
+   */
+  note?: string;
+  /**
+   * Which files the note is about. Whatever the agent passed, and never checked
+   * against the graph: it may name a file that does not exist, or none at all.
+   * A hint for the tooltip, so nothing is drawn from it.
+   */
+  files?: string[];
 }
 
 export async function fetchAgentCalls(): Promise<{ calls: AgentCall[]; lastAt: number | null }> {

@@ -39,6 +39,18 @@ interface Row {
   tool: string | null;
   /** How many of the same thing in a row this stands for. 1 for most. */
   times: number;
+  /**
+   * The agent's own words about what it just changed, and which files it says
+   * they are about. Null on every other row, and that is what makes this one a
+   * note — a note arrives as an ordinary agent call, so `tool` and `target`
+   * cannot tell it apart.
+   *
+   * `files` is whatever the agent passed and is never checked against the
+   * graph: it may name a file that is not there, or be empty. So it stays in
+   * the tooltip and nothing is drawn from it — least of all a click that would
+   * send the diagram to a path that does not exist.
+   */
+  note: { words: string; files: string[] } | null;
 }
 
 function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
@@ -47,7 +59,14 @@ function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
     // coalesces, which is an implementation detail, while "where" is the column
     // this table exists for and a batch has no single answer to it.
     ...changes.flatMap((entry) =>
-      entry.files.map((file) => ({ at: entry.at, kind: 'change' as const, target: file, tool: null, times: 1 })),
+      entry.files.map((file) => ({
+        at: entry.at,
+        kind: 'change' as const,
+        target: file,
+        tool: null,
+        times: 1,
+        note: null,
+      })),
     ),
     ...agentCalls.map((call) => ({
       at: call.at,
@@ -55,6 +74,7 @@ function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
       target: call.target,
       tool: call.tool,
       times: 1,
+      note: call.note === undefined ? null : { words: call.note, files: call.files ?? [] },
     })),
   ];
   return collapse(rows.sort((a, b) => b.at - a.at));
@@ -76,13 +96,29 @@ function collapse(rows: readonly Row[]): Row[] {
   const folded: Row[] = [];
   for (const row of rows) {
     const last = folded[folded.length - 1];
-    if (last && last.kind === row.kind && last.target === row.target && last.tool === row.tool) {
+    if (last && same(last, row)) {
       last.times += 1;
       continue;
     }
     folded.push({ ...row });
   }
   return folded;
+}
+
+/**
+ * Two rows that stand for the same thing happening twice.
+ *
+ * The words are part of that: every note arrives as `note_change` with no
+ * target, so a comparison of tool and target alone would fold two things the
+ * agent said into one row and throw the second sentence away.
+ */
+function same(a: Row, b: Row): boolean {
+  return (
+    a.kind === b.kind &&
+    a.target === b.target &&
+    a.tool === b.tool &&
+    (a.note?.words ?? null) === (b.note?.words ?? null)
+  );
 }
 
 /** The directory a path sits in — the "where" column, and empty at the root. */
@@ -166,6 +202,36 @@ export function Activity({
             <tbody>
               {rows.map((row, index) => {
                 const path = row.kind === 'change' ? row.target : null;
+
+                // The agent saying what it did, in its own words. It takes the
+                // three columns the other rows spend on a name, a directory and
+                // a diff, because a sentence is what it has and 118px of the
+                // "what" column would show four words of it. The row is not a
+                // click target: `files` is unverified, so there is no path here
+                // anything can honestly navigate to.
+                if (row.note !== null) {
+                  return (
+                    <tr
+                      key={`${row.at}-${index}`}
+                      className="activity-ask"
+                      title={
+                        (row.times > 1 ? `${row.times} times in a row — ` : '') +
+                        row.note.words +
+                        (row.note.files.length === 0 ? '' : ` — ${row.note.files.join(', ')}`)
+                      }
+                    >
+                      <td className="activity-when">{when(row.at, now)}</td>
+                      <td className="activity-mark">
+                        <i className="codicon codicon-comment" aria-hidden="true" />
+                      </td>
+                      <td className="activity-words" colSpan={3}>
+                        {row.note.words}
+                        {row.times > 1 && <span className="activity-times">×{row.times}</span>}
+                      </td>
+                    </tr>
+                  );
+                }
+
                 return (
                   <tr
                     key={`${row.at}-${index}`}

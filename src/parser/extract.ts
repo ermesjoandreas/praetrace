@@ -71,6 +71,11 @@ export function parseSource(filePath: string, source: string, modifiedAt = 0): P
     // a file that imports nothing bound nothing, which is not the same as a
     // parser that never said.
     ...(parse.bindings === undefined ? {} : { bindings: parse.bindings }),
+    // What the file calls at top level, outside every symbol; the graph draws
+    // these from the file itself. Dropped when empty, unlike `bindings`:
+    // nothing reads the presence of this field, so a file that calls nothing
+    // at top level and a language that collects none say the same thing here.
+    ...(parse.calls === undefined || parse.calls.length === 0 ? {} : { calls: parse.calls }),
     ...(parse.defaultExport === undefined ? {} : { defaultExport: parse.defaultExport }),
   };
 }

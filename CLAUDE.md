@@ -42,6 +42,12 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
   matches the code it described
 - Source Control: the commit graph with its threads, the diagram frozen at any
   commit (`?at=`), and a Repository panel — project, remote, hook and MCP
+- Coverage read from what CI already wrote — never run, never instrumented, and
+  absent is never zero
+- The hook answers: after every edit it tells the agent what the file it just
+  wrote is coupled to
+- An oracle: the TypeScript checker as a re-runnable test, `scripts/oracle.mjs`
+  over any repository and `src/oracle/checker.test.ts` over a pinned fixture
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
@@ -53,12 +59,12 @@ something in the last round of work argued for it:
    an imported class from a namespace object without the bindings it now records —
    it can, so do it.
 
-2. **A corpus regression test.** Every pure module has a `*.test.ts` beside it now
-   (100+ cases), and they pin what a parser emits for a fixture. What nothing pins
-   is what the graph draws for a real repository: five invented edges in zod
-   survived every unit test because each function was right and the composition
-   lied. `scripts/corpus.mjs` already prints the numbers; a test that clones the
-   corpus and compares them to a checked-in baseline is the next one worth writing.
+2. **A corpus regression test.** Half of it exists: `src/oracle/checker.test.ts`
+   pins our graph against the TypeScript checker's over a fixture, which is what
+   catches a composition that lies while every function in it is right. What is
+   left is a baseline over a real clone — `scripts/corpus.mjs` and
+   `scripts/oracle.mjs` both print the numbers; nothing yet compares them to a
+   checked-in expected file.
 
 3. **Structural session diff** — VISION.md phase 1. Today the tool knows which
    *files* differ from a base, and since time travel it can build a commit's whole
@@ -208,6 +214,26 @@ the field is how the relationship is spelled, the class is what has it. Like
 `calls`, it is opt-in (`?edges=…,associates`) and *replaces* the import between the
 same pair rather than being drawn beside it. `Logger[]` sets `many`, for 1..*.
 
+**A file can be the source of a call.** A call written outside every symbol — a
+bare statement, a top-level `const` bound to something that is not a function, an
+IIFE's arguments, a decorator on an exported class — has no caller node and used
+to be dropped: 133 of express's 218 missing call edges, 3 264 of zod's 6 013,
+1 869 of query's 2 572. It is collected as `ParsedFile.calls`, the file's own list,
+in the same reference forms a symbol's calls use, and resolved through the same
+lookup. No new NodeKind: a top-level constant does not become a node, its calls
+become the file's. Worth 1 560 edges on zod and 1 675 on query. A file never calls
+what it declares itself, and never itself. The edge means *this file calls that* —
+not "at load": a call in an object-literal method or in an arrow passed to
+`test(...)` lands there too, because neither is a symbol in our model.
+
+**A name the symbol bound itself is never the module's.** A parameter, a `var`,
+`let` or `const`, a destructured binding, a nested `function` or `class`, a catch
+parameter — whatever it was bound to — hides the file's import or top-level
+declaration of the same name for its whole scope, and so does the type written on
+it. All three edges the TypeScript checker called lies were this one rule missing:
+express's `var View = this.get('view')` reaching the imported `View`, and zod's
+parameter named `Class` reaching the file's `export abstract class Class`.
+
 **Methods and fields are not in the name-resolution table, and a bare name never
 reaches them.** In TypeScript and JavaScript a call on an untyped receiver —
 `x.map(...)` where nothing says what `x` is — reaches the graph as *nothing*: it
@@ -277,6 +303,7 @@ npm run codemap -- <dir>          # the same graph as text
 npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
 node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
+node scripts/oracle.mjs <dir>     # where the TypeScript checker says we are wrong
 
 node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
 npm run tauri dev                 # the desktop app
@@ -292,17 +319,29 @@ A server left running from an earlier session will happily serve code from befor
 src/
   graph/          the graph engine — pure, no I/O
     types.ts      GraphNode / GraphEdge / Graph / GraphDelta
+    edges.ts      which edge kinds mean "reaches" — one home, two readers
     resolve.ts    module specifier -> file, given the set of known files
     store.ts      holds parse results, derives the graph, emits deltas
   git/
     types.ts      GitFileStatus / GitStatus — pure, so the view can name a
                   status without importing the module that shells out
+  report/
+    types.ts      FileCoverage / SymbolCoverage — pure, so the view can carry a
+                  number without importing the module that reads the artefact.
+                  Named report/, not coverage/: `coverage` is in walk.ts's
+                  IGNORED_DIRECTORIES, so a module there is invisible to our own
+                  scan — which is how it was found
   lang/           one file per language, to the contract in types.ts
     types.ts      LanguageSupport / LanguageParse / ResolveContext / ProjectFacts
     registry.ts   extension -> language; what "cannot read" is the complement of
     typescript.ts the reference reader the JS one shares: scopes, typed
                   receivers, re-exports, bindings, property-assigned functions
     javascript.ts, java.ts, go.ts, csharp.ts, rust.ts
+  oracle/         a second opinion from the TypeScript checker — dev only, never
+                  in the live path, never imported from server/, cli/ or project/:
+                  it pulls in `typescript`, a devDependency
+    checker.ts    ts.Program -> our edge shape, with the diagnostics gate
+    fixtures/     the shapes that have caught us before, pinned
   parser/         everything that knows about ASTs
     types.ts      ParsedFile / ParsedSymbol + worker message shapes
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
@@ -318,6 +357,8 @@ src/
     history.ts    one commit's graph: git archive -> temp dir -> scanProject
                   through the session's pool. Never throws, never leaves the dir
     groups.ts     named groups, their colours and sizes, .codemap/groups.json
+    coverage.ts   what the test suite executed, read off lcov or istanbul.
+                  Never runs anything, never throws; absent is never zero
     explain.ts    spawns `claude -p` for a reading of a symbol. Never throws
     suggest.ts    spawns `claude -p` for names for the unnamed groups. Never
                   throws, never writes; a person accepts, and that is the write
@@ -419,7 +460,11 @@ GET  /api/git           the current git status
 POST /api/git-base      change the base the working tree is compared against
 GET  /api/hook-status   is a working hook installed
 POST /api/hook-install  merge ours into whatever is there
-POST /api/hook          the PostToolUse payload. Always 200
+POST /api/hook          the PostToolUse payload. Always 200, and answers with
+                        what the file just written is coupled to, as
+                        `hookSpecificOutput.additionalContext`
+POST /api/note          the agent's own words about what it just changed
+GET  /api/coverage      what the test suite executed, or { coverage: null }
      /live              the websocket. Besides views it carries `agent`,
                         `explain`, `explain-delta`, and `{ type: 'groups' }` after
                         every groups.json write — to every client, frozen ones
@@ -455,7 +500,17 @@ chokidar watcher ─────────────────────
   directory uninvited — and is removed on shutdown.
 - **The app writes the hook for you.** A hook that names a port rather than reading
   the file counts as *not* installed, so an old one is offered the upgrade instead
-  of being mistaken for a working one.
+  of being mistaken for a working one. So does one that throws the answer away.
+- **The hook answers.** Verified against a real run: a PostToolUse hook's plain
+  stdout does *not* reach the model, and `systemMessage` goes to the user only —
+  the one channel is JSON carrying `hookSpecificOutput.additionalContext`, capped
+  at 10 000 characters. So `/api/hook` replies with what the file just written is
+  coupled to, in prose, under 400 characters, and **says nothing when the graph
+  has nothing worth saying**: a hook that always speaks becomes noise the agent
+  learns to skip. It names the importers and the symbols actually reached from
+  outside; it gives no ratio, because the graph cannot see a method called through
+  an untyped receiver and a denominator would be a number it cannot support. The
+  route still always answers 200 and never makes the agent wait.
 
 ## The view layer
 
@@ -644,7 +699,10 @@ to study one part of the graph while the agent works elsewhere.
 
 The MCP proxy marks its own requests with `x-codemap-tool` and `x-codemap-arg`, and
 one `onRequest` hook records them. Headers rather than a separate report: one request,
-and nothing to keep in sync. That buys one timeline (the agent's questions and the
+and nothing to keep in sync — with one exception. `note_change` carries a sentence
+in the agent's own words, and a sentence with punctuation in it does not belong in
+an HTTP header, so its route records the call itself. Two writers into one ring,
+and they can drift. That buys one timeline (the agent's questions and the
 file changes in a single column), a second pulse (a box glows blue when the agent
 asked about it), and a status that names the tool and how long ago.
 
@@ -654,10 +712,14 @@ asked about it), and a status that names the tool and how long ago.
 `.mcp.json` wires it up.
 
 The direction is the point. An MCP server is called **by** an agent and can never
-call one, so the app cannot reach the agent already working in the project — not
-to ask it anything, not to hand it a task. What it can do is offer that agent the
-unnamed groups, and `name_group` is how the agent names them: for free,
-unprompted, whenever it chooses to.
+call one, so *through MCP* the app cannot reach the agent already working in the
+project. What it can do is offer that agent the unnamed groups, and `name_group`
+is how the agent names them: for free, unprompted, whenever it chooses to.
+
+**There is exactly one way in, and it is the hook, not MCP.** A PostToolUse hook's
+`additionalContext` reaches the model — see *Event sources*. It carries facts the
+graph already holds about the file the agent just wrote, never a request and never
+a task.
 
 **Since 2026-09-02 the app can also ask a Claude of its own.** `src/project/suggest.ts`
 spawns `claude -p` — not MCP, and MCP's direction is unchanged — for names for
@@ -677,6 +739,8 @@ list_groups     the clusters, named and unnamed; "by hand" for a drawn one,
 name_group      accept one with a name
 describe_file   declares / used by / uses
 search_symbols  subsequence search over the whole project
+note_change     the agent says what it just changed, and why — at most 200
+                characters, session memory, never .codemap/
 ```
 
 It holds no graph of its own; it talks to a running codemap over HTTP and finds it
@@ -777,7 +841,8 @@ Full reasoning in [DECISIONS.md](DECISIONS.md). The rules:
 - Small modules with one responsibility. The parser does not know about websockets.
 - Prefer plain functions over classes unless there is real state to hold.
 - Keep I/O at the edges. `graph/` and `view/` are pure and must stay that way — that
-  is why `src/git/types.ts` exists separately from `src/project/git.ts`.
+  is why `src/git/types.ts` exists separately from `src/project/git.ts`, and
+  `src/report/types.ts` from `src/project/coverage.ts`.
 - Comments explain *why*, not *what*.
 
 **Testing.** The rule used to be "no test framework ceremony in the MVP, but the
@@ -794,6 +859,11 @@ each pure module in `src/`, and `web/src/*.test.ts` run as they are.
 - **Do not** unit-test the server, the React page, or the parser workers. Those are
   I/O and integration; a scratch script against a running server is still the right
   tool, and it belongs in DECISIONS.md when it proves something.
+- **A test may read a checked-in fixture off disk** when that is what turns a
+  scratch script into something re-runnable. `src/oracle/checker.test.ts` builds a
+  real `ts.Program` over `src/oracle/fixtures/` and `project/coverage.test.ts`
+  writes a temp directory; both are the third category, and both exist because
+  what they check cannot be reached with a pure input.
 - A bug worth fixing is worth a test that fails first. The last three bugs found by
   review all lived in pure functions.
 
@@ -853,7 +923,22 @@ the graph can be trusted at a glance on a project that is not this one:
   about 2 s — client-side dagre plus the React Flow mount for ~288 boxes. The server
   answers in 3 ms; the cost is entirely in the page.
 - Every save re-parses; there is no content hash, so a save that changes nothing
-  still costs a parse and a publish.
+  still costs a parse and a publish. Collecting a file's own top-level calls
+  roughly doubled the parse: zod went from 1.31 to 2.8 ms a file, query from 0.73
+  to 2.1. It is in a worker, so decision 1 holds — the boot scan is what doubles,
+  not the live pulse.
+- **Coverage is coverage, not blast radius.** It answers "did the suite ever run
+  this", and only for the third of a TypeScript graph that has a runtime function:
+  of zod's 3 541 symbols, 1 124 join. "Which tests would break" was measured and
+  refused — neither vitest nor nyc records it, manufacturing it costs 13.6× the
+  suite, and the answer comes back as "125 of 192 tests". A symbol is measured
+  only by a function the report declares on its own first line: joining executed
+  statement lines onto a range gave express's `res.download` 87 of 88 test files
+  where the truth is 2.
+- The oracle is TypeScript's opinion and has its own blind spots: it does not walk
+  tagged templates at all, and it names a symlink's realpath where we name the
+  path as written — 33 of query's "ours-only" edges are those two, and all 33 are
+  true.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
 - A file with a syntax error still loses symbols — tree-sitter is error-tolerant —
@@ -866,6 +951,11 @@ the graph can be trusted at a glance on a project that is not this one:
   Cargo's build output is 2 818 "unreadable" files on this repository alone and
   the scan drew generated `.rs` from it as source. Honouring `.gitignore` would be
   the real answer.
+- **Gaps the oracle pins**, TS/JS, in `src/oracle/checker.test.ts`'s KNOWN_GAPS: a
+  call to a member a class *inherits* reaches nothing, because `memberOf` reads
+  only the owner's own declarations — hundreds of edges in zod; a function's own
+  properties are invisible inside the file that defines them (`app.init()` in
+  express's lib); a call chained straight onto a construction has no receiver.
 - **Gaps that are gaps on purpose**, TS/JS: a TypeScript `namespace` object has no
   node, so `errorUtil.errToObj()` through `import { errorUtil }` resolves to
   nothing (70 true edges in zod); a parameter typed `typeof z4` and a spread alias

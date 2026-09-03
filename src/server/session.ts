@@ -1,9 +1,11 @@
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
+import type { Coverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
 import { createParserPool } from '../parser/pool.js';
+import { coverageStamp, readCoverage } from '../project/coverage.js';
 import {
   explain,
   readExplanations,
@@ -34,6 +36,22 @@ export interface AgentCall {
   tool: string;
   /** What it asked about — a path, a query — when the tool had one. */
   target: string | null;
+  /**
+   * The agent's own words about what it just changed, when it left any.
+   *
+   * Every other entry here is a question codemap answered; this is the one the
+   * agent volunteered, through `note_change`. It rides the same ring because
+   * the order is the point — a note belongs between the lookups that led to an
+   * edit and the edit itself, not in a list of its own.
+   *
+   * Session memory, and deliberately. A note is an event, not a decision: it
+   * says what happened at 14:12, and nothing about the project is different
+   * because of it. Persisted session history is VISION.md phase 1 and gets a
+   * schema designed for it rather than this ring promoted into one.
+   */
+  note?: string;
+  /** Which files the note is about, when it is a note. */
+  files?: string[];
 }
 
 /** One batch of files that changed together, newest last. */
@@ -144,6 +162,16 @@ export interface Session {
   setGitBase(base: string): Promise<GitStatus | null>;
   /** Re-reads git; true when the answer differs from the one being served. */
   refreshGit(): Promise<boolean>;
+  /** What the test report says the suite ran, or null when the project has none. */
+  coverage(): Coverage | null;
+  /**
+   * Re-read the report, if it has been rewritten since the last read.
+   *
+   * Three stats, and the 4.7 ms read only when one of them moved. Awaited
+   * before a view is built rather than after, so the numbers a client is sent
+   * are the ones this just checked.
+   */
+  refreshCoverage(): Promise<void>;
   /**
    * The project's graph as of one commit, or null when the sha is not one this
    * repository knows. Built on demand and remembered; two asks for the same
@@ -218,6 +246,24 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   let key = statusKey(status);
   let closed = false;
 
+  // Held rather than read per view, because the live push happens on every
+  // save and 4.7 ms of lcov is time the pulse does not have. Noticed by stamp
+  // rather than by the watcher: `coverage/` is an ignored directory, so a
+  // finished test run is as invisible here as a commit is — the same blindness
+  // that makes git a poll.
+  //
+  // What holding it costs: between two stamps the numbers describe the file as
+  // the suite found it, so a symbol added since reads as unmeasured and one
+  // that moved keeps the answer joined at the line it used to be on. Both are
+  // the report being older than the code, not the cache being older than the
+  // report, and re-joining would only pin yesterday's counts to today's line
+  // numbers — the same staleness wearing a fresher look.
+  //
+  // Stamped before it is read, so a report written between the two is caught
+  // by the next stamp rather than held under a stamp that says it is current.
+  let coverageStampValue = await coverageStamp(root);
+  let coverage = await readCoverage(root, store.graph);
+
   // Read with the project for the same reason git is: the panel asks on its
   // first render, and a project that has been explained before should not have
   // to spend a run to say so. A missing or unparseable file is an empty list,
@@ -253,6 +299,31 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     return true;
   }
 
+  /**
+   * Queued behind one another like the git reads, and for a sharper reason: the
+   * stamp and the numbers it stands for are one pair, and two reads landing out
+   * of order would file the older report under the newer stamp and keep it
+   * there until the next run.
+   */
+  let readingCoverage: Promise<void> = Promise.resolve();
+
+  function refreshCoverage(): Promise<void> {
+    readingCoverage = readingCoverage.then(readCoverageIfWritten);
+    return readingCoverage;
+  }
+
+  async function readCoverageIfWritten(): Promise<void> {
+    const stamp = await coverageStamp(root);
+    if (stamp === coverageStampValue || closed) return;
+
+    const next = await readCoverage(root, store.graph);
+    // The session can be closed while the report is being read, exactly as it
+    // can while git is answering, and numbers nobody will serve are not news.
+    if (closed) return;
+    coverageStampValue = stamp;
+    coverage = next;
+  }
+
   const poll = setInterval(() => {
     void refreshGit().then((changed) => {
       if (changed && !closed) handlers.onGitChanged();
@@ -272,8 +343,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       if (history.length > MAX_HISTORY) history.shift();
       // git is re-read before the publish, not after it: the view about to be
       // sent carries each file's status, and one computed from the previous
-      // read would show the edit without showing that it is now a change.
-      void refreshGit().then(() => {
+      // read would show the edit without showing that it is now a change. The
+      // report is stamped in the same breath and for the same reason — it is
+      // three stats unless the suite has run, and the push is the only moment
+      // an idle window learns that it has.
+      void Promise.all([refreshGit(), refreshCoverage()]).then(() => {
         // The updater refuses to publish after close, but the await above
         // reopens that window.
         if (!closed) handlers.onApplied(changedFiles);
@@ -383,6 +457,8 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       return status;
     },
     refreshGit,
+    coverage: () => coverage,
+    refreshCoverage,
     graphAt,
 
     explanations: () => explanations,

@@ -176,3 +176,45 @@ test('a superclass named through a namespace import keeps its qualifier', () => 
   assert.deepEqual(byName(symbols, 'A').extends, ['ns.Base']);
   assert.deepEqual(byName(symbols, 'B').extends, []);
 });
+
+test('what a CommonJS module runs at load is the file’s own call list', () => {
+  const parsed = parse(`
+    var express = require('./express');
+    var path = require('path');
+
+    var app = express();
+    app.set('views', path.join(__dirname, 'views'));
+    app.listen(3000, function () { ready(); });
+
+    app.handle = function handle(req, res) { inside(); };
+
+    function unused() { never(); }
+  `);
+  // `app` is what `express()` returned, which is not a written type, so
+  // `app.set()` and `app.listen()` name nothing — the same rule a receiver
+  // inside a symbol gets. `path` is a required module and names itself.
+  assert.deepEqual(parsed.calls, ['require', 'express', 'path.join', 'ready']);
+  assert.deepEqual(byName(parsed.symbols, 'app.handle').calls, ['inside']);
+  assert.deepEqual(byName(parsed.symbols, 'unused').calls, ['never']);
+});
+
+test('a var that rebinds a required name is not that module', () => {
+  // express lib/application.js: `var View = this.get('view')` shadows the View
+  // the file requires, and `new View(...)` was drawn as a call into lib/view.js
+  // — one of the three edges the TypeScript checker called a lie.
+  const parsed = parse(`
+    var View = require('./view');
+
+    app.render = function render(name, options, callback) {
+      var View = this.get('view');
+      var view = new View(name, {});
+      return view.render();
+    };
+
+    app.plain = function plain(name) {
+      return new View(name, {});
+    };
+  `);
+  assert.deepEqual(byName(parsed.symbols, 'app.render').calls, []);
+  assert.deepEqual(byName(parsed.symbols, 'app.plain').calls, ['View']);
+});

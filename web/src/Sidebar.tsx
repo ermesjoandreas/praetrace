@@ -200,6 +200,13 @@ function FileView({
       {/* The answer the diagram could never give. */}
       <PathList title="Used by" paths={detail.importedBy} onSelect={onSelect} />
       <PathList title="Uses" paths={detail.imports} onSelect={onSelect} />
+      {/* Its own heading, never folded into Uses. An import says this file
+          mentions that one; a call says it runs something in it, and the same
+          path under both headings is the ordinary case — a file nearly always
+          imports what it calls. Merged, the stronger claim would be read off
+          the weaker evidence. Most files have none, and PathList hides an
+          empty list. */}
+      <PathList title="Calls" paths={detail.calls} onSelect={onSelect} />
     </>
   );
 }
@@ -677,10 +684,24 @@ function Relations({
           <li key={row.id + row.edge}>
             <button
               type="button"
-              title={`${row.filePath}:${row.line} — ${row.edge}`}
+              title={
+                // A file caller has no line to open at: the call was written
+                // outside every symbol, so the row names a whole box and says
+                // so rather than pointing at line 1 as though it were a
+                // declaration.
+                row.kind === 'file'
+                  ? `${row.filePath} — ${row.edge} this from a statement outside every symbol in it`
+                  : `${row.filePath}:${row.line} — ${row.edge}`
+              }
               onClick={() => onSelect(row.filePath)}
               onDoubleClick={() => onFocus(row.filePath, 'file')}
             >
+              {/* The name is a basename here, which without a mark would read
+                  as a symbol someone had called store.ts. Beside the name and
+                  not inside it, so the name keeps its own ellipsis. */}
+              {row.kind === 'file' && (
+                <i className="codicon codicon-symbol-file followed-icon" aria-hidden="true" />
+              )}
               <span className="followed-symbol">{row.name}</span>
               <span className="followed-edge">{row.edge}</span>
               <span className="followed-file">{row.filePath}</span>

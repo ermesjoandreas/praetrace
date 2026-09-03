@@ -6,6 +6,7 @@ import {
   assignedSymbolOf,
   classScope,
   collectCalls,
+  collectFileCalls,
   exportsOf,
   importBindings,
   markExports,
@@ -130,6 +131,11 @@ interface Collected {
   imports: string[];
   reexports: Reexport[];
   symbols: ParsedSymbol[];
+  /**
+   * Subtrees that already became a symbol, so the file does not also claim what
+   * they call; see collectFileCalls.
+   */
+  claimed: SyntaxNode[];
   /** The file's top-level bindings, which every symbol's receivers are read against. */
   scope: Scope;
 }
@@ -160,7 +166,10 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
   // other, and a module written like express is nothing but these.
   if (node.type === 'expression_statement') {
     const assigned = assignedSymbolOf(node, out.scope);
-    if (assigned) out.symbols.push(assigned);
+    if (assigned) {
+      out.symbols.push(assigned);
+      out.claimed.push(node);
+    }
     return;
   }
 
@@ -176,6 +185,7 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
     const bodies = kind === 'class' ? collectMembers(node, name, members, scope) : [];
     out.symbols.push(makeSymbol(node, name, kind, bodies, scope));
     out.symbols.push(...members);
+    out.claimed.push(node);
     return;
   }
 
@@ -194,11 +204,13 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
         const bodies = collectMembers(value, name, members, scope);
         out.symbols.push(makeSymbol(value, name, 'class', bodies, scope));
         out.symbols.push(...members);
+        out.claimed.push(declarator);
         continue;
       }
 
       if (FUNCTION_VALUES.has(value.type)) {
         out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+        out.claimed.push(declarator);
       }
     }
   }
@@ -267,7 +279,13 @@ export const javascript = {
     // Both spellings of an import bind names: a `.mjs` writes `import`, a
     // `.cjs` writes `require`, and the codemods in query are the second.
     const bindings = [...importBindings(root), ...requireBindings(root)];
-    const out: Collected = { imports: [], reexports: [], symbols: [], scope: moduleScope(root, bindings) };
+    const out: Collected = {
+      imports: [],
+      reexports: [],
+      symbols: [],
+      claimed: [],
+      scope: moduleScope(root, bindings),
+    };
     for (const child of root.namedChildren) collectTopLevel(child, out);
     collectCallImports(root, out.imports);
     const exports = exportsOf(root);
@@ -276,6 +294,7 @@ export const javascript = {
       symbols: markExports(out.symbols, exports),
       reexports: out.reexports,
       bindings,
+      calls: collectFileCalls(root, out.claimed, out.scope),
       ...(exports.defaultExport === null ? {} : { defaultExport: exports.defaultExport }),
     };
   },

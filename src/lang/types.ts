@@ -37,6 +37,12 @@ export interface LanguageParse {
   imports: string[];
   symbols: ParsedSymbol[];
   /**
+   * The calls written outside every symbol, which belong to the file itself;
+   * see ParsedFile.calls. A language that has no top level worth the name, or
+   * that does not collect them yet, leaves this out.
+   */
+  calls?: string[];
+  /**
    * What the file declares itself to belong to, when the language says so — a
    * Java or C# package, a Go package, a Rust module. Languages that resolve by
    * declared name rather than by path match against this; the rest leave it out.

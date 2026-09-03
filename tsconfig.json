@@ -19,5 +19,17 @@
     "esModuleInterop": true,
     "skipLibCheck": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // The oracle's fixtures are a test's input, not modules of the app:
+  // deliberately odd code that checker.test.ts reads off disk and builds its own
+  // program over. Emitted, they are JavaScript copies with different edges from
+  // the sources under test, and a dozen files in the bundle nothing imports.
+  //
+  // `src/oracle` itself still compiles, because `npm test` runs the checker test
+  // out of dist/. It must not *ship*: checker.ts imports `typescript`, a
+  // devDependency the app's production install does not keep, so
+  // scripts/prepare-resources.mjs has to drop dist/oracle after it copies dist/
+  // into the staging directory. A module that cannot load is the symptom
+  // CLAUDE.md warns is indistinguishable from a worker that crashed.
+  "exclude": ["src/oracle/fixtures"]
 }

@@ -1,6 +1,7 @@
+import type { Coverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import type { GraphStore } from '../graph/store.js';
-import type { ExplainRun } from './session.js';
+import type { AgentCall, ExplainRun } from './session.js';
 import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -39,8 +40,13 @@ export interface LiveHub {
   /**
    * An agent asked something. The graph did not change, so this is its own
    * message rather than a view update nobody needs.
+   *
+   * The whole call, not the three fields a lookup has: a note carries what the
+   * agent said and which files it said it about, the page reads both off this
+   * frame, and a narrower type here described a wire that was already sending
+   * them.
    */
-  agentActed(call: { at: number; tool: string; target: string | null }): void;
+  agentActed(call: AgentCall): void;
   /**
    * An explain run ended. It starts a minute or so after the request that asked
    * for it, so the page has no reply left open to learn the outcome on — and the
@@ -71,7 +77,12 @@ export interface LiveHub {
 }
 
 export function createLiveHub(
-  getSession: () => { root: string; store: GraphStore; gitStatus(): GitStatus | null },
+  getSession: () => {
+    root: string;
+    store: GraphStore;
+    gitStatus(): GitStatus | null;
+    coverage(): Coverage | null;
+  },
 ): LiveHub {
   const clients = new Map<LiveSocket, ViewSpec>();
 
@@ -89,7 +100,9 @@ export function createLiveHub(
         root: session.root,
         // Recomputed per push, so a "changed in the last 5 minutes" filter keeps
         // meaning five minutes from now rather than five minutes from when it was set.
-        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus()),
+        // Coverage is taken, not read: this is synchronous by design, and the
+        // session has already stamped the report on its way to publishing.
+        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus(), session.coverage()),
         changedFiles,
       }),
     );

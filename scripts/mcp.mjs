@@ -225,4 +225,35 @@ server.registerTool(
     }),
 );
 
+server.registerTool(
+  'note_change',
+  {
+    title: 'Say what you just changed, and why',
+    description:
+      'Leave a one-line note beside the edits you just made. codemap draws what changed; only you know why, and the note appears in the timeline next to the file changes it explains. Write it in your own words, at most 200 characters. Nothing reads it back to you — it is for the person watching.',
+    inputSchema: {
+      files: z
+        .array(z.string())
+        .describe('The files the note is about, relative to the project root'),
+      note: z.string().describe('One line: what changed and why'),
+    },
+  },
+  ({ files, note }) =>
+    run(async () => {
+      // The only tool that does not mark its request. The mark is two headers,
+      // and a sentence with an agent's punctuation in it does not belong in
+      // one — so /api/note records the call itself, and marking here as well
+      // would put the same note in the timeline twice.
+      const { clipped } = await api('/api/note', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ files, note }),
+      });
+      const where = files.length === 1 ? files[0] : `${files.length} files`;
+      return clipped
+        ? `Noted against ${where}, clipped to 200 characters.`
+        : `Noted against ${where}.`;
+    }),
+);
+
 await server.connect(new StdioServerTransport());

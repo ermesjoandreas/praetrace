@@ -101,7 +101,7 @@ export function Repository({
     );
   };
 
-  const { remote, hook, languages, agent } = repo;
+  const { remote, hook, languages, agent, coverage } = repo;
   const fetchBlocked =
     remote === null
       ? 'Not a git repository'
@@ -143,6 +143,24 @@ export function Repository({
               {languages.unreadable.map((kind) => `${kind.extension} ×${kind.files}`).join(' · ')}
             </Row>
           )}
+          {/* Beside Files and Languages, because that is what it is: something
+              read off the project, from a file CI already wrote. It sits here
+              rather than under Claude Code — nothing about it comes from an
+              agent, and a reader who found it in that block would reasonably
+              conclude one had produced it. The age is the artefact's, so a
+              report from last month says so instead of looking current. */}
+          <Row
+            label="Coverage"
+            title={
+              coverage === null
+                ? 'No coverage/lcov.info, lcov.info or coverage/coverage-final.json at the project root. Only there, so a monorepo writing one per package finds nothing.'
+                : `${coverage.source}, written ${clock.format(new Date(coverage.at))}`
+            }
+          >
+            {coverage === null
+              ? 'none found'
+              : `${coverage.source} · ${relativeTime(coverage.at, now)}`}
+          </Row>
         </dl>
         <div className="repo-actions">
           {isDesktop ? (

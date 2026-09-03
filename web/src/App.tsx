@@ -1394,6 +1394,10 @@ export function App() {
         showLanguage: mixedProject,
         test: node.test,
         parseError: node.parseError,
+        // Undefined on a folder box and on any file the report has no entry
+        // for, which is most of them. Passed through as it came: absent means
+        // unknown, and the box must never turn that into a zero.
+        coverage: node.coverage,
         root: data?.root ?? '',
         following,
         related: relatedIds,

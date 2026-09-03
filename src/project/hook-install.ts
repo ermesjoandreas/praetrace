@@ -8,13 +8,30 @@ import path from 'node:path';
  * in `.claude/codemap.port`, so a single hook definition keeps working across
  * launches that land on different ports — and across a switch between projects,
  * because each project has its own file.
+ *
+ * It is also two-way. `/api/hook` answers with what the file just written is
+ * coupled to, and curl prints that answer on stdout, which is the one channel a
+ * `PostToolUse` hook has back into the agent's context. So the shell stays a
+ * pipe and nothing more: stderr is silenced, stdout is not, and `true` keeps
+ * the exit code clean whatever happened — a hook must never fail the tool call
+ * it fired after.
+ *
+ * Which is exactly why `-f` is there. Because stdout is the channel, anything
+ * curl prints on it is read as the graph's answer, and an HTTP error body is
+ * not one.
  */
 const MATCHER = 'Write|Edit|MultiEdit';
 
-const HOOK_COMMAND =
+/**
+ * Exported so the test beside this file can check our own command against the
+ * recogniser below. The two are one decision written twice, and the failure
+ * when they drift is silent: every install reads as current and no answer ever
+ * reaches the agent.
+ */
+export const HOOK_COMMAND =
   `P="\${CLAUDE_PROJECT_DIR:-.}/.claude/codemap.port"; ` +
-  `[ -f "$P" ] && curl -s -m 2 -X POST "http://127.0.0.1:$(cat "$P")/api/hook" ` +
-  `-H 'content-type: application/json' --data-binary @- >/dev/null 2>&1; true`;
+  `[ -f "$P" ] && curl -sf -m 2 -X POST "http://127.0.0.1:$(cat "$P")/api/hook" ` +
+  `-H 'content-type: application/json' --data-binary @- 2>/dev/null; true`;
 
 /** Recognises our own entry, in any form, so upgrading replaces rather than duplicates. */
 const OURS = '/api/hook';
@@ -26,6 +43,34 @@ const OURS = '/api/hook';
  * gets offered the upgrade.
  */
 const FINDS_THE_PORT = 'codemap.port';
+
+/**
+ * Stdout sent to /dev/null, which every codemap hook written before the
+ * endpoint had anything to say does.
+ *
+ * It reaches the server, gets the answer and throws it away, so it counts as
+ * not installed for the same reason a baked-in port does: it looks like ours
+ * and does not do what ours does. `2>/dev/null` is stderr and is left alone —
+ * the current command uses it.
+ */
+const DISCARDS_STDOUT = /(?:^|[\s&])(?:1|&)?>\s*\/dev\/null/;
+
+/**
+ * `-f`, so an HTTP error prints no body.
+ *
+ * `/api/hook` answers 200 whatever it made of the payload, but Fastify answers
+ * before the route does: a body over its 1 MiB limit is a 413 and an
+ * unrecognised content-type a 415. Without `-f` curl prints that JSON on
+ * stdout, and stdout is where Claude Code reads the hook's answer — so one
+ * large Edit puts `{"statusCode":413,...}` into the agent's context wearing the
+ * graph's voice.
+ *
+ * Matched from `curl` rather than anywhere in the line, because our own command
+ * opens with the shell's `[ -f "$P" ]` — a file test, three tokens earlier, that
+ * an unanchored pattern would happily accept as curl's. `--fail-with-body` is
+ * not accepted: it is the flag that keeps the body.
+ */
+const FAILS_ON_ERROR = /\bcurl\b[^;|\n]*?(?:\s-[A-Za-z]*f|\s--fail(?![\w-]))/;
 
 interface HookCommand {
   type?: string;
@@ -63,8 +108,22 @@ function isOurs(entry: HookEntry): boolean {
   return (entry.hooks ?? []).some((hook) => (hook.command ?? '').includes(OURS));
 }
 
+/**
+ * Whether one command is a codemap hook that still does what ours does: finds
+ * the port for itself, lets the answer through, and lets nothing else through.
+ * Pure, and exported, so the three ways it can be wrong are readable in a test
+ * rather than in a settings file nobody opens.
+ */
+export function isCurrentHook(command: string): boolean {
+  return (
+    command.includes(FINDS_THE_PORT) &&
+    !DISCARDS_STDOUT.test(command) &&
+    FAILS_ON_ERROR.test(command)
+  );
+}
+
 function isCurrent(entry: HookEntry): boolean {
-  return (entry.hooks ?? []).some((hook) => (hook.command ?? '').includes(FINDS_THE_PORT));
+  return (entry.hooks ?? []).some((hook) => isCurrentHook(hook.command ?? ''));
 }
 
 function settingsPathFor(root: string): string {
