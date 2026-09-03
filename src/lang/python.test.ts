@@ -315,6 +315,32 @@ test('a call on a receiver whose type was written down is that type\'s method, a
   assert.deepEqual(sorted(calls ?? []), ['Flask', 'Flask.route', 'Flask.run', 'load', 'main']);
 });
 
+test('a class written inside a method has a self of its own, and a closure still sees ours', () => {
+  // requests' tests do this eleven times: a stand-in class declared inside the
+  // test method, whose methods take `self` like any other. That `self` is the
+  // stand-in's instance, so `self.helper()` in it must not be drawn as a call
+  // from `run` to `Outer.helper` — the one wrong edge read as authoritative.
+  const { symbols } = parse(`
+    class Outer:
+        def helper(self): ...
+
+        def run(self):
+            class Inner:
+                def go(self):
+                    self.helper()
+            def cb(self):
+                self.helper()
+            return Inner()
+
+        def later(self):
+            def go():
+                self.helper()
+            return go
+  `);
+  assert.deepEqual(byName(symbols, 'run', 'Outer').calls, []);
+  assert.deepEqual(byName(symbols, 'later', 'Outer').calls, ['Outer.helper']);
+});
+
 test('a module path resolves to a file from every source root, and a relative one from the importing file', () => {
   const files = [
     'src/flask/__init__.py',

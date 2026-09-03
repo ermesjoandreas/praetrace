@@ -227,9 +227,15 @@ function vouchFor(handedOn: PassThrough[]): Pick<FileDetail, 'importedByCoverage
 function handedOnBy(handedOn: readonly PassThrough[]): string | null {
   const [first, ...rest] = handedOn;
   if (first === undefined) return null;
-  const where = rest.length === 0 ? first.filePath : `${first.filePath} and ${rest.length} more like it`;
+  // The sentence used to say the pass-through "declares nothing the graph could
+  // read", which was true only while the rule required an empty file. It does
+  // not, and four readers were told that lib/express.js, command.go and
+  // solver.py declare nothing while the box beside the sentence listed 1, 202
+  // and 49 of their symbols. What the sentence is actually about is the
+  // importers on the far side of the file, so that is what it says now.
+  const where = rest.length === 0 ? first.filePath : `${first.filePath} and ${rest.length} more`;
   const files = first.importers === 1 ? '1 file' : `${first.importers} files`;
-  return `Handed on by ${where}, which declares nothing the graph could read and is imported by ${files} — any of them can reach this with no import naming it.`;
+  return `Handed on by ${where}, imported by ${files} — any of them can reach this without naming this file, so the count is a floor.`;
 }
 
 /**

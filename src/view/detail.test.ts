@@ -171,7 +171,9 @@ test('a class a barrel hands on is partial, and the note names the file that han
   const links = describeSymbol(handedOn, 'packages/query-core/src/queryObserver.ts#QueryObserver');
   assert.equal(links?.coverage, 'partial');
   assert.match(links?.coverageNote ?? '', /packages\/query-core\/src\/index\.ts/);
-  assert.match(links?.coverageNote ?? '', /declares nothing the graph could read/);
+  // The note is about the importers on the far side, not about what the
+  // pass-through declares: it may declare plenty and still hand this on.
+  assert.match(links?.coverageNote ?? '', /Handed on by .*imported by/);
   // How many files stand behind the barrel is the scale of what is missing,
   // and it is the half of the sentence a reader can act on.
   assert.match(links?.coverageNote ?? '', /imported by 1 file\b/);
@@ -274,6 +276,6 @@ test('a file whose symbols the parser lost is counted as handing on, not excused
   assert.equal(detail.importedByCoverage, 'partial');
   assert.match(detail.importedByNote, /broken\.ts/);
   // And the sentence claims only what is true of both kinds of empty file.
-  assert.match(detail.importedByNote, /declares nothing the graph could read/);
+  assert.match(detail.importedByNote, /Handed on by .*imported by/);
   assert.equal(describeSymbol(unreadable, 'lib.ts#helper')?.coverage, 'partial');
 });

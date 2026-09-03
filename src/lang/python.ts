@@ -485,17 +485,34 @@ function collectCalls(
 ): string[] {
   const names = new Set<string>();
 
+  /**
+   * The definitions inside this one that take the instance's name as a
+   * parameter of their own: the methods of a class written inside a method —
+   * requests' tests do that eleven times — and a callback declared `(self)`.
+   * Inside those, `self` is their instance and not this one, so it is read as
+   * the local it is; a closure that merely mentions `self` still sees ours.
+   */
+  const rebound =
+    instance === null
+      ? []
+      : node.descendantsOfType(['function_definition', 'lambda']).filter(
+          (definition) =>
+            definition.startIndex !== node.startIndex &&
+            parametersOf(definition.childForFieldName('parameters')).some(([name]) => name === instance),
+        );
+  const isInstance = (identifier: SyntaxNode): boolean => identifier.text === instance && !within(identifier, rebound);
+
   /** The classifier a receiver expression is known to be, as this file may name it. */
   const receiverOf = (object: SyntaxNode | null): string | null => {
     if (!object) return null;
     if (object.type === 'identifier') {
-      if (object.text === instance) return scope.owner;
+      if (isInstance(object)) return scope.owner;
       const written = typed.get(object.text);
       return written === undefined || written === null || BUILTIN_TYPES.has(written) ? null : qualify(written, scope);
     }
     if (object.type !== 'attribute') return null;
     const holder = object.childForFieldName('object');
-    if (holder?.type === 'identifier' && holder.text === instance) {
+    if (holder?.type === 'identifier' && isInstance(holder)) {
       const field = object.childForFieldName('attribute')?.text;
       const written = field === undefined ? undefined : scope.fields.get(field);
       return written === undefined || BUILTIN_TYPES.has(written) ? null : qualify(written, scope);
@@ -512,7 +529,7 @@ function collectCalls(
       // `cls()` in a classmethod builds the class; any other local — a
       // parameter holding a callback, a nested function — names nothing the
       // graph can point at.
-      if (callee.text === instance) {
+      if (isInstance(callee)) {
         if (scope.owner !== null) names.add(scope.owner);
       } else if (!locals.has(callee.text)) names.add(callee.text);
       continue;
