@@ -469,6 +469,53 @@ test('a type parameter is not a written class type', () => {
   assert.equal(symbols.find((s) => s.owner === 'Shape' && s.name === 'item')?.typeName, undefined);
 });
 
+test('an exported const bound to a call is a symbol, and an unexported one is not', () => {
+  // zod's public API is written this way and none of it was drawn: `export
+  // const parse: $Parse = _parse(errors.$ZodRealError)` left the file holding a
+  // call to `_parse` and no node an importer could land on. 330 declarations of
+  // it in zod, against 645 unexported ones that are locals and stay locals.
+  const parsed = parse(`
+    export const parse: $Parse = _parse(realError)
+    export const answer = 6 * 7
+    const helper = makeHelper()
+    const late = makeLate()
+    export { late }
+    const quiet = makeQuiet()
+  `);
+  assert.deepEqual(
+    parsed.symbols.map((s) => [s.name, s.kind, s.exported]),
+    [
+      ['parse', 'function', true],
+      ['late', 'function', true],
+    ],
+  );
+  // What the factory was called on belongs to the name it produced, not to the
+  // module; what the unexported ones call still runs at load and is the file's.
+  assert.deepEqual(byName(parsed.symbols, 'parse').calls, ['_parse']);
+  assert.deepEqual(byName(parsed.symbols, 'late').calls, ['makeLate']);
+  assert.deepEqual(parsed.calls, ['makeHelper', 'makeQuiet']);
+});
+
+test('a name merged as an interface and an exported const yields both symbols', () => {
+  // TypeScript's declaration merging, and zod writes its schemas with it:
+  // `export interface ZodError` beside `export const ZodError = $constructor(…)`
+  // is one name for a type and a value. Before the const was read, the file
+  // declared only the type half, so a `new ZodError()` anywhere had nothing
+  // callable to land on — 374 of zod's calls edges end on a name whose file
+  // declares a function of it, and all 374 now have one.
+  const { symbols } = parse(`
+    export interface ZodError { issues: Issue[] }
+    export const ZodError = $constructor('ZodError', init)
+  `);
+  assert.deepEqual(
+    symbols.filter((s) => s.owner === undefined).map((s) => [s.name, s.kind]),
+    [
+      ['ZodError', 'interface'],
+      ['ZodError', 'function'],
+    ],
+  );
+});
+
 test('a call written outside every symbol is the file’s own', () => {
   const parsed = parse(`
     import * as z from './z'
@@ -486,10 +533,12 @@ test('a call written outside every symbol is the file’s own', () => {
     }
     export function run() { alsoInside() }
   `);
-  // A `const` whose value is a function is already a symbol and keeps its own
-  // calls; everything else at the top level runs when the module loads.
-  assert.deepEqual(parsed.calls, ['register', 'Store', 'z.date', 'boot', 'warm']);
+  // A `const` whose value is a function is already a symbol, and so is an
+  // exported one bound to a call; both keep their own calls. Everything else at
+  // the top level runs when the module loads.
+  assert.deepEqual(parsed.calls, ['register', 'Store', 'z.date', 'warm']);
   assert.deepEqual(byName(parsed.symbols, 'build').calls, ['make']);
+  assert.deepEqual(byName(parsed.symbols, 'started').calls, ['boot']);
   assert.deepEqual(byName(parsed.symbols, 'go').calls, ['inside']);
   assert.deepEqual(byName(parsed.symbols, 'run').calls, ['alsoInside']);
 });

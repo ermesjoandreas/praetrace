@@ -2,7 +2,8 @@ import path from 'node:path';
 import { languageById } from '../lang/registry.js';
 import type { ProjectFacts } from '../lang/types.js';
 import { QUALIFIED_SEPARATOR, type ParsedFile, type Reexport } from '../parser/types.js';
-import type { Graph, GraphDelta, GraphEdge, GraphNode } from './types.js';
+import { looksInternal } from './resolve.js';
+import type { Graph, GraphDelta, GraphEdge, GraphNode, NodeKind } from './types.js';
 
 /**
  * Holds the graph and the per-file parse results it is derived from.
@@ -88,6 +89,26 @@ const REEXPORT_DEPTH = 8;
 interface ResolvedReexport {
   target: string;
   names: Reexport['names'];
+}
+
+/**
+ * The kinds that declare a type and nothing that runs. A call that ends on one
+ * of them is a false statement about the code — there is nothing there to run,
+ * whatever the syntax at the call site looked like.
+ */
+const TYPE_ONLY: ReadonlySet<NodeKind> = new Set<NodeKind>(['interface', 'type']);
+
+/**
+ * A reference that landed somewhere, and how the answer was found.
+ *
+ * `guessed` rides with the id rather than on a flag the caller reads
+ * afterwards because `lookupCall` resolves an owner in the middle of resolving
+ * a member, so a shared flag would be overwritten before anyone looked at it.
+ */
+interface Found {
+  id: string;
+  /** See `GraphEdge.guessed`; false is the ordinary answer. */
+  guessed: boolean;
 }
 
 /** An import binding whose specifier has already been turned into a file. */
@@ -212,6 +233,12 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
    * too; see `lookupCall` below.
    */
   const membersByFile = new Map<string, Map<string, Map<string, string>>>();
+  /**
+   * filePath -> name -> the declaration of that name with code in it, for a
+   * name whose *first* declaration is a type. See `callableEnd` below; usually
+   * empty, because usually a name is declared once.
+   */
+  const valuesByFile = new Map<string, Map<string, string>>();
 
   // Pass 1: every node must exist before edges are resolved, or a reference to a
   // file that happens to be visited later would be dropped.
@@ -237,6 +264,7 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
     /** Class name -> its node id, so the members that follow can attach to it. */
     const owners = new Map<string, string>();
     const members = new Map<string, Map<string, string>>();
+    const values = new Map<string, string>();
 
     for (const symbol of parsed.symbols) {
       const base =
@@ -263,7 +291,19 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
       // members would invent a call edge to every class that happens to declare
       // one. A missing edge is a gap; a wrong one is a lie.
       if (symbol.owner === undefined) {
-        if (!byName.has(symbol.name)) byName.set(symbol.name, id);
+        const shadowed = byName.get(symbol.name);
+        if (shadowed === undefined) byName.set(symbol.name, id);
+        // TypeScript merges declarations, so one name can be a type *and*
+        // something that runs: zod writes `export type OK<T>` and then
+        // `export const OK = <T>(v) => ...`, and first-in-document-order gave
+        // every reference the type. Which half is right depends on the
+        // reference, so both are kept — the tables answer with the first, as
+        // they always did, and `callableEnd` reaches this one when a call landed
+        // on a type.
+        else if (!TYPE_ONLY.has(symbol.kind) && !values.has(symbol.name)) {
+          const first = nodes.get(shadowed);
+          if (first !== undefined && TYPE_ONLY.has(first.kind)) values.set(symbol.name, id);
+        }
         if ((!flagged || symbol.exported === true) && !exported.has(symbol.name)) exported.set(symbol.name, id);
       } else {
         const owned = members.get(symbol.owner) ?? new Map<string, string>();
@@ -281,6 +321,7 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
 
     ownersByFile.set(parsed.filePath, owners);
     membersByFile.set(parsed.filePath, members);
+    if (values.size > 0) valuesByFile.set(parsed.filePath, values);
 
     symbolsByFile.set(parsed.filePath, byName);
     exportedByFile.set(parsed.filePath, exported);
@@ -291,6 +332,39 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
   // Whoever parsed the file resolves its references. A specifier means what
   // its own language says it means, and there is no shared fallback: a rule
   // that half applies would invent edges between files that never met.
+  /**
+   * The heads every declared module name starts with, so a Java or Go specifier
+   * can be told from a dependency's. Built once, read by `looksInternal`.
+   */
+  /**
+   * Every name the project declares anywhere. A call that resolved to nothing
+   * counts as missing coupling only if the project holds that name somewhere:
+   * `console.log`, `setTimeout`, `describe` and `it` resolved to nothing too,
+   * and nothing is missing. Without this, express reported 903 and every one of
+   * them was a global, a node builtin or mocha.
+   */
+  const declaredAnywhere = new Set<string>();
+  for (const parsed of files.values()) {
+    for (const symbol of parsed.symbols) {
+      declaredAnywhere.add(symbol.name);
+      const dot = symbol.name.lastIndexOf('.');
+      if (dot > 0) declaredAnywhere.add(symbol.name.slice(dot + 1));
+    }
+  }
+
+  /** Is this a name the project could have answered? The tail of `T.m` counts. */
+  const couldBeOurs = (name: string): boolean => {
+    if (declaredAnywhere.has(name)) return true;
+    const dot = name.lastIndexOf('.');
+    return dot > 0 && declaredAnywhere.has(name.slice(dot + 1));
+  };
+
+  const modulePrefixes = new Set<string>();
+  for (const name of modules.values()) {
+    const head = name.split(/[.:/]/)[0];
+    if (head !== undefined && head !== '') modulePrefixes.add(head);
+  }
+
   const resolveFrom = (parsed: ParsedFile, specifier: string): string | null =>
     languageById(parsed.language)?.resolve({
       from: parsed.filePath,
@@ -335,18 +409,34 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
 
-  function addEdge(from: string, to: string, kind: GraphEdge['kind']): void {
+  /**
+   * The first reference to reach a pair writes the edge, and how it was found
+   * is written with it. Nothing reconciles a second reference against the
+   * first because nothing can disagree yet: the one branch that guesses reads
+   * an imported file's table, and every exact branch answers with either this
+   * file's own declaration or the file a binding named.
+   */
+  function addEdge(from: string, to: string, kind: GraphEdge['kind'], guessed = false): void {
     // Self-edges (recursion, a file importing itself) carry no structural
     // information and only clutter the diagram.
     if (from === to) return;
     const key = `${from} ${kind} ${to}`;
     if (seen.has(key)) return;
     seen.add(key);
-    edges.push({ from, to, kind });
+    edges.push({ from, to, kind, ...(guessed ? { guessed: true as const } : {}) });
   }
 
   for (const parsed of files.values()) {
     const importedFiles: string[] = [];
+    /**
+     * What this file named and the graph could not find. Dropping these is
+     * what makes a file with no coupling look the same as a file we could not
+     * read, so they are counted onto the file's node; see `GraphNode.unresolved`.
+     * A count and never an edge — there is no node to draw one to, which is
+     * the whole of what the number says.
+     */
+    let unresolvedImports = 0;
+    let unresolvedCalls = 0;
     /** Specifier as written -> the file it resolved to, for Go's qualified references. */
     const importTarget = new Map<string, string>();
     for (const specifier of parsed.imports) {
@@ -355,6 +445,11 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         importedFiles.push(target);
         importTarget.set(specifier, target);
         addEdge(parsed.filePath, target, 'imports');
+      } else if (looksInternal(specifier, parsed.language, facts, modulePrefixes)) {
+        // Only what the project could plausibly hold. `node:http` and `react`
+        // did not resolve and nothing is missing; counting them put the mark on
+        // 133 of express's 141 files and said coupling was lost where none was.
+        unresolvedImports += 1;
       }
     }
     // A barrel depends on what it re-exports whether or not the parser also
@@ -425,17 +520,22 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
      * the import does not even export.
      *
      * C# and Rust record no bindings and keep the old rule, every imported
-     * file's whole table, until their languages opt in.
+     * file's whole table, until their languages opt in — and that is the one
+     * branch here that answers with a name match nothing in this file asked
+     * for, so it is the one that marks its edge `guessed`.
      */
-    const lookup = (name: string): string | null => {
-      if (isThroughImport(name)) return throughImport(name);
+    const lookup = (name: string): Found | null => {
+      if (isThroughImport(name)) {
+        const target = throughImport(name);
+        return target === null ? null : { id: target, guessed: false };
+      }
       const dot = name.indexOf('.');
       if (dot !== -1) {
         const viaModule = throughNamespace(name.slice(0, dot), name.slice(dot + 1));
-        if (viaModule !== null) return viaModule;
+        if (viaModule !== null) return { id: viaModule, guessed: false };
       }
       const own = symbolsByFile.get(parsed.filePath)?.get(name);
-      if (own) return own;
+      if (own) return { id: own, guessed: false };
       const bound = bindingsByFile.get(parsed.filePath);
       if (bound !== undefined) {
         const binding = bound.get(name);
@@ -446,11 +546,15 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         // There is no node for the module itself, so one without a default
         // answers nothing.
         const imported = binding.imported === '*' ? 'default' : binding.imported;
-        return exportsByFile.get(binding.target)?.get(imported) ?? null;
+        const target = exportsByFile.get(binding.target)?.get(imported);
+        return target === undefined ? null : { id: target, guessed: false };
       }
       for (const imported of importedFiles) {
         const hit = exportsByFile.get(imported)?.get(name);
-        if (hit) return hit;
+        // Whichever imported file happens to export the name, in import order.
+        // No binding said this name came from that file — nothing here did —
+        // so the edge says so rather than reading like one the file wrote down.
+        if (hit) return { id: hit, guessed: true };
       }
       return null;
     };
@@ -484,28 +588,56 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
     };
 
     /**
+     * The end of a call, once a name has been resolved: the same node, the
+     * value half of a merged declaration, or nothing.
+     *
+     * A `calls` edge that ends on an interface or a type is a false statement
+     * about the code — there is no code there to run — however much the call
+     * site looked like one. Three languages write something that does: `OK(x)`
+     * in TypeScript where `type OK` was declared above `const OK`, `Whitelist(x)`
+     * in Go, which is a conversion, and `Alias::new()` in Rust. The first has
+     * a right answer beside it in the same file and now gets it; the other two
+     * do not, and are counted as unresolved rather than drawn on something
+     * with no body.
+     */
+    const callableEnd = (target: Found): Found | null => {
+      const node = nodes.get(target.id);
+      if (node === undefined) return null;
+      if (!TYPE_ONLY.has(node.kind)) return target;
+      // Only a top-level name can have a merged declaration to fall back on: a
+      // member is reached through its owner and was never in a name table.
+      if (node.owner !== undefined) return null;
+      const twin = valuesByFile.get(node.filePath)?.get(node.name);
+      return twin === undefined ? null : { id: twin, guessed: target.guessed };
+    };
+
+    /**
+     * Which node a call names, before asking whether it can be called.
+     *
      * A call is the one reference allowed to name a member, and only as `T.m`:
      * the parser writes that when the receiver's type was written down, `this`
      * inside `T` or a parameter declared `x: T`, and never guesses one. The
      * owner is resolved like any other name, must turn out to be a class or an
      * interface, and must declare `m` itself. A bare `m` still never gets in.
      */
-    const lookupCall = (name: string): string | null => {
+    const resolveCall = (name: string): Found | null => {
       // Go's fourth form, `<importPath>#Name` or `<importPath>#T.m`: the owner
       // through the import, the member on it. The first dot after the hash is
       // the split; the path before it may hold dots of its own.
       if (isThroughImport(name)) {
         const dot = name.indexOf('.', name.indexOf(QUALIFIED_SEPARATOR));
-        if (dot === -1) return throughImport(name);
-        const ownerId = throughImport(name.slice(0, dot));
-        return ownerId === null ? null : memberOf(ownerId, name.slice(dot + 1));
+        const through = throughImport(dot === -1 ? name : name.slice(0, dot));
+        if (through === null) return null;
+        if (dot === -1) return { id: through, guessed: false };
+        const member = memberOf(through, name.slice(dot + 1));
+        return member === null ? null : { id: member, guessed: false };
       }
       const dot = name.indexOf('.');
       if (dot === -1) return lookup(name);
       // A module first: `ns.helper` is a top-level name reached through a
       // namespace import, and a namespace is never a class.
       const viaModule = throughNamespace(name.slice(0, dot), name.slice(dot + 1));
-      if (viaModule !== null) return viaModule;
+      if (viaModule !== null) return { id: viaModule, guessed: false };
       // Otherwise the last dot parts owner from member, and the owner is
       // looked up as any name is: `Thing.run` is a member of Thing, and
       // `ns.Thing.run` a member of the Thing a namespace import stands for —
@@ -513,8 +645,18 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
       // the `run()` on it land in the same file rather than on whichever
       // Thing the file also bound bare.
       const last = name.lastIndexOf('.');
-      const ownerId = lookup(name.slice(0, last));
-      return ownerId === null ? null : memberOf(ownerId, name.slice(last + 1));
+      const owner = lookup(name.slice(0, last));
+      if (owner === null) return null;
+      const member = memberOf(owner.id, name.slice(last + 1));
+      // The member is exact once the owner is known — it is declared on that
+      // classifier — so the edge is only as sure as the owner was.
+      return member === null ? null : { id: member, guessed: owner.guessed };
+    };
+
+    /** The end of a call: what the name means, if it is something that runs. */
+    const lookupCall = (name: string): Found | null => {
+      const target = resolveCall(name);
+      return target === null ? null : callableEnd(target);
     };
 
     const ids = idsByFile.get(parsed.filePath) ?? [];
@@ -527,22 +669,23 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
 
       for (const name of symbol.extends) {
         const target = lookup(name);
-        if (target) addEdge(id, target, 'extends');
+        if (target) addEdge(id, target.id, 'extends', target.guessed);
       }
       for (const name of symbol.implements) {
         const target = lookup(name);
-        if (target) addEdge(id, target, 'implements');
+        if (target) addEdge(id, target.id, 'implements', target.guessed);
       }
       for (const name of symbol.calls) {
         const target = lookupCall(name);
-        if (target) addEdge(id, target, 'calls');
+        if (target) addEdge(id, target.id, 'calls', target.guessed);
+        else if (couldBeOurs(name)) unresolvedCalls += 1;
       }
       // UML draws an association between the two classifiers, not from the
       // attribute that holds it: the field is how the relationship is spelled,
       // the class is what has it.
       if (symbol.typeName !== undefined && owner) {
         const target = lookup(symbol.typeName);
-        if (target) addEdge(owner, target, 'associates');
+        if (target) addEdge(owner, target.id, 'associates', target.guessed);
       }
     });
 
@@ -556,13 +699,23 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
     // wherever it is written. What the edge claims is in GraphEdge.from.
     for (const name of parsed.calls ?? []) {
       const target = lookupCall(name);
+      if (target === null) {
+        if (couldBeOurs(name)) unresolvedCalls += 1;
+        continue;
+      }
       // A file never calls what it declares itself: `contains` already says
       // the symbol is here, and an edge from a box to a row inside it draws a
       // loop that says nothing. A file node's id is its path, so the same test
-      // covers the file reaching itself.
-      if (target !== null && nodes.get(target)?.filePath !== parsed.filePath) {
-        addEdge(parsed.filePath, target, 'calls');
+      // covers the file reaching itself. Not unresolved either — the name was
+      // found, and the edge is the part that would say nothing.
+      if (nodes.get(target.id)?.filePath !== parsed.filePath) {
+        addEdge(parsed.filePath, target.id, 'calls', target.guessed);
       }
+    }
+
+    if (unresolvedImports > 0 || unresolvedCalls > 0) {
+      const node = nodes.get(parsed.filePath);
+      if (node) node.unresolved = { imports: unresolvedImports, calls: unresolvedCalls };
     }
   }
 
@@ -575,7 +728,9 @@ function sameNode(a: GraphNode, b: GraphNode): boolean {
     a.name === b.name &&
     a.range.startLine === b.range.startLine &&
     a.range.endLine === b.range.endLine &&
-    a.parseError === b.parseError
+    a.parseError === b.parseError &&
+    a.unresolved?.imports === b.unresolved?.imports &&
+    a.unresolved?.calls === b.unresolved?.calls
   );
 }
 

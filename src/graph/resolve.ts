@@ -69,3 +69,75 @@ function candidatesFor(base: string): string[] {
 
   return [...EXTENSIONS.map((candidate) => base + candidate), ...indexes];
 }
+
+/**
+ * What is not source, whatever a bundler does with it. Fixed rather than derived
+ * from the files the scan found: a project with no stylesheet would otherwise
+ * decide `./theme.css` is a resolution failure the first time someone adds one.
+ */
+const ASSET_EXTENSIONS = new Set([
+  'css', 'scss', 'sass', 'less', 'styl', 'svg', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'avif',
+  'ico', 'json', 'json5', 'md', 'mdx', 'txt', 'csv', 'yaml', 'yml', 'toml', 'xml', 'html',
+  'wasm', 'woff', 'woff2', 'ttf', 'otf', 'eot', 'mp3', 'mp4', 'webm', 'wav', 'pdf', 'graphql',
+]);
+
+/** `./styles.css` is not a resolution failure, it is a stylesheet. */
+function isAsset(specifier: string): boolean {
+  const extension = /[^/.]\.([a-z0-9]+)$/i.exec(specifier)?.[1]?.toLowerCase();
+  return extension !== undefined && ASSET_EXTENSIONS.has(extension);
+}
+
+/** Whether a tsconfig `paths` entry claims this specifier. Membership, not resolution. */
+function matchesAlias(specifier: string, tsPaths: ReadonlyMap<string, readonly string[]>): boolean {
+  if (tsPaths.has(specifier)) return true;
+  for (const pattern of tsPaths.keys()) {
+    const star = pattern.indexOf('*');
+    if (star < 0) continue;
+    const prefix = pattern.slice(0, star);
+    const suffix = pattern.slice(star + 1);
+    if (specifier.length < prefix.length + suffix.length) continue;
+    if (specifier.startsWith(prefix) && specifier.endsWith(suffix)) return true;
+  }
+  return false;
+}
+
+function inWorkspace(specifier: string, packages: ReadonlyMap<string, string>): boolean {
+  if (packages.has(specifier)) return true;
+  for (const name of packages.keys()) if (specifier.startsWith(`${name}/`)) return true;
+  return false;
+}
+
+/**
+ * Whether a specifier names something this project could plausibly hold.
+ *
+ * The difference between a gap and a fact. `import http from "node:http"` did not
+ * resolve, and nothing is missing — node:http is not in the project and never
+ * will be. `import { Store } from "@app/core"` did not resolve either, and that
+ * IS missing coupling. Counting both as "unresolved" put the mark on nearly every
+ * file in express, where 241 of 241 unresolved specifiers are node builtins and
+ * npm packages: an authoritative-looking claim that coupling was lost when none
+ * was.
+ *
+ * What makes a bare specifier the project's own is an alias or a workspace
+ * package — the two tables the TypeScript resolver itself consults. It errs
+ * towards yes: java.ts qualifies an implicit reference with the file's own
+ * package, so `String` arrives as `com.google.gson.String` and reads as internal.
+ * A count that is slightly too high is a gap reported; one that is too low hides
+ * the thing the count exists for.
+ */
+export function looksInternal(
+  specifier: string,
+  language: string,
+  facts: { tsPaths: ReadonlyMap<string, readonly string[]>; packages: ReadonlyMap<string, string>; goModule: string | null },
+  modulePrefixes: ReadonlySet<string>,
+): boolean {
+  if (specifier.startsWith('.')) return !isAsset(specifier);
+  if (language === 'typescript' || language === 'javascript') {
+    if (isAsset(specifier)) return false;
+    return matchesAlias(specifier, facts.tsPaths) || inWorkspace(specifier, facts.packages);
+  }
+  if (/^(crate|self|super)::/.test(specifier)) return true;
+  if (facts.goModule !== null && specifier.startsWith(facts.goModule)) return true;
+  const head = specifier.split(/[.:/]/)[0];
+  return head !== undefined && head !== '' && modulePrefixes.has(head);
+}

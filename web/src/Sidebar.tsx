@@ -78,6 +78,16 @@ interface SidebarProps {
   onSelect: (target: string) => void;
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
+  /**
+   * The box that was clicked, when it was a bundle: the files a focus view had
+   * too many neighbours to draw one by one.
+   *
+   * Passed in rather than fetched, because a bundle is not a path — `/api/detail`
+   * can only answer 404 for one — and the view is the only thing that knows
+   * which files went into it. This is what makes the box openable: the diagram
+   * says "258 dependents", and the panel is where those 258 have names.
+   */
+  bundle?: { label: string; files: string[] } | null;
   following: Following;
 }
 
@@ -94,12 +104,14 @@ export function Sidebar({
   at,
   onSelect,
   onFocus,
+  bundle = null,
   following,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
 
   useEffect(() => {
-    if (selected === null) {
+    // A bundle id names no file, so asking about it can only be answered 404.
+    if (selected === null || bundle !== null) {
       setDetail(null);
       return;
     }
@@ -115,7 +127,7 @@ export function Sidebar({
     return () => {
       cancelled = true;
     };
-  }, [selected, revision, root, at]);
+  }, [selected, revision, root, at, bundle]);
 
   // The header's actions are what the panel head used to spell out as words:
   // go to it on the diagram, open it in the editor. Only a file has anywhere
@@ -149,7 +161,9 @@ export function Sidebar({
       <Followed following={following} onSelect={onSelect} onFocus={onFocus} />
 
       <Section title="Detail" className="panel" actions={actions}>
-        {detail === null ? (
+        {bundle !== null ? (
+          <BundleView bundle={bundle} onSelect={onSelect} />
+        ) : detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
         ) : detail.kind === 'file' ? (
           <FileView detail={detail} root={root} onSelect={onSelect} />
@@ -228,6 +242,40 @@ function FolderView({
       <PathList title="Files" paths={detail.files} onSelect={onSelect} />
       <PathList title="Used by" paths={detail.importedBy} onSelect={onSelect} />
       <PathList title="Uses" paths={detail.imports} onSelect={onSelect} />
+    </>
+  );
+}
+
+/**
+ * What one bundle box stands for.
+ *
+ * The diagram's honest answer to 278 neighbours is one box saying how many;
+ * this is the other half of that bargain, because a count nobody can open is
+ * just a number. Every file is a row, and picking one shows that file's own
+ * detail — from where the header's target button focuses it, which is how a
+ * file inside a bundle gets a box of its own.
+ *
+ * No "Uses" and "Used by": every file here is a neighbour of the focus by
+ * definition, and the pile as a whole leans on nothing — that would be a claim
+ * about a box, and this box is not a thing in the project.
+ */
+function BundleView({
+  bundle,
+  onSelect,
+}: {
+  bundle: { label: string; files: string[] };
+  onSelect: (target: string) => void;
+}) {
+  return (
+    <>
+      <header className="panel-head">
+        <h2 title={bundle.label}>{bundle.label}</h2>
+        <p className="panel-meta">
+          {bundle.files.length} files — too many to draw one by one
+        </p>
+      </header>
+
+      <PathList title="Files" paths={bundle.files} onSelect={onSelect} />
     </>
   );
 }

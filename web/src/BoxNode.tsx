@@ -1,11 +1,25 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
 import type { MouseEvent } from 'react';
-import { openInEditor, type GitFileStatus, type LanguageId, type ViewMember, type ViewNode } from './api';
+import {
+  describeUnresolved,
+  openInEditor,
+  type GitFileStatus,
+  type LanguageId,
+  type ViewMember,
+  type ViewNode,
+} from './api';
 import { MAX_MEMBERS } from './layout';
 
 export type BoxData = {
   label: string;
-  kind: 'file' | 'folder';
+  /**
+   * A `bundle` stands for neighbours a focus view had too many of to draw one
+   * by one. It is drawn as a folder is — a count, not a member list — because
+   * both stand for a pile of files rather than for one; what makes it its own
+   * kind is that it is not a place in the project, so nothing may navigate to
+   * it.
+   */
+  kind: 'file' | 'folder' | 'bundle';
   members: ViewMember[];
   files: string[];
   external: boolean;
@@ -38,6 +52,16 @@ export type BoxData = {
    * unmeasured. In the title, it is there when you go looking for it.
    */
   coverage: ViewNode['coverage'];
+  /**
+   * References this box's files made that landed nowhere, summed over the pile
+   * a folder or a bundle stands for. Absent is the good answer.
+   *
+   * Said on the face of the box because it is the only thing that separates
+   * the two ways a box can have no arrows: code that leans on nothing, and
+   * coupling this tool could not follow. The second is the common one — 374 of
+   * zod's 510 files have some — and it used to be drawn as the first.
+   */
+  unresolved?: ViewNode['unresolved'];
   /** Needed to build an absolute path for an editor link. */
   root: string;
   /** Nothing in this box takes part in what is being followed. */
@@ -99,8 +123,31 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
   rust: 'rs',
 };
 
+/**
+ * Which rows a box shows when it declares more than it has room for.
+ *
+ * Document order shows whichever the parser saw first, which answers no
+ * question the reader asked. `linked` marks the rows an edge on this diagram
+ * actually runs through, so those come first and the rest fill what is left —
+ * a stable sort, so inside each half document order survives and with it the
+ * UML reading, attributes before operations.
+ *
+ * Past MAX_MEMBERS linked rows the unlinked ones are dropped rather than
+ * ranked behind them: every row on show is then part of the answer, which is
+ * the point. Under the default edge kinds nothing is marked — an `imports`
+ * edge runs file to file, so no one symbol writes it — and this falls back to
+ * document order, unchanged.
+ */
+function rowsToShow(members: ViewMember[]): ViewMember[] {
+  const linked = members.filter((member) => member.linked === true);
+  if (linked.length >= MAX_MEMBERS) return linked.slice(0, MAX_MEMBERS);
+  return [...members]
+    .sort((a, b) => Number(b.linked ?? false) - Number(a.linked ?? false))
+    .slice(0, MAX_MEMBERS);
+}
+
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
-  const shown = data.expanded ? data.members : data.members.slice(0, MAX_MEMBERS);
+  const shown = data.expanded ? data.members : rowsToShow(data.members);
   const hidden = data.members.length - shown.length;
   const file = data.kind === 'file' ? data.files[0] : undefined;
   // Muted text and nothing else. The box surface already carries amber for just
@@ -123,6 +170,19 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       : `${data.label} — ${measured.covered} of ${measured.lines} measured lines ran (${Math.round(
           (measured.covered / measured.lines) * 100,
         )}%)`;
+
+  // Names, not a count: a bundle exists because 258 boxes answer nothing, and
+  // the first few paths are what say whether the pile is worth opening. Eight
+  // is what a tooltip holds without becoming a list of its own; the rest are a
+  // click away, in the panel.
+  const bundled =
+    data.kind !== 'bundle'
+      ? undefined
+      : [
+          `${data.label}, bundled — click the box to list them`,
+          ...data.files.slice(0, 8),
+          ...(data.files.length > 8 ? [`…and ${data.files.length - 8} more`] : []),
+        ].join('\n');
 
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
@@ -154,9 +214,10 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             {GIT_LETTER[data.gitStatus]}
           </span>
         )}
-        {/* A folder box stands for many files, so the useful fact is how many
-            of them moved, not which way any single one did. */}
-        {data.kind === 'folder' && data.gitChanged > 0 && (
+        {/* A box standing for many files says how many of them moved, not
+            which way any single one did — the direction is a fact about one
+            file, and there is no one file here. */}
+        {data.kind !== 'file' && data.gitChanged > 0 && (
           <span
             className="box-git box-git-count"
             title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
@@ -177,6 +238,24 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             }
           >
             <i className="codicon codicon-warning" aria-hidden="true" />
+          </span>
+        )}
+        {/* Muted, and deliberately not the warning colour: a reference that
+            landed nowhere is the tool reaching its limit, not the file being
+            broken, and 374 of zod's 510 files have one. A count and never a
+            line — an edge to a node we could not name would be the lie this
+            exists to prevent — so the number is the whole mark. */}
+        {data.unresolved !== undefined && (
+          <span
+            className="box-unresolved"
+            title={
+              data.kind === 'file'
+                ? `${describeUnresolved(data.unresolved)} in this file named something codemap could not find, so some of its coupling is not drawn`
+                : `${describeUnresolved(data.unresolved)} across the ${data.files.length} files in here named something codemap could not find, so some of their coupling is not drawn`
+            }
+          >
+            <i className="codicon codicon-question" aria-hidden="true" />
+            {data.unresolved.imports + data.unresolved.calls}
           </span>
         )}
         {tag !== null && (
@@ -246,9 +325,19 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
         )}
       </div>
 
-      {data.kind === 'folder' ? (
-        <div className="box-meta">
+      {/* A file gets its compartment of members; everything else stands for a
+          pile of files and gets a count. Written as "is it a file" rather than
+          "is it a folder" so a bundle takes the same branch a folder does — it
+          carries no members either, and an empty list would draw a box with
+          nothing in it.
+
+          The bundle's title is the paths themselves: its label already says how
+          many and which way ("258 dependents"), and which files it stands for is
+          the one thing left that a reader wants from it. */}
+      {data.kind !== 'file' ? (
+        <div className="box-meta" title={bundled}>
           {data.files.length} {data.files.length === 1 ? 'file' : 'files'}
+          {data.kind === 'bundle' && ', bundled'}
         </div>
       ) : (
         <ul className="box-members">

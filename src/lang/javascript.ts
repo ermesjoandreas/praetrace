@@ -17,6 +17,7 @@ import {
   scopeOf,
   specifierOf,
   typescript,
+  type Exports,
   type ModuleParse,
   type Scope,
 } from './typescript.js';
@@ -138,6 +139,8 @@ interface Collected {
   claimed: SyntaxNode[];
   /** The file's top-level bindings, which every symbol's receivers are read against. */
   scope: Scope;
+  /** What the file exports, read before the walk; see typescript.ts. */
+  exports: Exports;
 }
 
 /** Top-level declarations, plus the members of any class among them. */
@@ -211,6 +214,15 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
       if (FUNCTION_VALUES.has(value.type)) {
         out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
+        continue;
+      }
+
+      // `export const client = makeClient()` — the same rule TypeScript's
+      // extractor applies, and for the same reason: the name is the whole
+      // claim, so only a name the file exports is worth a node.
+      if (value.type === 'call_expression' && out.exports.names.has(name)) {
+        out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+        out.claimed.push(declarator);
       }
     }
   }
@@ -279,16 +291,17 @@ export const javascript = {
     // Both spellings of an import bind names: a `.mjs` writes `import`, a
     // `.cjs` writes `require`, and the codemods in query are the second.
     const bindings = [...importBindings(root), ...requireBindings(root)];
+    const exports = exportsOf(root);
     const out: Collected = {
       imports: [],
       reexports: [],
       symbols: [],
       claimed: [],
       scope: moduleScope(root, bindings),
+      exports,
     };
     for (const child of root.namedChildren) collectTopLevel(child, out);
     collectCallImports(root, out.imports);
-    const exports = exportsOf(root);
     return {
       imports: out.imports,
       symbols: markExports(out.symbols, exports),

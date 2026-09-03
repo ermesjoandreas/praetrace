@@ -442,6 +442,91 @@ test('a parser that flags exports hides the rest from a direct import too; one t
   assert.deepEqual(edges(unflagged, 'calls'), ['b.ts#f -> a.ts#hidden']);
 });
 
+// --- what a call can land on ------------------------------------------------
+
+/**
+ * zod's parseUtil.ts, which writes `export type OK<T> = ...` and then
+ * `export const OK = <T>(value: T) => ...`. TypeScript merges the two
+ * declarations; only one of them can be called.
+ */
+const parseUtil = file('helpers/parseUtil.ts', {
+  symbols: [symbol('OK', 'type', { exported: true }), symbol('OK', 'function', { exported: true })],
+});
+
+test('a name declared as both a type and a function is called on the function', () => {
+  const graph = graphOf(
+    parseUtil,
+    file('types.ts', {
+      imports: ['./helpers/parseUtil'],
+      bindings: [{ local: 'OK', specifier: './helpers/parseUtil', imported: 'OK' }],
+      symbols: [symbol('ZodBoolean', 'class'), symbol('_parse', 'method', { owner: 'ZodBoolean', calls: ['OK'] })],
+    }),
+  );
+
+  // Both declarations keep the id document order gave them: the type was
+  // written first, so the function is the `~2`. What moved is which of them
+  // the name answers with.
+  assert.deepEqual(edges(graph, 'calls'), ['types.ts#ZodBoolean._parse -> helpers/parseUtil.ts#OK~2']);
+});
+
+test('the type half of a merged name is still what extends and a field type reach', () => {
+  const graph = graphOf(
+    file('core.ts', { symbols: [symbol('Shape', 'interface', { exported: true }), symbol('Shape', 'function', { exported: true })] }),
+    file('app.ts', {
+      imports: ['./core'],
+      bindings: [{ local: 'Shape', specifier: './core', imported: 'Shape' }],
+      symbols: [
+        symbol('Mine', 'class', { implements: ['Shape'] }),
+        symbol('held', 'field', { owner: 'Mine', typeName: 'Shape' }),
+        symbol('make', 'function', { calls: ['Shape'] }),
+      ],
+    }),
+  );
+
+  // A type reference reaches the interface, a call the function beside it —
+  // and both are in the same box, which is what the reader is looking at.
+  assert.deepEqual(edges(graph, 'implements'), ['app.ts#Mine -> core.ts#Shape']);
+  assert.deepEqual(edges(graph, 'associates'), ['app.ts#Mine -> core.ts#Shape']);
+  assert.deepEqual(edges(graph, 'calls'), ['app.ts#make -> core.ts#Shape~2']);
+});
+
+/** Every calls edge that ends somewhere with no code to run. */
+function uncallable(graph: Graph): string[] {
+  return graph.edges
+    .filter((edge) => {
+      const to = graph.nodes.get(edge.to);
+      return edge.kind === 'calls' && to !== undefined && (to.kind === 'interface' || to.kind === 'type');
+    })
+    .map((edge) => `${edge.from} -> ${edge.to}`)
+    .sort();
+}
+
+test('a calls edge never ends on an interface or a type', () => {
+  const graph = graphOf(
+    parseUtil,
+    // A type alias with no value half at all: Go writes `type Whitelist ...`
+    // and then `Whitelist(x)`, which is a conversion and not a call, and Rust
+    // reaches `Alias::new()` the same way.
+    file('alias.ts', { symbols: [symbol('Whitelist', 'type', { exported: true }), symbol('Store', 'interface', { exported: true })] }),
+    file('barrel.ts', { reexports: [{ specifier: './helpers/parseUtil', names: '*' }, { specifier: './alias', names: '*' }] }),
+    file('app.ts', {
+      imports: ['./barrel', './alias'],
+      bindings: [
+        { local: 'OK', specifier: './barrel', imported: 'OK' },
+        { local: 'Whitelist', specifier: './barrel', imported: 'Whitelist' },
+        { local: 'Store', specifier: './alias', imported: 'Store' },
+      ],
+      symbols: [symbol('run', 'function', { calls: ['OK', 'Whitelist', 'Store'] })],
+      calls: ['Whitelist', 'Store'],
+    }),
+  );
+
+  assert.deepEqual(uncallable(graph), []);
+  // The one call with a callable end is the only one drawn; the rest are
+  // counted rather than pointed at something with no code in it.
+  assert.deepEqual(edges(graph, 'calls'), ['app.ts#run -> helpers/parseUtil.ts#OK~2']);
+});
+
 // --- the two forms of `#` ---------------------------------------------------
 
 test('a call to an ES private member lands on it, and the bare member still on nothing', () => {
@@ -627,6 +712,136 @@ test("a file's calls reach no further than a symbol's do", () => {
   );
 
   assert.deepEqual(edges(graph, 'calls'), ['app.ts -> core/schemas.ts#ZodType.parse']);
+});
+
+// --- how we know ------------------------------------------------------------
+
+/** The edges of one kind, with `~>` for the ones the graph had to guess. */
+function marked(graph: Graph, kind: string): string[] {
+  return graph.edges
+    .filter((edge) => edge.kind === kind)
+    .map((edge) => `${edge.from} ${edge.guessed === true ? '~>' : '->'} ${edge.to}`)
+    .sort();
+}
+
+test('a name matched against an imported file that nothing bound says the edge was guessed', () => {
+  const graph = graphOf(
+    schemas,
+    // No bindings recorded — C# and Rust today — so the name is matched
+    // against every imported file's table in turn, and the answer is whichever
+    // one happens to export it.
+    file('legacy.ts', { imports: ['./core/schemas'], symbols: [symbol('run', 'function', { calls: ['map'] })] }),
+    file('bound.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'map', specifier: './core/schemas', imported: 'map' }],
+      symbols: [symbol('run', 'function', { calls: ['map'] })],
+    }),
+  );
+
+  assert.deepEqual(marked(graph, 'calls'), [
+    'bound.ts#run -> core/schemas.ts#map',
+    'legacy.ts#run ~> core/schemas.ts#map',
+  ]);
+});
+
+test('a member found on a guessed owner is as sure as the owner was, and the file it is in is not', () => {
+  const graph = graphOf(
+    schemas,
+    file('legacy.ts', {
+      imports: ['./core/schemas'],
+      symbols: [symbol('Own', 'class'), symbol('run', 'method', { owner: 'Own', calls: ['ZodType.parse', 'Own.run'] })],
+    }),
+  );
+
+  assert.deepEqual(marked(graph, 'calls'), ['legacy.ts#Own.run ~> core/schemas.ts#ZodType.parse']);
+  // Structure is not a lookup: `contains` and `imports` are written from what
+  // the file is, so neither is ever marked.
+  assert.deepEqual(marked(graph, 'imports'), ['legacy.ts -> core/schemas.ts']);
+  assert.equal(marked(graph, 'contains').some((edge) => edge.includes('~>')), false);
+});
+
+test('a name a file declares itself is never a guess, whatever it imports', () => {
+  const graph = graphOf(
+    schemas,
+    file('legacy.ts', {
+      imports: ['./core/schemas'],
+      symbols: [symbol('map', 'function'), symbol('run', 'function', { calls: ['map'] })],
+    }),
+  );
+
+  assert.deepEqual(marked(graph, 'calls'), ['legacy.ts#run -> legacy.ts#map']);
+});
+
+// --- what did not resolve ---------------------------------------------------
+
+test('a reference that resolved to nothing is counted on the file and draws no edge', () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      // `lodash` and `node:fs` did not resolve either, and nothing is missing:
+      // they are not names this project could ever have answered. `./gone` is,
+      // and it is the one that counts.
+      imports: ['./core/schemas', './gone', 'lodash', 'node:fs'],
+      bindings: [{ local: 'ZodType', specifier: './core/schemas', imported: 'ZodType' }],
+      // `ZodType` resolves. A bare `parse` never reaches a member by design, and
+      // the project declares one — that is coupling we did not draw, and it
+      // counts. `setTimeout` and `Nobody.gone` name nothing the project holds
+      // anywhere, so they resolved to nothing and nothing is missing.
+      symbols: [
+        symbol('build', 'function', { calls: ['ZodType', 'parse', 'setTimeout', 'Nobody.gone'] }),
+      ],
+      calls: ['alsoNowhere'],
+    }),
+  );
+
+  assert.deepEqual(graph.nodes.get('app.ts')?.unresolved, { imports: 1, calls: 1 });
+  // Nothing stands in for them: a count is not a line.
+  assert.deepEqual(edges(graph, 'calls'), ['app.ts#build -> core/schemas.ts#ZodType']);
+  assert.deepEqual(edges(graph, 'imports'), ['app.ts -> core/schemas.ts']);
+});
+
+test('a call that landed on a type with no half to run is counted, not drawn', () => {
+  const graph = graphOf(
+    file('alias.ts', { symbols: [symbol('Whitelist', 'type', { exported: true })] }),
+    file('app.ts', {
+      imports: ['./alias'],
+      bindings: [{ local: 'Whitelist', specifier: './alias', imported: 'Whitelist' }],
+      symbols: [symbol('run', 'function', { calls: ['Whitelist'] })],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'calls'), []);
+  assert.deepEqual(graph.nodes.get('app.ts')?.unresolved, { imports: 0, calls: 1 });
+});
+
+test('a file that found everything it named says nothing at all', () => {
+  const graph = graphOf(
+    schemas,
+    file('app.ts', {
+      imports: ['./core/schemas'],
+      bindings: [{ local: 'ZodType', specifier: './core/schemas', imported: 'ZodType' }],
+      symbols: [symbol('build', 'function', { calls: ['ZodType'] })],
+    }),
+  );
+
+  assert.equal('unresolved' in (graph.nodes.get('app.ts') ?? {}), false);
+  assert.equal('unresolved' in (graph.nodes.get('core/schemas.ts') ?? {}), false);
+});
+
+test('an import that starts resolving reports the file again', () => {
+  const store = createStore();
+  const app = (parts: Partial<ParsedFile>): ParsedFile =>
+    file('app.ts', { imports: ['./core/schemas'], ...parts });
+
+  applyBatch(store, [app({})], []);
+  assert.deepEqual(store.graph.nodes.get('app.ts')?.unresolved, { imports: 1, calls: 0 });
+
+  // The file it named arrives, and nothing about app.ts itself has changed —
+  // not its lines, not its symbols. The count is the only thing that moved,
+  // so the count is what has to make it a change.
+  const delta = applyBatch(store, [schemas], []);
+  assert.equal('unresolved' in (store.graph.nodes.get('app.ts') ?? {}), false);
+  assert.deepEqual(delta.upsertedNodes.map((node) => node.id).includes('app.ts'), true);
 });
 
 test('a file that recorded no top-level calls draws none', () => {

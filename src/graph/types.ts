@@ -53,6 +53,20 @@ export interface GraphNode {
   isAbstract?: boolean;
   /** Fields only: `Logger[]` rather than `Logger`, for the association's 1..*. */
   many?: boolean;
+  /**
+   * File nodes only: how many references this file made that resolved to
+   * nothing — an import naming a module the scan never saw, a call naming
+   * something no declaration or binding in reach answers to. Absent when both
+   * are zero, like the flags above.
+   *
+   * Kept because dropping them is what makes a file with no coupling
+   * indistinguishable from a file we could not read: express drops 903 call
+   * references this way, zod 2 530 and TanStack/query 4 725, and a box with no
+   * edges says "nothing depends on this" in both cases. A count and never an
+   * edge — a line to a node we could not name would be the lie this exists to
+   * prevent.
+   */
+  unresolved?: { imports: number; calls: number };
 }
 
 export interface GraphEdge {
@@ -76,6 +90,21 @@ export interface GraphEdge {
   from: string;
   to: string;
   kind: EdgeKind;
+  /**
+   * How we know. Absent means a declaration in the file itself, or an import
+   * the file wrote down, pointed straight at the other end. `true` means the
+   * name was matched against a table nothing in the referring file named —
+   * today only the whole-table fallback for a language that records no
+   * bindings, where the answer is whichever imported file happens to export
+   * the name.
+   *
+   * A field rather than a suffix on EdgeKind, because a suffix would push the
+   * `?edges=` parser and `filter.edgeKinds` onto prefix matching for a fact
+   * that is not about what the edge means. Absent rather than false, the same
+   * idiom as `GraphNode.parseError`: a graph that says nothing is a graph that
+   * found the answer.
+   */
+  guessed?: true;
 }
 
 export interface Graph {

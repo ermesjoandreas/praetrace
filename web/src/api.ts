@@ -22,6 +22,45 @@ export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteSt
 export type ViewNode = ViewGraph['nodes'][number];
 export type ViewMember = ViewNode['members'][number];
 
+/**
+ * References that landed nowhere, always both halves — never `{ imports: 0,
+ * calls: 0 }`, which is spelled as no object at all.
+ */
+export type Unresolved = NonNullable<ViewNode['unresolved']>;
+
+/**
+ * What a box, the status bar and the panel say about references that landed
+ * nowhere. One function because three surfaces say it, and three wordings for
+ * one fact is how the page starts disagreeing with itself.
+ *
+ * A clause and not a sentence: each caller finishes it with the scope it is
+ * speaking about — this file, these boxes — because the count is the easy half
+ * and *what it was counted over* is the half that decides whether it is true.
+ */
+export function describeUnresolved(counts: Unresolved): string {
+  const parts: string[] = [];
+  if (counts.imports > 0) {
+    parts.push(counts.imports === 1 ? '1 import' : `${counts.imports} imports`);
+  }
+  if (counts.calls > 0) parts.push(counts.calls === 1 ? '1 call' : `${counts.calls} calls`);
+  return parts.join(' and ');
+}
+
+/**
+ * Every reference the drawn boxes could not follow, or null when they followed
+ * all of them.
+ *
+ * The project's own count, not the slice's. It stands in the status bar beside
+ * "N files with syntax errors", which selectView measures over the whole graph;
+ * summing the drawn boxes instead made one of the two quietly about whatever
+ * was on screen, so scoping into a directory shrank one number and not the
+ * other. The mark on a box is still that box's own.
+ */
+export function totalUnresolved(view: ViewGraph): Unresolved | null {
+  const { imports, calls } = view.unresolved;
+  return imports === 0 && calls === 0 ? null : { imports, calls };
+}
+
 export interface ViewResponse {
   root: string;
   view: ViewGraph;

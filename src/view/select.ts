@@ -14,6 +14,31 @@ import type { LanguageCount, ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec
 const GROUP_THRESHOLD = 40;
 
 /**
+ * Past this many neighbours in one direction at one hop, a focus view draws a
+ * bundle standing for them instead of a box each.
+ *
+ * Ten is Sourcetrail's number for the same call — it bundled referencing
+ * symbols at ten — and it sits above the 95th percentile of what a depth-1
+ * focus view actually draws: 10 boxes on zod, 11 on TanStack/query, 4 on
+ * express, against maxima of 115, 278 and 98. So the ordinary view is left
+ * alone and the unreadable one collapses. That is the judgement borrowed and
+ * not just the number: below this the neighbours *are* the answer, and a
+ * stand-in for three files says less than the three files do.
+ */
+const BUNDLE_THRESHOLD = 10;
+
+/**
+ * The two things a bundle can stand for, spelled the way the box is labelled.
+ *
+ * Direction is the rule a bundle is named by, rather than "whatever was left
+ * over": what a file leans on and what leans on it are two different questions,
+ * and a reader with 278 neighbours wants them apart before anything else.
+ */
+type Direction = 'dependencies' | 'dependents';
+
+const DIRECTIONS: readonly Direction[] = ['dependencies', 'dependents'];
+
+/**
  * Reduce the whole graph to the slice the page should draw.
  *
  * The graph stays the single source of truth; this derives a smaller
@@ -52,6 +77,9 @@ export function selectView(
       ? focusView(spec, files, edges, git, changed)
       : scopeView(spec, files, edges, git, changed);
 
+  // After the slice, because "visible" is a question about what got drawn.
+  markLinkedMembers(graph, spec.filter, slice);
+
   // Added here rather than threaded through both: they are facts about the
   // project, not about the slice, so neither of them has any business
   // computing them — and computing them twice is how the two would disagree.
@@ -61,13 +89,14 @@ export function selectView(
     fileCount: countFiles(graph),
     hiddenTests: countHiddenTests(graph, spec.filter, now, changed),
     parseErrors: countParseErrors(graph),
+    unresolved: countUnresolved(graph),
     languages: projectLanguages(graph),
     at: spec.at,
   };
 }
 
 /** Everything a slice decides for itself; the project-wide facts land after. */
-type Slice = Omit<ViewGraph, 'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors'>;
+type Slice = Omit<ViewGraph, 'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors' | 'unresolved'>;
 
 /** What a file box is drawn from: its symbols, and whether the parse was clean. */
 interface FileFacts {
@@ -79,12 +108,61 @@ interface FileFacts {
    * report is joined once for both.
    */
   coverage?: FileCoverage;
+  /** What this one file could not resolve — see `ViewNode.unresolved`. */
+  unresolved?: { imports: number; calls: number };
+}
+
+/**
+ * The two counts over a set of files, or nothing when they add up to nothing.
+ *
+ * A spread, so a box with everything resolved carries no property at all —
+ * `exactOptionalPropertyTypes` holds that line, and a `{ imports: 0, calls: 0 }`
+ * would put "0 unresolved" on every box in a healthy project.
+ */
+function unresolvedOf(
+  filePaths: readonly string[],
+  files: ReadonlyMap<string, FileFacts>,
+): { unresolved?: { imports: number; calls: number } } {
+  let imports = 0;
+  let calls = 0;
+  for (const filePath of filePaths) {
+    const counts = files.get(filePath)?.unresolved;
+    if (counts === undefined) continue;
+    imports += counts.imports;
+    calls += counts.calls;
+  }
+  return imports === 0 && calls === 0 ? {} : { unresolved: { imports, calls } };
+}
+
+/**
+ * Fold one more reference into an edge that already stands for some.
+ *
+ * `guessed` survives only while every reference behind the line was a guess.
+ * One that resolved through a binding makes the coupling itself certain, and a
+ * line drawn as uncertain over a certain reference overstates the doubt just
+ * as badly as dropping the flag would understate it.
+ */
+function absorb(edge: { weight: number; guessed?: true }, weight: number, guessed: boolean): void {
+  edge.weight += weight;
+  if (!guessed) delete edge.guessed;
 }
 
 function countFiles(graph: Graph): number {
   let count = 0;
   for (const node of graph.nodes.values()) if (node.kind === 'file') count += 1;
   return count;
+}
+
+/** Summed over the whole graph, not the slice: see ViewGraph.unresolved. */
+function countUnresolved(graph: Graph): { imports: number; calls: number } {
+  let imports = 0;
+  let calls = 0;
+  for (const node of graph.nodes.values()) {
+    if (node.unresolved === undefined) continue;
+    imports += node.unresolved.imports;
+    calls += node.unresolved.calls;
+  }
+  return { imports, calls };
 }
 
 function countParseErrors(graph: Graph): number {
@@ -177,6 +255,7 @@ interface FileEdge {
   to: string;
   kind: ViewEdge['kind'];
   weight: number;
+  guessed?: true;
 }
 
 /** File path -> the symbols it declares, in declaration order. */
@@ -201,6 +280,7 @@ function collectFiles(
         // holds the line this whole feature rests on: no data is no property,
         // and never an explicit nothing that reads as a measured zero.
         ...(measured === undefined ? {} : { coverage: measured }),
+        ...(node.unresolved === undefined ? {} : { unresolved: node.unresolved }),
       });
     }
   }
@@ -233,6 +313,46 @@ function collectFiles(
 }
 
 /**
+ * Mark the rows the arrows on this slice actually run through.
+ *
+ * The test is the edge on screen and nothing weaker: a kind the filter dropped
+ * is not drawn, an edge to a file no box in this slice stands for is not drawn,
+ * and a relation between two symbols of the same file writes no arrow between
+ * boxes at all — the same three tests `liftEdgesToFiles` applies, asked one
+ * level down. A mark that meant "linked to something, somewhere in the project"
+ * would be true of nearly every symbol in a file that calls out at all, and
+ * would sort nothing.
+ *
+ * So it runs last, on the boxes rather than on the graph, and it edits the
+ * member rows in place — the objects this module made moments ago, the way
+ * `scopeView` fills its own boxes in from `backing`.
+ */
+function markLinkedMembers(graph: Graph, filter: ViewFilter, slice: Slice): void {
+  const rows = new Map<string, ViewMember>();
+  const inSlice = new Set<string>();
+  for (const node of slice.nodes) {
+    for (const file of node.files) inSlice.add(file);
+    for (const member of node.members) rows.set(member.id, member);
+  }
+  // A grouped view draws folders, which have no rows to choose between.
+  if (rows.size === 0) return;
+
+  for (const edge of graph.edges) {
+    if (edge.kind === 'contains' || !keepsEdge(edge.kind, filter)) continue;
+    const from = graph.nodes.get(edge.from);
+    const to = graph.nodes.get(edge.to);
+    if (!from || !to || from.filePath === to.filePath) continue;
+    if (!inSlice.has(from.filePath) || !inSlice.has(to.filePath)) continue;
+    // An end that is a file — a call written outside every symbol — has no row
+    // to mark, and asking for one is how it says so.
+    const source = rows.get(edge.from);
+    if (source) source.linked = true;
+    const target = rows.get(edge.to);
+    if (target) target.linked = true;
+  }
+}
+
+/**
  * Collapse symbol-level edges onto the files that hold them.
  *
  * `contains` is structural and never drawn. `calls` and `associates` are
@@ -253,8 +373,16 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
 
     const key = `${from} ${edge.kind} ${to}`;
     const existing = byKey.get(key);
-    if (existing) existing.weight += 1;
-    else byKey.set(key, { from, to, kind: edge.kind, weight: 1 });
+    if (existing) absorb(existing, 1, edge.guessed === true);
+    else {
+      byKey.set(key, {
+        from,
+        to,
+        kind: edge.kind,
+        weight: 1,
+        ...(edge.guessed === true ? { guessed: true as const } : {}),
+      });
+    }
   }
 
   const lifted = [...byKey.values()];
@@ -293,6 +421,7 @@ function fileNode(
     test: isTestFile(filePath),
     parseError: facts?.parseError === true,
     ...(facts?.coverage === undefined ? {} : { coverage: facts.coverage }),
+    ...(facts?.unresolved === undefined ? {} : { unresolved: facts.unresolved }),
   };
 }
 
@@ -303,48 +432,150 @@ function focusView(
   files: ReadonlyMap<string, FileFacts>,
   edges: readonly FileEdge[],
   git: GitStatus | null,
-  _changed: ReadonlySet<string> | null,
+  changed: ReadonlySet<string> | null,
 ): Slice {
   const focus = spec.focus ?? '';
-  const neighbours = new Map<string, Set<string>>();
 
-  // Undirected: what a file pulls in and what pulls it in are both context.
+  // Both directions, kept apart: what a file leans on and what leans on it are
+  // both context, and which of the two a neighbour is decides the bundle it
+  // lands in when there are too many to draw.
+  const uses = new Map<string, Set<string>>();
+  const usedBy = new Map<string, Set<string>>();
   for (const edge of edges) {
-    (neighbours.get(edge.from) ?? setIn(neighbours, edge.from)).add(edge.to);
-    (neighbours.get(edge.to) ?? setIn(neighbours, edge.to)).add(edge.from);
+    (uses.get(edge.from) ?? setIn(uses, edge.from)).add(edge.to);
+    (usedBy.get(edge.to) ?? setIn(usedBy, edge.to)).add(edge.from);
   }
 
+  /** Files that get a box of their own. */
+  const drawn = new Set<string>([focus]);
+  /** File -> the bundle standing in for it. */
+  const bundled = new Map<string, string>();
+  const bundles: { id: string; direction: Direction; files: string[] }[] = [];
+  /** Everything the walk has accounted for, drawn or bundled. */
   const reached = new Set<string>([focus]);
+
   let frontier = [focus];
-  for (let hop = 0; hop < spec.depth; hop += 1) {
-    const next: string[] = [];
-    for (const current of frontier) {
-      for (const neighbour of neighbours.get(current) ?? []) {
-        if (reached.has(neighbour)) continue;
-        reached.add(neighbour);
-        next.push(neighbour);
+  for (let hop = 1; hop <= spec.depth; hop += 1) {
+    const found: Record<Direction, string[]> = { dependencies: [], dependents: [] };
+    // Dependencies first, and claimed as they are found, so a file reachable
+    // both ways is a dependency: that is the claim the drawn boxes make about
+    // it, where the other direction is a claim it makes about them.
+    for (const direction of DIRECTIONS) {
+      const outward = direction === 'dependencies' ? uses : usedBy;
+      for (const current of frontier) {
+        for (const neighbour of outward.get(current) ?? []) {
+          if (reached.has(neighbour)) continue;
+          reached.add(neighbour);
+          found[direction].push(neighbour);
+        }
       }
     }
-    if (next.length === 0) break;
-    frontier = next;
+
+    const advanced: string[] = [];
+    for (const direction of DIRECTIONS) {
+      const hits = found[direction];
+      if (hits.length === 0) continue;
+      if (hits.length > BUNDLE_THRESHOLD) {
+        // Named for the hop and the direction, not for what is in it, so the
+        // box keeps its identity — and its place on the canvas — as files join
+        // and leave it. The same reason a stored group is not addressed by the
+        // cluster id that embeds its member count.
+        const id = `bundle:${direction}:${hop}`;
+        bundles.push({ id, direction, files: hits.sort() });
+        for (const filePath of hits) bundled.set(filePath, id);
+        // Deliberately not pushed onto `advanced`: a bundle is a leaf. Walking
+        // on from files this view has already declined to draw would pull in
+        // their neighbours to hang off a box that stands for all of them.
+      } else {
+        for (const filePath of hits) drawn.add(filePath);
+        advanced.push(...hits);
+      }
+    }
+    if (advanced.length === 0) break;
+    frontier = advanced;
   }
 
-  const nodes = [...reached]
+  const nodes = [...drawn]
     .sort()
     .map((filePath) => fileNode(filePath, files.get(filePath), filePath === focus, git));
+  // After the files, in the order the walk made them: a stand-in reads as the
+  // edge of the picture, not as one more box among the ones it replaced.
+  for (const bundle of bundles) {
+    nodes.push(bundleNode(bundle.id, bundle.direction, bundle.files, files, changed));
+  }
 
-  const kept = edges
-    .filter((edge) => reached.has(edge.from) && reached.has(edge.to))
-    .map(({ from, to, kind, weight }) => ({ from, to, kind, weight }));
+  const boxOf = (filePath: string): string => bundled.get(filePath) ?? filePath;
+
+  const aggregated = new Map<string, ViewEdge>();
+  for (const edge of edges) {
+    if (!reached.has(edge.from) || !reached.has(edge.to)) continue;
+    const from = boxOf(edge.from);
+    const to = boxOf(edge.to);
+    // Two files inside one bundle: the coupling is real and entirely inside a
+    // box that stands for both ends, so there is nothing to draw it between.
+    if (from === to) continue;
+
+    const key = `${from} ${edge.kind} ${to}`;
+    const existing = aggregated.get(key);
+    if (existing) absorb(existing, edge.weight, edge.guessed === true);
+    else {
+      aggregated.set(key, {
+        from,
+        to,
+        kind: edge.kind,
+        weight: edge.weight,
+        ...(edge.guessed === true ? { guessed: true as const } : {}),
+      });
+    }
+  }
 
   return {
     nodes,
-    edges: kept,
+    edges: [...aggregated.values()],
     spec: { ...spec, focus },
     trail: trailFor(''),
+    // Every file in the slice, bundled ones included. The status bar reads it
+    // beside the box count, and "3 boxes · 116 files" is the whole point.
     totalFiles: reached.size,
+    // Grouping is boxes standing for directories, which this is not. A page
+    // that wants to know whether anything was bundled asks the nodes.
     grouped: false,
     git: gitSummary(git),
+  };
+}
+
+/**
+ * A box standing for neighbours there were too many of to draw.
+ *
+ * It answers what a folder box answers, over a different set: how many, how
+ * much of it moved, what it is written in, whether the parse held. No members —
+ * it stands for many files, and one file's symbols would be a sample presented
+ * as the whole. No coverage either, for the reason a folder has none.
+ */
+function bundleNode(
+  id: string,
+  direction: Direction,
+  filePaths: string[],
+  files: ReadonlyMap<string, FileFacts>,
+  changed: ReadonlySet<string> | null,
+): ViewNode {
+  return {
+    id,
+    kind: 'bundle',
+    // The count and the word for the relationship, which is all a stand-in has
+    // to say. `dependencies` and `dependents` are the panel's own words for
+    // these two sets, so the box and the side bar do not name them differently.
+    label: `${filePaths.length} ${direction}`,
+    members: [],
+    files: filePaths,
+    external: false,
+    focused: false,
+    gitStatus: null,
+    gitChanged: changed === null ? 0 : filePaths.filter((file) => changed.has(file)).length,
+    language: soleLanguage(filePaths),
+    test: filePaths.every(isTestFile),
+    parseError: filePaths.some((file) => files.get(file)?.parseError === true),
+    ...unresolvedOf(filePaths, files),
   };
 }
 
@@ -429,8 +660,16 @@ function scopeView(
 
     const key = `${from.id} ${edge.kind} ${to.id}`;
     const existing = aggregated.get(key);
-    if (existing) existing.weight += edge.weight;
-    else aggregated.set(key, { from: from.id, to: to.id, kind: edge.kind, weight: edge.weight });
+    if (existing) absorb(existing, edge.weight, edge.guessed === true);
+    else {
+      aggregated.set(key, {
+        from: from.id,
+        to: to.id,
+        kind: edge.kind,
+        weight: edge.weight,
+        ...(edge.guessed === true ? { guessed: true as const } : {}),
+      });
+    }
   }
 
   for (const node of nodes.values()) {
@@ -439,6 +678,10 @@ function scopeView(
     node.test = node.files.every(isTestFile);
     node.parseError = node.files.some((file) => files.get(file)?.parseError === true);
     if (changed !== null) node.gitChanged = node.files.filter((file) => changed.has(file)).length;
+    // Assigned rather than spread, because the box already exists — and only
+    // when there is something to say, so a clean box keeps no property.
+    const counts = unresolvedOf(node.files, files).unresolved;
+    if (counts !== undefined) node.unresolved = counts;
   }
 
   const boxes = [...nodes.values()].sort(byExternalThenId);

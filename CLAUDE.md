@@ -214,6 +214,20 @@ the field is how the relationship is spelled, the class is what has it. Like
 `calls`, it is opt-in (`?edges=…,associates`) and *replaces* the import between the
 same pair rather than being drawn beside it. `Logger[]` sets `many`, for 1..*.
 
+**Every edge says how we know, and what did not resolve is counted.**
+`GraphEdge.guessed?: true` marks an edge resolved by something weaker than a
+binding — today only the whole-table fallback, which no language with bindings
+can reach, so TypeScript, JavaScript, Go and Java mark zero and C# and Rust do
+not. Absent means found; there is no `false`. And a reference that resolved to
+nothing is no longer dropped in silence: `GraphNode.unresolved` counts it on the
+file, so a box with no coupling can be told from a file we could not follow. The
+count is **only what the project could plausibly hold** — a relative path, a
+tsconfig alias, a workspace package, a name some file declares. `node:http`,
+`react`, `console.log` and `describe` resolved to nothing too, and nothing is
+missing; counting them marked 133 of express's 141 files and claimed lost
+coupling where there was none. It is a count and never an edge: there is no node
+to draw one to, which is the whole of what the number says.
+
 **A file can be the source of a call.** A call written outside every symbol — a
 bare statement, a top-level `const` bound to something that is not a function, an
 IIFE's arguments, a decorator on an exported class — has no caller node and used
@@ -544,7 +558,14 @@ produced. `changed` and `since` are dropped on freeze: a commit has no working t
 or clock to filter by. Escape leaves the commit, unless a menu took the key first.
 
 - Above 40 files in scope, boxes stand for directories, and edges between them are
-  aggregated with a weight.
+  aggregated with a weight. In a *focus* view, neighbours past a threshold collapse
+  into a **bundle** — one box carrying a count and the ids it stands for, so 278
+  boxes become 3. Sourcetrail's judgement, taken with it: bundling is skipped when
+  the focused node is a file, because then the neighbours *are* the answer.
+- **The window is an input to the layout.** A dagre rank taller than the canvas
+  folds into further columns; 127 boxes in one unreadable column was the symptom.
+  And `onlyRenderVisibleElements` is on: 23 508 DOM elements became 412 on a
+  1 129-box view, and the update 142 ms became 52.
 - Files outside the current scope collapse to their directory and are drawn dimmed.
 - Every `ViewNode` carries the `files` it stands for. That is what lets the page
   tell an in-view change from one it must report as happening elsewhere.

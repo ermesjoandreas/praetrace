@@ -515,6 +515,17 @@ main { display: flex; flex: 1; min-height: 0; }
    relationship rather than a second line on the same path. */
 .react-flow__edge.edge-calls .react-flow__edge-path { stroke: var(--vsc-sym-function); stroke-width: 1.6; }
 .react-flow__edge.edge-associates .react-flow__edge-path { stroke: var(--vsc-sym-field); stroke-width: 1.6; }
+
+/* Every reference behind this line was resolved by something weaker than a
+   binding — a name matched against a table nothing in the referring file
+   named. Dotted rather than dashed, because dashed is already UML's
+   realisation and `implements` wears it; dots read as the same line with
+   weaker evidence whatever kind it is, which is exactly the claim. Last, so
+   it wins over the kind that set a dasharray of its own. */
+.react-flow__edge.edge-guessed .react-flow__edge-path {
+  stroke-dasharray: 1 4;
+  stroke-linecap: round;
+}
 .react-flow__edge-text { fill: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 .react-flow__edge-textbg { fill: var(--vsc-editor-bg); }
 
@@ -577,6 +588,24 @@ main { display: flex; flex: 1; min-height: 0; }
   color: var(--vsc-warning);
 }
 
+/* References this box made that landed nowhere. Muted and not the warning
+   colour: the file is fine and the tool is the one that ran out — warning
+   means source it could not read, this is source it read and could not
+   follow. A number, because "some" would leave the reader where they were:
+   374 of zod's 510 files carry one, and the mark is what tells a box with no
+   coupling from a box whose coupling is missing. 16px in the 18px title line,
+   like the warning beside it, so HEADER_HEIGHT holds. */
+.box-unresolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  height: 16px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Inside the 18px title line, so 16px with no padding at all. */
 .box-open {
   display: inline-flex;
@@ -624,8 +653,16 @@ main { display: flex; flex: 1; min-height: 0; }
   border-color: var(--vsc-accent);
 }
 
-/* A folder stands for many files; the weight is the only thing that says so. */
-.box-folder .box-title-text { font-weight: 600; }
+/* A box standing for many files; the weight is the only thing that says so.
+   A bundle is the same promise in a focus view — neighbours there were too
+   many to draw one by one — so it reads the same way. */
+.box-folder .box-title-text,
+.box-bundle .box-title-text { font-weight: 600; }
+
+/* A bundle's label is a sentence, not a path. The rtl above is there so a path
+   too long for the box keeps its filename; applied to "18 dependents" it
+   reorders the run and the box reads "dependents 18". */
+.box-bundle .box-title-text { direction: ltr; }
 
 /* Focused is the box you navigated to: brighter, the way an active tab is white
    rather than coloured. Not the accent — that is the picked ring — and not blue,
@@ -1953,6 +1990,13 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 /* Source the tool cannot read, or could not fully parse: a gap rather than a
    fact, and still not an error. */
 .unread, .parse-errors { color: var(--vsc-warning); }
+
+/* The same fact, one step further in: source that was read and parsed, whose
+   references went nowhere. Muted rather than warning for the reason the box
+   mark is — the tool reached its limit on code that is perfectly fine — and
+   the same codicon, so the total in the bar and the marks on the boxes are
+   visibly one thing. */
+.unresolved { color: var(--vsc-fg-muted); font-variant-numeric: tabular-nums; }
 
 .counts, .langs { color: var(--vsc-fg-muted); }
 .langs { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

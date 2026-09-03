@@ -198,6 +198,22 @@ test('what a CommonJS module runs at load is the file’s own call list', () => 
   assert.deepEqual(byName(parsed.symbols, 'unused').calls, ['never']);
 });
 
+test('an exported const bound to a call is a symbol in JavaScript too', () => {
+  // The same line TypeScript draws, and the same reason: the call says nothing
+  // about what it made, so the name is the whole claim and only an exported one
+  // is a name another file can write down.
+  const parsed = parse(`
+    export const client = makeClient();
+    const internal = makeInternal();
+  `);
+  assert.deepEqual(
+    parsed.symbols.map((s) => [s.name, s.kind, s.exported]),
+    [['client', 'function', true]],
+  );
+  assert.deepEqual(byName(parsed.symbols, 'client').calls, ['makeClient']);
+  assert.deepEqual(parsed.calls, ['makeInternal']);
+});
+
 test('a var that rebinds a required name is not that module', () => {
   // express lib/application.js: `var View = this.get('view')` shadows the View
   // the file requires, and `new View(...)` was drawn as a call into lib/view.js

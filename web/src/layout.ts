@@ -9,6 +9,17 @@ const ROW_HEIGHT = 17;
 const DEFAULT_HEIGHT = 80;
 const LABEL_HEIGHT = 18;
 
+/** The gap dagre leaves between two boxes in one rank, and the one a wrapped
+ * column keeps. */
+const NODE_SEP = 26;
+/**
+ * How far apart the columns of one wrapped rank stand. Half of `ranksep`, so a
+ * rank that had to fold still reads as one rank rather than as several: the
+ * eye is told these boxes are peers by standing closer together than any two
+ * real ranks do.
+ */
+const WRAP_GAP = 60;
+
 /** Two frames sharing more than this much of the smaller one read as one mess. */
 const MAX_OVERLAP = 0.25;
 
@@ -17,8 +28,12 @@ const MAX_OVERLAP = 0.25;
  * needs dimensions up front and React Flow would otherwise lay out on stale
  * sizes for a frame.
  */
-export function boxHeight(memberCount: number, isFolder: boolean, expanded = false): number {
-  if (isFolder) return HEADER_HEIGHT + ROW_HEIGHT + 8;
+export function boxHeight(memberCount: number, manyFiles: boolean, expanded = false): number {
+  // A box standing for many files — a directory, or a bundle of neighbours —
+  // draws a count where a file draws its symbols, so it is two lines whatever
+  // it holds. Measuring a bundle as a file with no members would give it less
+  // room than its own label needs.
+  if (manyFiles) return HEADER_HEIGHT + ROW_HEIGHT + 8;
   // Expanding is a layout change, not a CSS reveal. dagre places boxes from
   // these numbers and every group frame is drawn around where they land, so a
   // box that grew without saying so would sit outside its own frame.
@@ -121,15 +136,21 @@ const CLUSTER_PREFIX = 'cluster:';
 /**
  * Lays out the boxes, and — when clusters are given — asks dagre to keep each
  * group's members together and hands back the frame each one occupies.
+ *
+ * `windowHeight` is the canvas the diagram will be read in, and it is an input
+ * to the layout rather than something the camera sorts out afterwards: a rank
+ * taller than the window folds into further columns. 0, or anything not
+ * finite, means the window is not known yet and nothing folds.
  */
 export function layoutNodes<T extends Node>(
   nodes: T[],
   edges: Edge[],
   clusters: readonly ClusterInput[] = [],
+  windowHeight = 0,
 ): { nodes: T[]; clusters: ClusterBounds[] } {
   const graph = new dagre.graphlib.Graph({ compound: true });
   graph.setDefaultEdgeLabel(() => ({}));
-  graph.setGraph({ rankdir: 'LR', nodesep: 26, ranksep: 120, marginx: 40, marginy: 40 });
+  graph.setGraph({ rankdir: 'LR', nodesep: NODE_SEP, ranksep: 120, marginx: 40, marginy: 40 });
 
   for (const node of nodes) {
     graph.setNode(node.id, {
@@ -176,7 +197,79 @@ export function layoutNodes<T extends Node>(
     };
   });
 
-  return { nodes: placed, clusters: frameClusters(placed, clusters) };
+  const folded = wrapTallRanks(placed, windowHeight);
+  return { nodes: folded, clusters: frameClusters(folded, clusters) };
+}
+
+/**
+ * A rank taller than the window is not a diagram, it is a list you scroll.
+ * 110 of TanStack/query's `packages` boxes land in one dagre rank, 9 558px of
+ * it, and fitView answers by zooming to 6% — a picture in which nothing can be
+ * read and nothing can be told apart.
+ *
+ * So the window is an input to the layout, the way it was in Sourcetrail: a
+ * rank that outgrows it starts another column, and every rank to its right
+ * moves over by what the fold took. Order survives — the rank still reads top
+ * to bottom and then left to right — so the boxes a rank put beside each other
+ * are still neighbours, only folded.
+ *
+ * Once anything has folded, every rank is stacked from the same top, folded or
+ * not. dagre placed the short ranks where it did to sit level with a 9 558px
+ * wall, and that wall is now 686px: leaving them centred against it strands
+ * three boxes four thousand pixels below the diagram they belong to, and the
+ * picture is no shorter than before. Nothing folds, nothing moves — this
+ * touches only the views that were unreadable to begin with.
+ *
+ * Pure, and it runs inside a first layout only, so nothing here can move a box
+ * a save would otherwise have left alone.
+ */
+function wrapTallRanks<T extends Node>(placed: readonly T[], windowHeight: number): T[] {
+  if (!Number.isFinite(windowHeight) || windowHeight <= 0) return [...placed];
+
+  // A rank of an LR layout is a column: dagre gives every box in it the same
+  // centre, and these boxes are all one width, so the left edge names the rank.
+  const ranks = new Map<number, T[]>();
+  for (const node of placed) {
+    const x = Math.round(node.position.x);
+    const rank = ranks.get(x);
+    if (rank === undefined) ranks.set(x, [node]);
+    else rank.push(node);
+  }
+
+  const heightOf = (node: T): number => node.height ?? DEFAULT_HEIGHT;
+  const extentOf = (column: readonly T[]): number =>
+    Math.max(...column.map((node) => node.position.y + heightOf(node))) -
+    Math.min(...column.map((node) => node.position.y));
+  if (![...ranks.values()].some((column) => extentOf(column) > windowHeight)) return [...placed];
+
+  const top = Math.min(...placed.map((node) => node.position.y));
+  const moved = new Map<string, { x: number; y: number }>();
+  /** What the folds so far have added to the width, carried to the ranks right of them. */
+  let shift = 0;
+
+  for (const x of [...ranks.keys()].sort((a, b) => a - b)) {
+    const column = [...(ranks.get(x) ?? [])].sort((a, b) => a.position.y - b.position.y);
+    const width = Math.max(...column.map((node) => node.width ?? NODE_WIDTH));
+    let folds = 0;
+    let y = top;
+    for (const node of column) {
+      const height = heightOf(node);
+      // A box taller than the whole window still gets a column of its own
+      // rather than none: `y > top` is what makes the first one unconditional.
+      if (y > top && y + height - top > windowHeight) {
+        folds += 1;
+        y = top;
+      }
+      moved.set(node.id, { x: x + shift + folds * (width + WRAP_GAP), y });
+      y += height + NODE_SEP;
+    }
+    shift += folds * (width + WRAP_GAP);
+  }
+
+  return placed.map((node) => {
+    const position = moved.get(node.id);
+    return position === undefined ? node : { ...node, position };
+  });
 }
 
 /** A box where it stands: React Flow's top-left corner and the size dagre was given. */

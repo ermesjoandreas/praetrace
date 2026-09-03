@@ -63,14 +63,45 @@ export interface ViewMember {
    * 99 of zod's 4201 symbols, none of express's 145.
    */
   coverage?: Exclude<SymbolCoverage, 'unknown'>;
+  /**
+   * An edge this view draws runs through this symbol.
+   *
+   * A box has room for about a dozen rows and a file may declare forty, so
+   * something has to choose which of them are drawn. Document order chooses
+   * whichever the parser saw first, which answers no question at all; this
+   * marks the rows that explain the box's own arrows, and the page picks from
+   * them before falling back to the rest.
+   *
+   * Absent is the common answer, and under the default edge kinds it is every
+   * row: an `imports` edge runs file to file, so no single symbol writes it.
+   * `calls`, `extends`, `implements` and `associates` run between symbols and
+   * are what mark anything here — and they are what gets asked for once a
+   * diagram is too big to read, which is when this matters.
+   */
+  linked?: true;
 }
 
 export interface ViewNode {
-  /** A file path, or a directory path when this box stands for many files. */
+  /**
+   * A file path, a directory path when the box stands for a whole directory,
+   * or a bundle's own id — see `kind`.
+   */
   id: string;
-  kind: 'file' | 'folder';
+  /**
+   * What the box stands for.
+   *
+   * A `folder` collapses a directory a scope holds too many files to draw one
+   * by one. A `bundle` collapses neighbours a *focus* has too many of: 278 of
+   * TanStack/query's boxes at depth 1 were one file's importers, and 278 boxes
+   * answer nothing. Both stand for the paths in `files`, and neither is a
+   * `GraphNode` — which is why this type exists. Every field a folder answers
+   * over the pile it holds — `gitChanged`, `language`, `test`, `parseError`,
+   * `unresolved` — a bundle answers the same way, and both leave `members` and
+   * `coverage` alone for the same reasons.
+   */
+  kind: 'file' | 'folder' | 'bundle';
   label: string;
-  /** Symbols the file declares; empty for folders. */
+  /** Symbols the file declares; empty on a folder and on a bundle. */
   members: ViewMember[];
   /** The files this box stands for; just itself for a file node. */
   files: string[];
@@ -111,6 +142,22 @@ export interface ViewNode {
    * what the script excluded — and absent is not zero.
    */
   coverage?: FileCoverage;
+  /**
+   * References this box's files made that landed nowhere: an import naming a
+   * module the scan never saw, a call naming something no declaration in reach
+   * answers to. Carried up from `GraphNode.unresolved`.
+   *
+   * Counted here rather than drawn, because a line to nothing is not a line.
+   * It is what lets a box with no arrows say which kind of nothing it is —
+   * code with no coupling, or coupling the tool could not follow — and the
+   * difference is not small: express drops 903 call references, zod 2 530,
+   * TanStack/query 4 725.
+   *
+   * A folder or a bundle sums the files it stands for, the way `gitChanged`
+   * does and unlike `coverage`: every file in the graph has a number here, so
+   * a sum claims nothing that was not counted. Absent when both are zero.
+   */
+  unresolved?: { imports: number; calls: number };
 }
 
 export interface ViewEdge {
@@ -119,6 +166,17 @@ export interface ViewEdge {
   kind: EdgeKind;
   /** How many underlying graph edges collapsed into this one. */
   weight: number;
+  /**
+   * Every one of those `weight` references was resolved by something weaker
+   * than a binding — see `GraphEdge.guessed`.
+   *
+   * Absent, the ordinary answer, means at least one of them was found rather
+   * than guessed, and one found reference is enough to make the line itself
+   * certain. Drawing the whole line as uncertain because the twelfth reference
+   * behind it was a guess would be the overstatement this field exists to
+   * prevent, in the other direction.
+   */
+  guessed?: true;
 }
 
 /** How much of a project one language accounts for. */
@@ -157,6 +215,14 @@ export interface ViewGraph {
    * question under the same words.
    */
   parseErrors: number;
+  /**
+   * What the whole project named and the graph could not find — the same
+   * population `GraphNode.unresolved` counts per file, summed over every file
+   * in the graph rather than over the boxes drawn. The status bar reads it
+   * beside the syntax-error count, and two numbers standing side by side must
+   * be measured over the same files or one of them is quietly about a slice.
+   */
+  unresolved: { imports: number; calls: number };
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
   /**

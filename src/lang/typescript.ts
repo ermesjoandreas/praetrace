@@ -1190,6 +1190,12 @@ interface Collected {
   signatures: Set<ParsedSymbol>;
   /** The file's top-level bindings, which every symbol's receivers are read against. */
   scope: Scope;
+  /**
+   * What the file exports, read before the walk rather than after it: whether a
+   * `const` bound to a call becomes a symbol turns on it, and `export { x }` may
+   * be written below the declaration it names.
+   */
+  exports: Exports;
 }
 
 /**
@@ -1340,6 +1346,27 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
       if (value.type === 'arrow_function' || value.type === 'function_expression') {
         out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
+        continue;
+      }
+
+      // `export const parse: $Parse = _parse(errors.$ZodRealError)` — a name
+      // bound to whatever a call returned. zod's whole public API is written
+      // this way, 330 declarations of it, and none of them was drawn: the file
+      // held the calls the factory made and no node anyone could import.
+      //
+      // Only the exported ones. The call says nothing about what it produced,
+      // so the name is the entire claim, and a name the file exports is one
+      // another file can write down — which is what a graph edge needs at both
+      // ends. The 645 unexported ones in zod are locals, and stay locals.
+      //
+      // 'function' because that is the kind that means "a top-level value that
+      // is called", which is why these are wanted at all; 'type' belongs to the
+      // type system and would put a call edge on something uncallable. What the
+      // source did not say — whether the value is really callable — the graph
+      // shows the ordinary way, as a box with nothing calling it.
+      if (value.type === 'call_expression' && out.exports.names.has(name)) {
+        out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+        out.claimed.push(declarator);
       }
     }
   }
@@ -1451,6 +1478,7 @@ export const typescript = {
 
   extract(root: SyntaxNode, _source: string): ModuleParse {
     const bindings = importBindings(root);
+    const exports = exportsOf(root);
     const out: Collected = {
       imports: [],
       reexports: [],
@@ -1458,9 +1486,9 @@ export const typescript = {
       claimed: [],
       signatures: new Set(),
       scope: moduleScope(root, bindings),
+      exports,
     };
     for (const child of root.namedChildren) collectTopLevel(child, out);
-    const exports = exportsOf(root);
     return {
       imports: out.imports,
       symbols: markExports(withoutOverloads(out.symbols, out.signatures), exports),

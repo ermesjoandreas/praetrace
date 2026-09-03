@@ -363,6 +363,19 @@ export function readWithChecker(root: string, files: readonly string[]): OracleR
     ts.isPropertyDeclaration(node) ||
     ts.isPropertySignature(node);
 
+  /**
+   * Whether the file this declaration is in exports the name — the extractors'
+   * test for whether a `const` bound to a call earns a node, asked of the
+   * module's export table rather than of the `export` keyword, because
+   * `export { parse }` written below the declaration exports it just as much.
+   */
+  const isExportedName = (declaration: ts.Node, name: string): boolean => {
+    // Only an external module has one; a script exports nothing to match.
+    const module = checker.getSymbolAtLocation(declaration.getSourceFile());
+    if (module === undefined) return false;
+    return checker.getExportsOfModule(module).some((exported) => exported.name === name);
+  };
+
   /** A top-level declaration's name, or null when our model has no node for it. */
   const declaredName = (node: ts.Node): string | null => {
     if (
@@ -377,15 +390,22 @@ export function readWithChecker(root: string, files: readonly string[]): OracleR
     if (ts.isModuleDeclaration(node)) {
       return ts.isIdentifier(node.name) ? node.name.text : node.name.text;
     }
-    // A variable is a symbol only when what it holds is one: an arrow, a
-    // function expression or a class. `const rows = load()` is a value, and a
-    // value has no node — which is why the calls in it belong to the file.
+    // A variable is a symbol when what it holds is one — an arrow, a function
+    // expression or a class — or when the file exports a name bound to a call.
+    // `const rows = load()` is a value and the calls in it belong to the file;
+    // `export const parse = _parse(...)` is zod's public API, a name another
+    // file can write down, and the extractors give it a node.
+    //
+    // Exported and not merely written `export const`, because that is the
+    // extractors' own test: they read the export table, so a name declared bare
+    // and exported below in `export { parse }` is a node just the same.
     if (ts.isVariableDeclaration(node)) {
       const value = node.initializer;
-      const isSymbol =
-        value !== undefined &&
-        (ts.isArrowFunction(value) || ts.isFunctionExpression(value) || ts.isClassExpression(value));
-      return isSymbol && ts.isIdentifier(node.name) ? node.name.text : null;
+      if (value === undefined || !ts.isIdentifier(node.name)) return null;
+      if (ts.isArrowFunction(value) || ts.isFunctionExpression(value) || ts.isClassExpression(value)) {
+        return node.name.text;
+      }
+      return ts.isCallExpression(value) && isExportedName(node, node.name.text) ? node.name.text : null;
     }
     // `app.init = function () {}` — how a CommonJS module defines its API, and
     // how express writes all 632 lines of application.js. The name is the

@@ -43,6 +43,7 @@ import {
   requestSuggestions,
   setGitBase,
   switchProject,
+  totalUnresolved,
   type AgentCall,
   type GroupColor,
   type ChangeEntry,
@@ -61,6 +62,7 @@ import {
   type OrphanGroup,
   type SearchHit,
   type ViewGraph,
+  type ViewNode,
   type ViewResponse,
 } from './api';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
@@ -764,9 +766,14 @@ export function App() {
    * drawn around one has to take the files, never the box's own id. */
   const selection = useMemo(() => {
     const chosen = (data?.view.nodes ?? []).filter((node) => picked.has(node.id));
-    // Counted from the view rather than from `picked`, which can still name a
-    // box that the last update removed.
-    return { boxes: chosen.length, files: [...new Set(chosen.flatMap((node) => node.files))] };
+    // A bundle is left out of what a group is drawn from. A folder box was
+    // chosen for what it is — a directory somebody pointed at — but a bundle
+    // is whatever a hop happened to sweep up, so shift-clicking one would
+    // propose a category of 258 files nobody looked at, under a name they
+    // meant for three boxes. Counted from the view rather than from `picked`,
+    // which can still name a box the last update removed.
+    const boxes = chosen.filter((node) => node.kind !== 'bundle');
+    return { boxes: boxes.length, files: [...new Set(boxes.flatMap((node) => node.files))] };
   }, [data?.view, picked]);
 
   const createGroup = useCallback(
@@ -1330,6 +1337,16 @@ export function App() {
     );
   }, [view, pulsing]);
 
+  /**
+   * The canvas the diagram is drawn in, read when a layout runs.
+   *
+   * Deliberately a ref and not state: the window size is an input to the
+   * layout, not a reason to run one. Held as state it would re-run this memo
+   * on every pixel of a drag on the window edge, and a resize is not a request
+   * to move the boxes — the layout that comes after it is.
+   */
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
   // Positions survive live updates: a box must not jump because the agent saved.
   const layoutRef = useRef<{
     /** Where every box stands and how big it is, for placing the next one beside it. */
@@ -1361,7 +1378,12 @@ export function App() {
       target: edge.to,
       // An edge stays lit only when both ends are in it. One end is not a
       // relationship the followed symbol has any part in.
-      className: `edge-${edge.kind}${
+      //
+      // `edge-guessed` draws it dotted — every reference behind the line was
+      // resolved by a name match nothing in the referring file asked for. It
+      // is a fact about how the line was found, so it is added to whatever the
+      // kind already says rather than replacing it.
+      className: `edge-${edge.kind}${edge.guessed === true ? ' edge-guessed' : ''}${
         relatedFiles !== null && !(involved(edge.from) && involved(edge.to)) ? ' edge-aside' : ''
       }`,
       // A weight of one is the common case and labelling it is just noise.
@@ -1373,7 +1395,11 @@ export function App() {
       type: 'box',
       position: { x: 0, y: 0 },
       width: NODE_WIDTH,
-      height: boxHeight(node.members.length, node.kind === 'folder', expanded.has(node.id)),
+      // A bundle stands for a pile of files and draws a count, exactly as a
+      // folder does, so it is measured as one — `!== 'file'` rather than
+      // `=== 'folder'`, or a bundle would be given the height of a file with
+      // no symbols and be shorter than its own label.
+      height: boxHeight(node.members.length, node.kind !== 'file', expanded.has(node.id)),
       // The selection is held here, not inside React Flow: it re-reads the
       // nodes prop on every update, so a selection it kept to itself would be
       // wiped the moment the agent saved a file.
@@ -1398,6 +1424,12 @@ export function App() {
         // for, which is most of them. Passed through as it came: absent means
         // unknown, and the box must never turn that into a zero.
         coverage: node.coverage,
+        // Passed through as it came, for the same reason and with the opposite
+        // meaning: every box has a number here, so absent is a measured zero
+        // and the box draws no mark. It is what separates a box with no arrows
+        // because the code leans on nothing from one with no arrows because the
+        // references went somewhere we could not follow.
+        unresolved: node.unresolved,
         root: data?.root ?? '',
         following,
         related: relatedIds,
@@ -1463,7 +1495,7 @@ export function App() {
     // the new one goes beside its most connected neighbour, and the frames
     // are redrawn around where everything now is.
     const laid = fresh
-      ? layoutNodes(boxes, builtEdges, shown)
+      ? layoutNodes(boxes, builtEdges, shown, canvasRef.current?.clientHeight ?? 0)
       : sameShape
         ? { nodes: keepLayout(previous.rects, boxes, []), clusters: previous.clusters }
         : (() => {
@@ -1635,7 +1667,12 @@ export function App() {
   }, []);
 
   const goTo = useCallback(
-    (target: string, kind: 'file' | 'folder') => {
+    (target: string, kind: ViewNode['kind']) => {
+      // A bundle stands for a pile of neighbours and is not a place in the
+      // project: there is no scope to look inside and no file to focus on, so
+      // a double click on one does nothing rather than navigating to an id
+      // that names no path.
+      if (kind === 'bundle') return;
       const params = new URLSearchParams();
       if (kind === 'folder') {
         params.set('scope', target);
@@ -2163,15 +2200,31 @@ export function App() {
     const box = target === null ? undefined : view?.nodes.find((node) => node.id === target);
 
     if (box !== undefined) {
+      // A bundle is a count of neighbours, not a place: its id names no path,
+      // so nothing that takes one may run on it. Greyed with the reason, which
+      // is the rule for every item here — an item that quietly did nothing
+      // would be the decoration this menu does not have.
+      const bundle = box.kind === 'bundle';
       return [
-        { label: box.kind === 'folder' ? 'Look inside' : 'Go here', run: () => goTo(box.id, box.kind) },
+        {
+          label: box.kind === 'file' ? 'Go here' : 'Look inside',
+          ...(bundle
+            ? { disabledBecause: 'A bundle stands for many files and is not a place to go' }
+            : { run: () => goTo(box.id, box.kind) }),
+        },
         {
           label: 'Open in editor',
-          ...(data === null || box.kind === 'folder'
+          ...(data === null || box.kind !== 'file'
             ? { disabledBecause: 'Only a file opens in an editor' }
             : { run: () => void openInEditor(data.root, box.id, 1) }),
         },
-        { label: 'Copy path', shortcut: '⌘C', run: () => void navigator.clipboard.writeText(box.id) },
+        {
+          label: 'Copy path',
+          shortcut: '⌘C',
+          ...(bundle
+            ? { disabledBecause: 'A bundle has no path of its own' }
+            : { run: () => void navigator.clipboard.writeText(box.id) }),
+        },
         {
           label: `Create category from selection…`,
           separatorBefore: true,
@@ -2181,7 +2234,15 @@ export function App() {
         },
         {
           label: 'Only this folder',
-          run: () => goToScope(box.kind === 'folder' ? box.id : box.id.split('/').slice(0, -1).join('/')),
+          // The path a bundle would be asked for is `bundle:dependents:1`,
+          // whose directory is the empty string — the root, silently, which is
+          // the opposite of narrowing.
+          ...(bundle
+            ? { disabledBecause: 'A bundle is not in one folder' }
+            : {
+                run: () =>
+                  goToScope(box.kind === 'folder' ? box.id : box.id.split('/').slice(0, -1).join('/')),
+              }),
         },
       ];
     }
@@ -2489,7 +2550,7 @@ export function App() {
           </aside>
         )}
 
-        <div className="canvas">
+        <div className="canvas" ref={canvasRef}>
         {(showWelcome || emptyProject) && (
           <Welcome
             onOpen={(path) => {
@@ -2538,6 +2599,17 @@ export function App() {
           // bubbling before React sees it — onNodeDoubleClick then never fires
           // and the view silently zooms instead of navigating.
           zoomOnDoubleClick={false}
+          // Only what is on screen is in the DOM. A diagram is read zoomed in
+          // — at the zoom that fits query's 127 `packages` boxes nothing can be
+          // read at all — and off screen a box still costs a mount, a re-render
+          // on every save and its share of the heap. Measured on that view: 127
+          // node elements and 214 edge elements at every zoom, 2 161 elements
+          // inside the flow viewport, against 28 and 107 and 824 at the zoom a
+          // box can be read at. Every box and every frame carries an explicit
+          // width and height, which is what the cull rectangle is computed
+          // from; a node sized only by what it renders would be culled against
+          // a rectangle of nothing.
+          onlyRenderVisibleElements
           fitView
           fitViewOptions={{ padding: 0.15 }}
           minZoom={0.05}
@@ -2561,6 +2633,18 @@ export function App() {
           <Sidebar
             root={data.root}
             selected={selected}
+            // A bundle's id names no path, so `/api/detail` can only 404 on it.
+            // The panel is handed what the box already knows instead.
+            bundle={
+              selected === null
+                ? null
+                : (() => {
+                    const box = view?.nodes.find((node) => node.id === selected);
+                    return box === undefined || box.kind !== 'bundle'
+                      ? null
+                      : { label: box.label, files: box.files };
+                  })()
+            }
             revision={revision}
             at={at}
             onSelect={setSelected}
@@ -2609,6 +2693,7 @@ export function App() {
         hiddenTests={hideTests ? (view?.hiddenTests ?? 0) : 0}
         onShowTests={() => setFilter('tests', null)}
         parseErrors={view?.parseErrors ?? 0}
+        unresolved={view ? totalUnresolved(view) : null}
         agentLast={agentCalls[0] ?? null}
         agentTotal={agentCalls.length}
       />
