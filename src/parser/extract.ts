@@ -52,8 +52,39 @@ export function parseSource(filePath: string, source: string, modifiedAt = 0): P
     language: language.id,
     imports: parse.imports,
     symbols: parse.symbols,
-    lineCount: tree.rootNode.endPosition.row + 1,
+    lineCount: countLines(source),
+    // tree-sitter is error-tolerant, so a malformed file parses to something and
+    // loses symbols quietly: `export const broken = {{{ ;` drew "0 symbols" and
+    // looked like an empty file. The flag is what lets a box say otherwise.
+    hasError: tree.rootNode.hasError,
     modifiedAt,
     ...(parse.moduleName === undefined ? {} : { moduleName: parse.moduleName }),
+    // Without this the store's re-export following never sees a barrel, and a
+    // name imported through one still lands on the barrel rather than where it
+    // is declared.
+    ...(parse.reexports === undefined || parse.reexports.length === 0 ? {} : { reexports: parse.reexports }),
+    // The store narrows a file's name lookup to what it bound only when the
+    // parser said what that was. Dropped here, every TypeScript file would
+    // read as one whose language had not opted in, and the whole-table rule
+    // the bindings exist to replace would go on drawing `rows.map()` as a
+    // call into a barrel's `map`. An empty list is kept for the same reason:
+    // a file that imports nothing bound nothing, which is not the same as a
+    // parser that never said.
+    ...(parse.bindings === undefined ? {} : { bindings: parse.bindings }),
+    ...(parse.defaultExport === undefined ? {} : { defaultExport: parse.defaultExport }),
   };
+}
+
+/**
+ * Lines the way `wc -l` counts them: one per newline, plus the last line when
+ * nothing terminates it. Counted from the text rather than from the tree,
+ * because the root node ends on the row *after* a trailing newline, and
+ * `endPosition.row + 1` reported a 131-line file as 132 — the terminator was
+ * being read as a line of its own.
+ */
+export function countLines(source: string): number {
+  let lines = 0;
+  for (let at = source.indexOf('\n'); at !== -1; at = source.indexOf('\n', at + 1)) lines++;
+  if (source.length > 0 && !source.endsWith('\n')) lines++;
+  return lines;
 }

@@ -20,6 +20,14 @@ export type BoxData = {
   language: LanguageId | null;
   /** False in a single-language project, where the tag would say nothing. */
   showLanguage: boolean;
+  /** A test, fixture or story; a folder is one only when every file in it is. */
+  test: boolean;
+  /**
+   * The parser hit a syntax error here, or in one of a folder's files. Said on
+   * the box because "0 symbols" from a file that would not parse looks exactly
+   * like an empty file, and an M badge beside it read as a finished edit.
+   */
+  parseError: boolean;
   /** Needed to build an absolute path for an editor link. */
   root: string;
   /** Nothing in this box takes part in what is being followed. */
@@ -135,6 +143,21 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             {data.gitChanged}
           </span>
         )}
+        {/* A warning, not a tint: the surface already carries amber and blue
+            for this minute's edits, and a broken file is a fact about the
+            parse, not about who touched it. */}
+        {data.parseError && (
+          <span
+            className="box-warning"
+            title={
+              data.kind === 'file'
+                ? 'This file has a syntax error; symbols may be missing'
+                : 'A file in here has a syntax error; symbols may be missing'
+            }
+          >
+            <i className="codicon codicon-warning" aria-hidden="true" />
+          </span>
+        )}
         {tag !== null && (
           <span
             className="box-lang"
@@ -145,6 +168,22 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             }
           >
             {tag}
+          </span>
+        )}
+        {/* As quiet as the language tag, and beside it: what a file is for is
+            the same order of fact as what it is written in. It is here so a
+            box drawn from a suite reads as one, not because it is drawn any
+            differently — tests are in the graph; they just do not vote. */}
+        {data.test && (
+          <span
+            className="box-test"
+            title={
+              data.kind === 'file'
+                ? 'A test, fixture or story — it does not decide categories'
+                : 'Every file in here is a test, fixture or story'
+            }
+          >
+            test
           </span>
         )}
         {/* Wears the same mark a member row uses, because it is the same act on a

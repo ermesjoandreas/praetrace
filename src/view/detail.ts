@@ -137,9 +137,65 @@ export interface SymbolLinks {
   uses: SymbolRelation[];
   /** What reaches it. This is the half nothing else in the app can answer. */
   usedBy: SymbolRelation[];
+  /**
+   * Whether an empty `usedBy` means none, or means the graph cannot tell.
+   *
+   * A top-level function or class is resolved by name wherever its file is
+   * imported, so what the graph found is close to what there was to find —
+   * close, because a function handed over as a value, `[1].map(passed)`, is
+   * never a call the parser sees. Everything else is partial, each for its
+   * own reason. A member is reached through a receiver, and a receiver whose
+   * type is not written down is not guessed at — a missing edge is a gap, a
+   * wrong one is a lie — so for a method or a field the list holds the typed
+   * calls only, and nothing in it can say how many untyped ones there were.
+   * cobra's `Command.Execute` answered "0 in" while grep found sixteen
+   * callers; the count was not wrong so much as unqualified. A function
+   * assigned to a property, express's `app.handle`, is called through the
+   * object it hangs off, which the parser does not follow — application.js
+   * calls `compileETag(val)` at line 365 and utils.js's `exports.compileETag`
+   * answered "0 in, full". And an interface or a type is mostly used in type
+   * positions, which are not edges at all.
+   */
+  coverage: 'full' | 'partial';
+  /** The sentence the panel shows beside the count, in the graph's own words. */
+  coverageNote: string;
 }
 
 const RELATED: ReadonlySet<string> = new Set(['calls', 'extends', 'implements', 'associates']);
+
+type Coverage = Pick<SymbolLinks, 'coverage' | 'coverageNote'>;
+
+const UNTYPED_RECEIVER: Coverage = {
+  coverage: 'partial',
+  coverageNote:
+    'Calls through a receiver whose type is not written down are not tracked, so an empty list means unknown, not none.',
+};
+
+const ASSIGNED_PROPERTY: Coverage = {
+  coverage: 'partial',
+  coverageNote:
+    'Called through the object it is assigned to, which is not tracked, so an empty list means unknown, not none.',
+};
+
+const TYPE_POSITION: Coverage = {
+  coverage: 'partial',
+  coverageNote: 'Uses in type positions are not tracked, so an empty list means unknown, not none.',
+};
+
+const BY_NAME: Coverage = {
+  coverage: 'full',
+  coverageNote:
+    'References by name are followed across every file that imports this one; a function passed by value is not tracked.',
+};
+
+function coverageOf(name: string, kind: NodeKind): Coverage {
+  if (kind === 'method' || kind === 'field') return UNTYPED_RECEIVER;
+  if (kind === 'interface' || kind === 'type') return TYPE_POSITION;
+  // A top-level function or class whose name has a dot in it was assigned to
+  // a property: `app.init = function init` in express.
+  if (name.includes('.')) return ASSIGNED_PROPERTY;
+  return BY_NAME;
+}
 
 export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
   const symbol = graph.nodes.get(id);
@@ -182,5 +238,6 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
     filePath: symbol.filePath,
     uses: uses.sort(order),
     usedBy: usedBy.sort(order),
+    ...coverageOf(symbol.name, symbol.kind),
   };
 }

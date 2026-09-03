@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { money } from './api';
 import { Section } from './Section';
-import type { GroupColor, GroupSuggestion, Suggestion } from './api';
+import type { GroupColor, GroupSuggestion, OrphanGroup, Suggestion } from './api';
 
 /**
  * What the panel can do to a group. The frame on the canvas offers the same
@@ -19,7 +19,11 @@ export interface GroupEditor {
   onColor: (group: GroupSuggestion, color: GroupColor) => void;
   /** Only a hand-drawn group may be given members; the rest come from imports. */
   onMembers: (group: GroupSuggestion, files: string[]) => void;
-  onDelete: (group: GroupSuggestion) => void;
+  /**
+   * By the id the group is recorded under, not by the group: an orphan has no
+   * cluster to hand over, only the entry in groups.json it came from.
+   */
+  onDelete: (storedId: string) => void;
 }
 
 /**
@@ -73,6 +77,7 @@ function suggestTitle(lastRun: { costUsd: number; ms: number } | null): string {
  */
 export function Categories({
   groups,
+  orphans,
   onDecide,
   onSelect,
   groupEditor: editor,
@@ -85,6 +90,8 @@ export function Categories({
   onDismissSuggestion,
 }: {
   groups: GroupSuggestion[];
+  /** Stored names no group the graph finds now answers to. See OrphanGroup. */
+  orphans: OrphanGroup[];
   onDecide: (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => void;
   onSelect: (target: string) => void;
   groupEditor: GroupEditor;
@@ -112,6 +119,12 @@ export function Categories({
 
   const live = groups.filter((group) => group.state !== 'rejected');
   const canCreate = editor.selection.boxes >= 2;
+
+  /** What a nested row says it sits inside: the outer group's name, or its size. */
+  const parentLabel = (id: string): string => {
+    const parent = groups.find((group) => group.id === id);
+    return parent === undefined ? id : (parent.name ?? `${parent.files.length} files`);
+  };
 
   // Greyed with the reason rather than absent, for the same reason the add
   // button is: an action that comes and goes is never found.
@@ -190,7 +203,14 @@ export function Categories({
           const suggestion = decided ? undefined : suggestions.get(group.id);
 
           return (
-            <li key={group.id}>
+            // One indent in under the group it was found inside. The list is
+            // in walk order — an outer group, then what nests in it — so the
+            // indent alone says which; the title says it in words.
+            <li
+              key={group.id}
+              className={group.parent === null ? undefined : 'group-nested'}
+              title={group.parent === null ? undefined : `Inside "${parentLabel(group.parent)}"`}
+            >
               {naming === group.id ? (
                 <input
                   autoFocus
@@ -241,7 +261,14 @@ export function Categories({
                   {/* A drawn group carries a cohesion of 0 — the import graph
                       was never asked to find it — and 0% would read as a
                       terrible group rather than as somebody's decision. */}
-                  <span className="group-cohesion">
+                  <span
+                    className="group-cohesion"
+                    title={
+                      manual
+                        ? 'Drawn by a person; the import graph was not asked'
+                        : `${Math.round(group.cohesion * 100)}% of these files' edges stay inside the category`
+                    }
+                  >
                     {manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`}
                   </span>
                   {/* Rejecting is remembering that this is not a group, so the
@@ -254,7 +281,11 @@ export function Categories({
                       title={manual ? 'Delete this category' : 'Not a category'}
                       aria-label={manual ? 'Delete this category' : 'Not a category'}
                       onClick={() =>
-                        manual ? editor.onDelete(group) : onDecide(group, group.name ?? '', 'rejected')
+                        manual
+                          ? // A drawn group is always stored, so it always has the id it
+                            // is stored under; the cluster id is the fallback App uses.
+                            editor.onDelete(group.storedId ?? group.id)
+                          : onDecide(group, group.name ?? '', 'rejected')
                       }
                     >
                       <i
@@ -389,6 +420,47 @@ export function Categories({
           );
         })}
       </ul>
+
+      {/* Names that are in .codemap/groups.json and match nothing the graph
+          finds now. They used to be dropped on read, so a committed name could
+          vanish from the panel with no way to learn why, let alone delete it.
+          Kept and listed: the code a name described may come back, and until
+          then the one thing to do with it is take it out on purpose. */}
+      {orphans.length > 0 && (
+        <div className="categories-orphans">
+          <h3
+            className="categories-orphans-title"
+            title="Stored in .codemap/groups.json, and no category the graph finds now holds most of these files"
+          >
+            Stored, matches nothing
+          </h3>
+          <ul>
+            {orphans.map((orphan) => (
+              <li key={orphan.storedId}>
+                <div className="group-row group-orphan">
+                  <span className="group-title" title={orphan.files.join('\n')}>
+                    {orphan.name}
+                  </span>
+                  <span className="group-cohesion">
+                    {orphan.files.length} {orphan.files.length === 1 ? 'file' : 'files'}
+                  </span>
+                  <span className="row-actions">
+                    <button
+                      type="button"
+                      className="group-drop"
+                      title="Delete this category — it is removed from .codemap/groups.json"
+                      aria-label={`Delete ${orphan.name}`}
+                      onClick={() => editor.onDelete(orphan.storedId)}
+                    >
+                      <i className="codicon codicon-trash" aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </Section>
   );
 }

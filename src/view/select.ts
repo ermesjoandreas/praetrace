@@ -3,6 +3,7 @@ import type { Graph } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
 import type { LanguageId, LanguageSupport } from '../lang/types.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
+import { isTestFile } from './tests.js';
 import type { LanguageCount, ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
 
 /**
@@ -45,15 +46,61 @@ export function selectView(
       ? focusView(spec, files, edges, git, changed)
       : scopeView(spec, files, edges, git, changed);
 
-  // Added here rather than threaded through both: it is a fact about the
+  // Added here rather than threaded through both: they are facts about the
   // project, not about the slice, so neither of them has any business
-  // computing it — and computing it twice is how the two would disagree.
+  // computing them — and computing them twice is how the two would disagree.
   // `at` is echoed, not acted on: the caller chose which graph this is.
-  return { ...slice, languages: projectLanguages(graph), at: spec.at };
+  return {
+    ...slice,
+    fileCount: countFiles(graph),
+    hiddenTests: countHiddenTests(graph, spec.filter, now, changed),
+    parseErrors: countParseErrors(graph),
+    languages: projectLanguages(graph),
+    at: spec.at,
+  };
 }
 
 /** Everything a slice decides for itself; the project-wide facts land after. */
-type Slice = Omit<ViewGraph, 'languages' | 'at'>;
+type Slice = Omit<ViewGraph, 'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors'>;
+
+/** What a file box is drawn from: its symbols, and whether the parse was clean. */
+interface FileFacts {
+  members: ViewMember[];
+  parseError: boolean;
+}
+
+function countFiles(graph: Graph): number {
+  let count = 0;
+  for (const node of graph.nodes.values()) if (node.kind === 'file') count += 1;
+  return count;
+}
+
+function countParseErrors(graph: Graph): number {
+  let count = 0;
+  for (const node of graph.nodes.values()) if (node.kind === 'file' && node.parseError === true) count += 1;
+  return count;
+}
+
+/**
+ * The tests the filter took away, and only those: a test the path or git
+ * filter would have dropped anyway is not hidden by `hideTests`, and counting
+ * it would promise more files than showing them again could deliver.
+ */
+function countHiddenTests(
+  graph: Graph,
+  filter: ViewFilter,
+  now: number,
+  changed: ReadonlySet<string> | null,
+): number {
+  if (!filter.hideTests) return 0;
+  const otherwise: ViewFilter = { ...filter, hideTests: false };
+  let count = 0;
+  for (const node of graph.nodes.values()) {
+    if (node.kind !== 'file' || !isTestFile(node.filePath)) continue;
+    if (keepsFile(node.filePath, node.modifiedAt ?? 0, otherwise, now, changed)) count += 1;
+  }
+  return count;
+}
 
 /**
  * Read back off the path rather than carried on the node.
@@ -120,40 +167,30 @@ interface FileEdge {
   weight: number;
 }
 
-/**
- * The class a member belongs to, read back off its id rather than carried on
- * the node. The id already encodes it — `path#Class.member` — and a second
- * copy on every node in the graph could disagree with the first.
- */
-function ownerOf(graph: Graph, id: string): string | null {
-  const hash = id.indexOf('#');
-  if (hash === -1) return null;
-  const dot = id.indexOf('.', hash);
-  return dot === -1 ? null : id.slice(hash + 1, dot);
-}
-
 /** File path -> the symbols it declares, in declaration order. */
 function collectFiles(
   graph: Graph,
   filter: ViewFilter,
   now: number,
   changed: ReadonlySet<string> | null,
-): Map<string, ViewMember[]> {
-  const files = new Map<string, ViewMember[]>();
+): Map<string, FileFacts> {
+  const files = new Map<string, FileFacts>();
 
   for (const node of graph.nodes.values()) {
     if (node.kind !== 'file') continue;
     if (!keepsFile(node.filePath, node.modifiedAt ?? 0, filter, now, changed)) continue;
-    if (!files.has(node.filePath)) files.set(node.filePath, []);
+    if (!files.has(node.filePath)) {
+      files.set(node.filePath, { members: [], parseError: node.parseError === true });
+    }
   }
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
-    files.get(node.filePath)?.push({
+    files.get(node.filePath)?.members.push({
       id: node.id,
       name: node.name,
       kind: node.kind,
       line: node.range.startLine,
-      owner: ownerOf(graph, node.id),
+      owner: node.owner ?? null,
       visibility: node.visibility ?? null,
       isStatic: node.isStatic === true,
       isAbstract: node.isAbstract === true,
@@ -162,8 +199,8 @@ function collectFiles(
 
   // With a kind filter on, a file left holding nothing is not worth a box.
   if (filter.kinds.length > 0) {
-    for (const [filePath, members] of [...files]) {
-      if (members.length === 0) files.delete(filePath);
+    for (const [filePath, facts] of [...files]) {
+      if (facts.members.length === 0) files.delete(filePath);
     }
   }
 
@@ -212,7 +249,7 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
 
 function fileNode(
   filePath: string,
-  members: ViewMember[],
+  facts: FileFacts | undefined,
   focused: boolean,
   git: GitStatus | null,
 ): ViewNode {
@@ -221,13 +258,15 @@ function fileNode(
     id: filePath,
     kind: 'file',
     label: filePath,
-    members,
+    members: facts?.members ?? [],
     files: [filePath],
     external: false,
     focused,
     gitStatus,
     gitChanged: gitStatus ? 1 : 0,
     language: languageOf(filePath),
+    test: isTestFile(filePath),
+    parseError: facts?.parseError === true,
   };
 }
 
@@ -235,7 +274,7 @@ function fileNode(
 
 function focusView(
   spec: ViewSpec,
-  files: ReadonlyMap<string, ViewMember[]>,
+  files: ReadonlyMap<string, FileFacts>,
   edges: readonly FileEdge[],
   git: GitStatus | null,
   _changed: ReadonlySet<string> | null,
@@ -266,7 +305,7 @@ function focusView(
 
   const nodes = [...reached]
     .sort()
-    .map((filePath) => fileNode(filePath, files.get(filePath) ?? [], filePath === focus, git));
+    .map((filePath) => fileNode(filePath, files.get(filePath), filePath === focus, git));
 
   const kept = edges
     .filter((edge) => reached.has(edge.from) && reached.has(edge.to))
@@ -293,7 +332,7 @@ function setIn(map: Map<string, Set<string>>, key: string): Set<string> {
 
 function scopeView(
   spec: ViewSpec,
-  files: ReadonlyMap<string, ViewMember[]>,
+  files: ReadonlyMap<string, FileFacts>,
   edges: readonly FileEdge[],
   git: GitStatus | null,
   changed: ReadonlySet<string> | null,
@@ -330,15 +369,17 @@ function scopeView(
       id: target.id,
       kind: target.kind,
       label: target.id === '' ? '.' : labelFor(target.id, prefix, inside),
-      members: target.kind === 'file' ? (files.get(filePath) ?? []) : [],
+      members: target.kind === 'file' ? (files.get(filePath)?.members ?? []) : [],
       files: [],
       external: !inside,
       focused: false,
       gitStatus: target.kind === 'file' ? (git?.files[target.id] ?? null) : null,
-      // Both filled in from `backing` below, once the box knows which files it
-      // actually stands for — neither can be answered from the first one seen.
+      // All filled in from `backing` below, once the box knows which files it
+      // actually stands for — none can be answered from the first one seen.
       gitChanged: 0,
       language: null,
+      test: false,
+      parseError: false,
     };
     nodes.set(target.id, created);
     return created;
@@ -363,6 +404,8 @@ function scopeView(
   for (const node of nodes.values()) {
     node.files = [...(backing.get(node.id) ?? [])].sort();
     node.language = soleLanguage(node.files);
+    node.test = node.files.every(isTestFile);
+    node.parseError = node.files.some((file) => files.get(file)?.parseError === true);
     if (changed !== null) node.gitChanged = node.files.filter((file) => changed.has(file)).length;
   }
 

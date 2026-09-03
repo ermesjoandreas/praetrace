@@ -47,6 +47,16 @@ const WRITTEN = new Set(EXTENSIONS);
 const REWRITTEN = new Set(['.js', '.jsx', '.mjs', '.cjs']);
 
 function candidatesFor(base: string): string[] {
+  // `require('..')` from test/app.js arrives here as `.`, `require('../')` as
+  // `./`, and `require('./')` as `lib/`: a directory, and the only file a
+  // directory can mean is its index. Before this, every one of express's 91
+  // test files required the package it tests and resolved to nothing, so
+  // index.js — the one file the whole repository exists to export — was drawn
+  // with no dependents at all.
+  const directory = base === '.' || base === './' ? '' : base.replace(/\/$/, '');
+  const indexes = EXTENSIONS.map((candidate) => path.posix.join(directory, `index${candidate}`));
+  if (directory === '' || base.endsWith('/')) return indexes;
+
   const extension = /\.[a-z]+$/.exec(base)?.[0];
 
   if (extension !== undefined && WRITTEN.has(extension)) {
@@ -57,8 +67,5 @@ function candidatesFor(base: string): string[] {
     return EXTENSIONS.map((candidate) => stem + candidate);
   }
 
-  return [
-    ...EXTENSIONS.map((candidate) => base + candidate),
-    ...EXTENSIONS.map((candidate) => `${base}/index${candidate}`),
-  ];
+  return [...EXTENSIONS.map((candidate) => base + candidate), ...indexes];
 }

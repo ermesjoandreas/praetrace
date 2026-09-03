@@ -13,7 +13,10 @@
 
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["vite/client"]
+    // A `.ts` import path, so `node --test` can run web/src/*.test.ts as they
+    // are: the page is bundled by vite and never compiled into dist/.
+    "allowImportingTsExtensions": true,
+    "types": ["vite/client", "node"]
   },
   "include": ["src", "vite.config.ts"]
 }

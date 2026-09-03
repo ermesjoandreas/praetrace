@@ -1,4 +1,4 @@
-import type { ParsedSymbol } from '../parser/types.js';
+import type { ImportBinding, ParsedSymbol, Reexport } from '../parser/types.js';
 
 /**
  * What a language has to provide to be drawn.
@@ -42,6 +42,16 @@ export interface LanguageParse {
    * declared name rather than by path match against this; the rest leave it out.
    */
   moduleName?: string;
+  /** What the file hands on from other files, name by name; see ParsedFile.reexports. */
+  reexports?: Reexport[];
+  /**
+   * The names this file bound by importing, and the symbol it exports by
+   * default; see ParsedFile.bindings and ParsedFile.defaultExport. Both travel
+   * through parseSource untouched, and a language that records neither leaves
+   * them out so the graph reads its files the old, whole-table way.
+   */
+  bindings?: ImportBinding[];
+  defaultExport?: string;
 }
 
 /**

@@ -1,66 +1,30 @@
 import { createRequire } from 'node:module';
 
-import type { ParsedSymbol, SymbolKind } from '../parser/types.js';
-import { typescript } from './typescript.js';
-import type { LanguageParse, LanguageSupport, ResolveContext, SyntaxNode } from './types.js';
+import type { ParsedSymbol, Reexport, SymbolKind } from '../parser/types.js';
+import {
+  FUNCTION_VALUES,
+  assignedSymbolOf,
+  classScope,
+  collectCalls,
+  exportsOf,
+  importBindings,
+  markExports,
+  moduleScope,
+  nameOf,
+  reexportOf,
+  requireBindings,
+  scopeOf,
+  specifierOf,
+  typescript,
+  type ModuleParse,
+  type Scope,
+} from './typescript.js';
+import type { LanguageSupport, ResolveContext, SyntaxNode } from './types.js';
 
 // The grammars are native CommonJS addons with no ESM entry point.
 const require = createRequire(import.meta.url);
 
 let loaded: unknown = null;
-
-/** Resolve a node that names something down to the bare identifier text. */
-function nameOf(node: SyntaxNode | null): string | null {
-  if (!node) return null;
-  switch (node.type) {
-    case 'identifier':
-    case 'property_identifier':
-    // `#count` carries its hash everywhere it is written, `this.#count`
-    // included, so the hash is part of the name and not a modifier spelt oddly.
-    case 'private_property_identifier':
-      return node.text;
-    case 'member_expression':
-      // `React.Component` — attribute the reference to the trailing property.
-      return nameOf(node.childForFieldName('property'));
-    default:
-      return null;
-  }
-}
-
-/** Text of a module specifier node, without its surrounding quotes. */
-function specifierOf(node: SyntaxNode | null): string | null {
-  if (!node) return null;
-  const fragment = node.namedChildren.find((child) => child.type === 'string_fragment');
-  return fragment ? fragment.text : null;
-}
-
-/**
- * Every name invoked inside a symbol.
- *
- * `exclude` holds subtrees that are symbols in their own right — a class's
- * methods — so the enclosing symbol does not also claim what they call.
- * Without it every call inside a method would produce two edges from two
- * different nodes, and the weight on the drawn edge would be twice what the
- * code actually does.
- */
-function collectCalls(declaration: SyntaxNode, exclude: readonly SyntaxNode[] = []): string[] {
-  const names = new Set<string>();
-  const inside = (node: SyntaxNode): boolean =>
-    exclude.some((skip) => node.startIndex >= skip.startIndex && node.endIndex <= skip.endIndex);
-
-  for (const call of declaration.descendantsOfType('call_expression')) {
-    if (inside(call)) continue;
-    const name = nameOf(call.childForFieldName('function'));
-    if (name) names.add(name);
-  }
-  for (const construction of declaration.descendantsOfType('new_expression')) {
-    if (inside(construction)) continue;
-    const name = nameOf(construction.childForFieldName('constructor'));
-    if (name) names.add(name);
-  }
-
-  return [...names];
-}
 
 /** `class C extends Base`. One name: JavaScript has single inheritance and no
  *  `implements` at all, so the heritage clause holds the superclass directly. */
@@ -75,10 +39,6 @@ function superclassOf(declaration: SyntaxNode): string[] {
   return [];
 }
 
-/** A field holding one of these is a method in everything but syntax, which is
- *  how a handler bound to its instance is written. */
-const FUNCTION_VALUES = new Set(['arrow_function', 'function_expression', 'function']);
-
 /**
  * A class's members, as symbols of their own. Returns the method bodies, which
  * the class must not claim the calls of.
@@ -88,7 +48,12 @@ const FUNCTION_VALUES = new Set(['arrow_function', 'function_expression', 'funct
  * initialised with `new Thing()` still calls Thing — it is drawn as a call
  * rather than as a has-a, which is as much as the language actually said.
  */
-function collectMembers(declaration: SyntaxNode, owner: string, symbols: ParsedSymbol[]): SyntaxNode[] {
+function collectMembers(
+  declaration: SyntaxNode,
+  owner: string,
+  symbols: ParsedSymbol[],
+  scope: Scope,
+): SyntaxNode[] {
   const body = declaration.childForFieldName('body');
   if (!body) return [];
 
@@ -121,13 +86,14 @@ function collectMembers(declaration: SyntaxNode, owner: string, symbols: ParsedS
       ...(member.children.some((child) => child.type === 'static') ? { isStatic: true } : {}),
     };
 
+    const calls = collectCalls(member, [], scopeOf(member, scope));
     if (isMethod || FUNCTION_VALUES.has(member.childForFieldName('value')?.type ?? '')) {
       bodies.push(member);
-      methods.push({ ...common, kind: 'method', calls: collectCalls(member) });
+      methods.push({ ...common, kind: 'method', calls });
     } else {
       // A field initialiser can call things, and those calls are the class's
       // doing rather than any method's, so they are collected here too.
-      fields.push({ ...common, kind: 'field', calls: collectCalls(member) });
+      fields.push({ ...common, kind: 'field', calls });
     }
   }
 
@@ -140,7 +106,8 @@ function makeSymbol(
   declaration: SyntaxNode,
   name: string,
   kind: SymbolKind,
-  exclude: readonly SyntaxNode[] = [],
+  exclude: readonly SyntaxNode[],
+  scope: Scope,
 ): ParsedSymbol {
   return {
     name,
@@ -149,7 +116,7 @@ function makeSymbol(
     endLine: declaration.endPosition.row + 1,
     extends: kind === 'class' ? superclassOf(declaration) : [],
     implements: [],
-    calls: collectCalls(declaration, exclude),
+    calls: collectCalls(declaration, exclude, scope),
   };
 }
 
@@ -161,7 +128,10 @@ const DECLARATION_KINDS: ReadonlyMap<string, SymbolKind> = new Map([
 
 interface Collected {
   imports: string[];
+  reexports: Reexport[];
   symbols: ParsedSymbol[];
+  /** The file's top-level bindings, which every symbol's receivers are read against. */
+  scope: Scope;
 }
 
 /** Top-level declarations, plus the members of any class among them. */
@@ -173,12 +143,24 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
   }
 
   if (node.type === 'export_statement') {
-    // `export { x } from './m'` is an import edge just as much as an import is.
-    const specifier = specifierOf(node.childForFieldName('source'));
-    if (specifier) out.imports.push(specifier);
+    // `export { x } from './m'` is an import edge just as much as an import is,
+    // and it is also the one place a name changes files without a declaration.
+    const reexport = reexportOf(node);
+    if (reexport) {
+      out.imports.push(reexport.specifier);
+      out.reexports.push(reexport);
+    }
 
     const declaration = node.childForFieldName('declaration');
     if (declaration) collectTopLevel(declaration, out);
+    return;
+  }
+
+  // `app.init = function` — a CommonJS module's API is defined this way and no
+  // other, and a module written like express is nothing but these.
+  if (node.type === 'expression_statement') {
+    const assigned = assignedSymbolOf(node, out.scope);
+    if (assigned) out.symbols.push(assigned);
     return;
   }
 
@@ -190,8 +172,9 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
     // The class is pushed before its members, and the graph layer relies on
     // that order to attach each one to the class it just saw.
     const members: ParsedSymbol[] = [];
-    const bodies = kind === 'class' ? collectMembers(node, name, members) : [];
-    out.symbols.push(makeSymbol(node, name, kind, bodies));
+    const scope = kind === 'class' ? classScope(node, name, out.scope) : scopeOf(node, out.scope);
+    const bodies = kind === 'class' ? collectMembers(node, name, members, scope) : [];
+    out.symbols.push(makeSymbol(node, name, kind, bodies, scope));
     out.symbols.push(...members);
     return;
   }
@@ -207,14 +190,15 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
       // left of the equals sign — heritage, members and all.
       if (value.type === 'class') {
         const members: ParsedSymbol[] = [];
-        const bodies = collectMembers(value, name, members);
-        out.symbols.push(makeSymbol(value, name, 'class', bodies));
+        const scope = classScope(value, name, out.scope);
+        const bodies = collectMembers(value, name, members, scope);
+        out.symbols.push(makeSymbol(value, name, 'class', bodies, scope));
         out.symbols.push(...members);
         continue;
       }
 
       if (FUNCTION_VALUES.has(value.type)) {
-        out.symbols.push(makeSymbol(declarator, name, 'function'));
+        out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
       }
     }
   }
@@ -246,7 +230,8 @@ function collectCallImports(root: SyntaxNode, imports: string[]): void {
   }
 }
 
-export const javascript: LanguageSupport = {
+// `satisfies`, as typescript.ts: `extract` keeps the type it really returns.
+export const javascript = {
   id: 'javascript',
   label: 'JavaScript',
   extensions: ['.js', '.jsx', '.mjs', '.cjs'],
@@ -274,15 +259,25 @@ export const javascript: LanguageSupport = {
    * over a JavaScript tree and it parses cleanly, reports no error, and returns
    * every class with no superclass and no members — which is the failure this
    * whole effort exists to avoid, arriving through the back door. The imports,
-   * the calls and the top-level declarations really are the same job, and the
-   * helpers above are near-copies; they belong in a module both files import
-   * once one of them is allowed to move.
+   * the calls, the re-exports, the assigned functions and the receiver scopes
+   * really are the same job, and those are imported from typescript.ts rather
+   * than copied; only what the grammars spell differently is written here.
    */
-  extract(root: SyntaxNode, _source: string): LanguageParse {
-    const out: Collected = { imports: [], symbols: [] };
+  extract(root: SyntaxNode, _source: string): ModuleParse {
+    // Both spellings of an import bind names: a `.mjs` writes `import`, a
+    // `.cjs` writes `require`, and the codemods in query are the second.
+    const bindings = [...importBindings(root), ...requireBindings(root)];
+    const out: Collected = { imports: [], reexports: [], symbols: [], scope: moduleScope(root, bindings) };
     for (const child of root.namedChildren) collectTopLevel(child, out);
     collectCallImports(root, out.imports);
-    return out;
+    const exports = exportsOf(root);
+    return {
+      imports: out.imports,
+      symbols: markExports(out.symbols, exports),
+      reexports: out.reexports,
+      bindings,
+      ...(exports.defaultExport === null ? {} : { defaultExport: exports.defaultExport }),
+    };
   },
 
   /**
@@ -299,4 +294,4 @@ export const javascript: LanguageSupport = {
   resolve(context: ResolveContext): string | null {
     return typescript.resolve(context);
   },
-};
+} satisfies LanguageSupport;

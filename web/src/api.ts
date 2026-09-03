@@ -19,7 +19,8 @@ import type { ViewGraph } from '../../src/view/types.js';
 // so nothing may import a value from either here — the import disappears at
 // compile time, the module never does.
 export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteStatus, ViewGraph };
-export type ViewMember = ViewGraph['nodes'][number]['members'][number];
+export type ViewNode = ViewGraph['nodes'][number];
+export type ViewMember = ViewNode['members'][number];
 
 export interface ViewResponse {
   root: string;
@@ -59,7 +60,12 @@ function resolveOrigin(): Promise<string> {
 export async function fetchView(search: string): Promise<ViewResponse> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/view${search}`);
-  if (!response.ok) throw new Error(`view request failed: HTTP ${response.status}`);
+  if (!response.ok) {
+    // The server's own words — `no such file: …`, `unknown commit …` — are
+    // the banner; a status code alone left the page guessing what was refused.
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `view request failed: HTTP ${response.status}`);
+  }
   return (await response.json()) as ViewResponse;
 }
 
@@ -229,6 +235,18 @@ export interface SymbolLinks {
   filePath: string;
   uses: SymbolRelation[];
   usedBy: SymbolRelation[];
+  /**
+   * Whether an empty `usedBy` means none, or means the graph cannot tell.
+   *
+   * A top-level name is found wherever its file is imported. A method or a
+   * field is reached through a receiver, and a receiver whose type is not
+   * written down is not guessed at — so for those the list is the typed calls
+   * only, and "0 in" is not a count but a silence. The panel must never print
+   * it as one.
+   */
+  coverage: 'full' | 'partial';
+  /** The graph's own sentence about that, shown where the count would mislead. */
+  coverageNote: string;
 }
 
 /** What one symbol reaches and what reaches it. 404 means it left the graph. */
@@ -259,10 +277,19 @@ export interface SearchHit {
   line: number;
 }
 
-export async function searchGraph(query: string): Promise<SearchHit[]> {
+/**
+ * Subsequence search over the whole graph — the one on screen. At a commit
+ * that is the commit's graph, so ⌘K cannot find a symbol the frozen diagram
+ * does not have, or miss one it shows. 404 is an unknown commit, in the
+ * server's words.
+ */
+export async function fetchSearch(query: string, at: string | null = null): Promise<SearchHit[]> {
   const base = await serverOrigin();
-  const response = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}`);
-  if (!response.ok) throw new Error(`search failed: HTTP ${response.status}`);
+  const response = await fetch(`${base}/api/search?q=${encodeURIComponent(query)}${atParam(at)}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `search failed: HTTP ${response.status}`);
+  }
   return ((await response.json()) as { hits: SearchHit[] }).hits;
 }
 
@@ -315,23 +342,51 @@ export interface GroupSuggestion {
   locked?: boolean;
 }
 
-export async function fetchClusters(at: string | null = null): Promise<GroupSuggestion[]> {
+/**
+ * A name in .codemap/groups.json that no group the graph finds now answers to.
+ *
+ * Shown rather than dropped: three of this repository's own committed names
+ * were in this state and appeared nowhere, so nobody could say why. The page
+ * lists them under the categories with a way to delete each — by `storedId`,
+ * which is the only id an orphan has.
+ */
+export interface OrphanGroup {
+  storedId: string;
+  name: string;
+  files: string[];
+}
+
+/** What the server answers about groups, whichever route was asked. */
+export interface Groups {
+  clusters: GroupSuggestion[];
+  orphans: OrphanGroup[];
+}
+
+export async function fetchClusters(at: string | null = null): Promise<Groups> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/clusters${at === null ? '' : `?at=${encodeURIComponent(at)}`}`);
   if (!response.ok) throw new Error(`clusters failed: HTTP ${response.status}`);
-  return ((await response.json()) as { clusters: GroupSuggestion[] }).clusters;
+  const body = (await response.json()) as Partial<Groups>;
+  return { clusters: body.clusters ?? [], orphans: body.orphans ?? [] };
 }
 
+/**
+ * Accept or reject one group by its membership. `ids` says which stored entry
+ * the decision replaces: without `storedId`, renaming a group whose members
+ * had drifted appended a second entry under the new cluster id and the file
+ * held the same name twice.
+ */
 export async function decideCluster(
   files: string[],
   name: string,
   state: 'accepted' | 'rejected',
+  ids: { id?: string; storedId?: string } = {},
 ): Promise<void> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/clusters`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ files, name, state }),
+    body: JSON.stringify({ files, name, state, ...ids }),
   });
   if (!response.ok) {
     const body = (await response.json()) as { error?: string };
@@ -345,16 +400,17 @@ export async function decideCluster(
  * group can displace a derived one — so the page replaces its list wholesale
  * instead of trying to reconcile a single row against a shape it no longer has.
  */
-export async function groupAction(body: unknown): Promise<GroupSuggestion[]> {
+export async function groupAction(body: unknown): Promise<Groups> {
   const server = await serverOrigin();
   const response = await fetch(`${server}/api/groups`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const result = (await response.json()) as { clusters?: GroupSuggestion[]; error?: string };
+  const result = (await response.json()) as Partial<Groups> & { error?: string };
   if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
-  return result.clusters ?? [];
+  // Both halves, or deleting an orphan would leave it in the list it was shown in.
+  return { clusters: result.clusters ?? [], orphans: result.orphans ?? [] };
 }
 
 /**
@@ -386,12 +442,18 @@ export async function requestSuggestions(): Promise<SuggestResponse> {
   return body as SuggestResponse;
 }
 
-/** The last run that produced names, if this session has had one. Survives a reload. */
-export async function fetchSuggestions(): Promise<SuggestResponse | null> {
+/**
+ * The last run that produced names, if this session has had one, and whether
+ * one is spending right now. Both survive a reload: the fetch that started a
+ * run used to be the only thing that knew it was in flight, so a reload showed
+ * "Suggesting…" for ever, or nothing while the money was still going out.
+ */
+export async function fetchSuggestions(): Promise<{ result: SuggestResponse | null; running: boolean }> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/suggest`);
   if (!response.ok) throw new Error(`suggestions failed: HTTP ${response.status}`);
-  return ((await response.json()) as { result: SuggestResponse | null }).result;
+  const body = (await response.json()) as { result: SuggestResponse | null; running?: boolean };
+  return { result: body.result, running: body.running === true };
 }
 
 export interface AgentCall {
@@ -446,6 +508,18 @@ export async function fetchExplanations(ids: string[]): Promise<ExplainSummary> 
 export interface ExplainResult {
   /** The run now in flight — the one just started, or one already going. */
   run: ExplainRun | null;
+  /**
+   * Ids left out because their reading is still current. Named, so the panel
+   * can say why the count shrank rather than leaving a row that never starts.
+   */
+  skipped: string[];
+  /**
+   * The server's words when nothing was asked at all: every id was current, or
+   * none is in the graph. Not a failure — no run happened and no money moved —
+   * so it is an answer here rather than a thrown error, and the page shows the
+   * sentence instead of a spinner. Null whenever a run started or was going.
+   */
+  refused: string | null;
 }
 
 /**
@@ -457,7 +531,7 @@ export interface ExplainResult {
  * something is already spending the quota, so follow it rather than report it.
  */
 /** Stop the run in flight. The server answers with whatever state it ended in. */
-export async function cancelExplanations(): Promise<ExplainResult> {
+export async function cancelExplanations(): Promise<{ run: ExplainRun | null }> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/explain`, {
     method: 'POST',
@@ -486,17 +560,26 @@ export async function forgetExplanation(id: string): Promise<void> {
   }
 }
 
-export async function requestExplanations(ids: string[]): Promise<ExplainResult> {
+/**
+ * `force` re-reads ids whose reading is current. Without it the server skips
+ * them and names them back: "Explain these" used to buy a second reading of a
+ * symbol whose panel already said current, at the same price as the first.
+ */
+export async function requestExplanations(ids: string[], force = false): Promise<ExplainResult> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/explain`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'run', ids }),
+    body: JSON.stringify({ action: 'run', ids, ...(force ? { force: true } : {}) }),
   });
-  const body = (await response.json()) as { run?: ExplainRun; error?: string };
-  if (response.status === 409) return { run: body.run ?? null };
+  const body = (await response.json()) as { run?: ExplainRun; skipped?: string[]; error?: string };
+  const skipped = body.skipped ?? [];
+  if (response.status === 409) return { run: body.run ?? null, skipped, refused: null };
+  if (response.status === 400) {
+    return { run: null, skipped, refused: body.error ?? 'nothing was asked' };
+  }
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
-  return { run: body.run ?? null };
+  return { run: body.run ?? null, skipped, refused: null };
 }
 
 /**

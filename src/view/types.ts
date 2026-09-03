@@ -41,7 +41,11 @@ export interface ViewMember {
   kind: NodeKind;
   /** Where the symbol starts, so the page can open an editor on it. */
   line: number;
-  /** The class this is a member of, so a box can nest it under its owner. */
+  /**
+   * The class this is a member of, so a box can nest it under its owner. From
+   * the node, not the id: a property-assigned `app.init` has a dot and no
+   * owner.
+   */
   owner: string | null;
   /** UML's +, - and #. null means the source did not say, which is public. */
   visibility: 'public' | 'private' | 'protected' | null;
@@ -72,6 +76,18 @@ export interface ViewNode {
    * authoritative. Never null for a file box.
    */
   language: LanguageId | null;
+  /**
+   * A test, fixture or story — see `isTestFile`. A folder box is a test when
+   * every file in it is: one test among source is source with a test beside
+   * it, not a suite.
+   */
+  test: boolean;
+  /**
+   * The parser hit a syntax error in this file, or in one of a folder's, so
+   * symbols may be missing. Carried onto the box because a file that draws
+   * "0 symbols" is otherwise indistinguishable from an empty one.
+   */
+  parseError: boolean;
 }
 
 export interface ViewEdge {
@@ -99,6 +115,25 @@ export interface ViewGraph {
   trail: { label: string; scope: string }[];
   /** Files inside the scope before any grouping. */
   totalFiles: number;
+  /**
+   * Files in the whole graph this was selected from, before any filter. On a
+   * frozen view it is the commit's count, which the Repository panel needs:
+   * `/api/repo` counts the working tree and cannot know what last week held.
+   */
+  fileCount: number;
+  /**
+   * How many test files `hideTests` removed, project-wide like `git.changed`
+   * — a count that shrank because you navigated into a directory would read
+   * as tests disappearing. 0 when the filter is off.
+   */
+  hiddenTests: number;
+  /**
+   * Files in the whole graph whose parse hit a syntax error, project-wide
+   * like `fileCount`: the status bar reads it beside "files in this project",
+   * and a count of the boxes in the slice would be answering a different
+   * question under the same words.
+   */
+  parseErrors: number;
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
   /**

@@ -70,13 +70,23 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
   const lines: Record<string, { added: number; deleted: number }> = {};
   const totals = { added: 0, deleted: 0 };
 
+  // Every command is limited to the project's own subtree (`-- .` from the
+  // project root). Paths still come back from the repository root — that is
+  // what `projectPath` translates — but git no longer walks the rest of the
+  // repository to find them. The case that forced it: a Java folder opened
+  // under a `git init` somebody ran in their home directory, where an
+  // unrestricted `git status` has to enumerate everything under ~ before it
+  // can say a word, outruns the 2 s timeout, and answers "Changes 0" for a
+  // project of 203 untracked files.
+  const here = ['--', '.'];
+
   // A repository with no commits has no HEAD to diff against, so everything in
   // it is untracked and the tracked half is skipped rather than failed.
   if (resolved !== null) {
-    const diff = await git(root, ['diff', '--name-status', '-z', resolved]);
+    const diff = await git(root, ['diff', '--name-status', '-z', resolved, ...here]);
     if (diff !== null) {
       for (const [gitPath, status] of parseNameStatus(diff)) {
-        const filePath = stripPrefix(gitPath, prefix);
+        const filePath = projectPath(gitPath, prefix);
         if (filePath !== null) files[filePath] = status;
       }
     }
@@ -84,10 +94,10 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
     // A second pass rather than one command: --name-status and --numstat cannot
     // be asked for together, and the statuses are what the badges need whether
     // or not the counts arrive.
-    const numbers = await git(root, ['diff', '--numstat', '-z', resolved]);
+    const numbers = await git(root, ['diff', '--numstat', '-z', resolved, ...here]);
     if (numbers !== null) {
       for (const [gitPath, added, deleted] of parseNumstat(numbers)) {
-        const filePath = stripPrefix(gitPath, prefix);
+        const filePath = projectPath(gitPath, prefix);
         if (filePath === null) continue;
         lines[filePath] = { added, deleted };
         totals.added += added;
@@ -96,15 +106,19 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
     }
   }
 
+  // `--untracked-files=all` is not optional: the default collapses a directory
+  // with nothing tracked in it to one `dir/` entry, which is not a file and
+  // would be counted as one change where there are two hundred.
   const untracked = await git(root, [
     'status',
     '--porcelain=v1',
     '-z',
     '--untracked-files=all',
+    ...here,
   ]);
   if (untracked !== null) {
     for (const gitPath of parseUntracked(untracked)) {
-      const filePath = stripPrefix(gitPath, prefix);
+      const filePath = projectPath(gitPath, prefix);
       if (filePath !== null) files[filePath] = 'untracked';
     }
   }
@@ -171,7 +185,7 @@ async function verify(root: string, ref: string): Promise<boolean> {
  * The similarity score is part of the status field ('R050'), so only its first
  * character carries meaning here.
  */
-function parseNameStatus(stdout: string): Array<[string, GitFileStatus]> {
+export function parseNameStatus(stdout: string): Array<[string, GitFileStatus]> {
   const fields = stdout.split('\0');
   const found: Array<[string, GitFileStatus]> = [];
   let at = 0;
@@ -202,7 +216,7 @@ function parseNameStatus(stdout: string): Array<[string, GitFileStatus]> {
  * counted as zero: the file did change, and saying "+0 -0" about it would be a
  * measurement rather than the absence of one.
  */
-function parseNumstat(stdout: string): Array<[string, number, number]> {
+export function parseNumstat(stdout: string): Array<[string, number, number]> {
   const fields = stdout.split('\0');
   const found: Array<[string, number, number]> = [];
   let at = 0;
@@ -239,7 +253,7 @@ function parseNumstat(stdout: string): Array<[string, number, number]> {
  * The whole reason for -z is that this form does not quote paths, so a filename
  * with a space or a quote in it survives verbatim.
  */
-function parseUntracked(stdout: string): string[] {
+export function parseUntracked(stdout: string): string[] {
   const fields = stdout.split('\0');
   const found: string[] = [];
   let at = 0;
@@ -275,6 +289,28 @@ async function pathPrefix(repoRoot: string, root: string): Promise<string | null
   const relative = path.relative(repoRoot, projectRoot);
   if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
   return relative.split(path.sep).join('/');
+}
+
+/**
+ * A path as git reports it, as the project knows it — or null when the project
+ * has no business hearing about it: outside the opened subtree, or one of the
+ * tool's own.
+ *
+ * The tool leaves `.codemap/` and `.claude/codemap.port` in the project it is
+ * watching, and git sees them like anything else. Three reviewers saw "Changes
+ * 3" over a project they had not touched, and every one of the three was a
+ * file this program had written. They are never the project's changes, so they
+ * leave here — the one place every status, count and total passes through —
+ * rather than at each of the places that would otherwise each need to know.
+ */
+export function projectPath(gitPath: string, prefix: string): string | null {
+  const filePath = stripPrefix(gitPath, prefix);
+  if (filePath === null || isToolFile(filePath)) return null;
+  return filePath;
+}
+
+function isToolFile(filePath: string): boolean {
+  return filePath === '.claude/codemap.port' || filePath.startsWith('.codemap/');
 }
 
 function stripPrefix(gitPath: string, prefix: string): string | null {

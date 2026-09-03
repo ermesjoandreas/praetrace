@@ -46,18 +46,19 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
 
-1. **Close the loose ends from the git and group work.** `Session.gitBase()` has
-   no caller; use it or delete it. `list_groups` in the MCP server prints a
-   hand-drawn group exactly like a derived one, with "0% cohesion", which is the
-   one promise the group feature makes and the one consumer most likely to be
-   misled by breaking it. And ⌘K still searches the live graph while the diagram
-   is frozen at a commit — the one request left that does.
+1. **Close the loose ends.** `Session.gitBase()` has no caller; use it or delete
+   it. A directory specifier resolves to `index.*` only — `package.json` `main`
+   needs a fact on `ProjectFacts` gathered by `project/facts.ts`. A static call on
+   a class name (`Store.create()`) is not qualified, because the parser cannot tell
+   an imported class from a namespace object without the bindings it now records —
+   it can, so do it.
 
-2. **Tests for the pure modules.** See *Conventions*. This is the highest-value
-   item on the list and the reason is in the last round: a bug that made colour and
-   size edits fail on any group whose membership had drifted lived entirely inside
-   two pure functions, survived three review agents' worth of reading, and would
-   have been caught by a single test case.
+2. **A corpus regression test.** Every pure module has a `*.test.ts` beside it now
+   (100+ cases), and they pin what a parser emits for a fixture. What nothing pins
+   is what the graph draws for a real repository: five invented edges in zod
+   survived every unit test because each function was right and the composition
+   lied. `scripts/corpus.mjs` already prints the numbers; a test that clones the
+   corpus and compares them to a checked-in baseline is the next one worth writing.
 
 3. **Structural session diff** — VISION.md phase 1. Today the tool knows which
    *files* differ from a base, and since time travel it can build a commit's whole
@@ -207,10 +208,49 @@ the field is how the relationship is spelled, the class is what has it. Like
 `calls`, it is opt-in (`?edges=…,associates`) and *replaces* the import between the
 same pair rather than being drawn beside it. `Logger[]` sets `many`, for 1..*.
 
-**Methods and fields are not in the name-resolution table.** A bare name is resolved against
-it, and `x.map(...)` reaches the graph layer as just `map`, so admitting members
-would invent a call edge to every class that happens to declare one. A missing
-edge is a gap; a wrong one is a lie.
+**Methods and fields are not in the name-resolution table, and a bare name never
+reaches them.** In TypeScript and JavaScript a call on an untyped receiver —
+`x.map(...)` where nothing says what `x` is — reaches the graph as *nothing*: it
+used to arrive as the bare `map`, which could only ever land on a same-file
+declaration of that name, and did (zod's `def.items.map()` inside the file that
+declares a `map()` factory). Go and Java keep their own rules. A missing edge is a
+gap; a wrong one is a lie. **The one door in is
+a qualified call.** A parser writes `T.m` only when the receiver's type was written
+down — `this` inside `T`, a parameter or field declared `x: T`, `= new T()`, a
+`private log: Logger` parameter property, Go's `c *Command` receiver or
+`&Command{}`, Java's typed field, parameter or local — and the store resolves it
+to `path#T.m` when `T` resolves to a class or interface that declares `m` (in Go,
+anywhere in the same package: a method lives wherever it was written). Go
+references across packages are spelled `<importPath>#Name` and `<importPath>#T.m`
+(`QUALIFIED_SEPARATOR` in `parser/types.ts`), whose head is one of the file's own
+imports, so `viper.New()` can never land on a local `New`. An ES `#private` member
+is `T.#m` — the `.` before the `#` is what tells the two forms apart. `this` inside
+a nested `function` expression or an anonymous class body is nobody's.
+
+**A name resolves only through what the file bound.** `ParsedFile.bindings` records
+every import binding a TypeScript or JavaScript file made — `{ a, b as c }`, a
+default, `* as ns`, `require` — and `lookup` admits a name from another file only
+through a binding: by `imported` into that specifier's export table, or, for a
+namespace, `ns.name` through the alias. Before this, a barrel that re-exported 150
+names made every bare property call in every importer a candidate for one of
+them, and zod drew `process.hrtime.bigint()` as a call to its `bigint()` schema
+factory. A language whose parser records no bindings keeps the whole-table rule.
+
+**A barrel is followed, and only for what it exports.** A name imported from a file
+that only re-exports it — `export * from`, `export { A as B } from` — lands on the
+file that declares it, eight hops deep and cycle-safe, so `new QueryObserver()` in
+react-query reaches `query-core/src/queryObserver.ts` through
+`@tanstack/query-core`'s index. `ParsedSymbol.exported` keeps a private
+`function secret()` from riding through `export *`; `export * as ns from` names a
+module, has no node, and is skipped.
+
+**`describeSymbol` says how much it knows.** `coverage` is `partial` for every
+method and field (calls through an untyped receiver are not tracked, so an empty
+list means unknown, not none), for a dotted top-level name like `app.init` (called
+through the object it hangs off), and for an interface or type (uses in type
+positions are not tracked); `full` for a function or class, whose note still says
+a function passed by value is not tracked. The panel, the chip and the explain
+prompt all show `coverageNote`, and a method never reads "0 in".
 
 **Not built, and deliberately.** Sequence diagrams need call *order*, which
 `collectCalls` discards into a Set, and receiver resolution on top of that. State
@@ -257,13 +297,20 @@ src/
   git/
     types.ts      GitFileStatus / GitStatus — pure, so the view can name a
                   status without importing the module that shells out
+  lang/           one file per language, to the contract in types.ts
+    types.ts      LanguageSupport / LanguageParse / ResolveContext / ProjectFacts
+    registry.ts   extension -> language; what "cannot read" is the complement of
+    typescript.ts the reference reader the JS one shares: scopes, typed
+                  receivers, re-exports, bindings, property-assigned functions
+    javascript.ts, java.ts, go.ts, csharp.ts, rust.ts
   parser/         everything that knows about ASTs
     types.ts      ParsedFile / ParsedSymbol + worker message shapes
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
     worker.ts     worker_threads entry: reads a file, parses it, replies
     pool.ts       fixed pool of parser workers, one file at a time each
   project/        the project on disk, and everything that changes it
-    walk.ts       boot scan + the ignore/source predicates everything shares
+    walk.ts       boot scan + the ignore/source predicates everything shares,
+                  and the census of what no language claims (countUnreadable)
     scan.ts       walk + parse everything through the pool
     watch.ts      chokidar; emits raw changes, does not batch
     git.ts        git status against a base -> GitStatus; the log, the remote,
@@ -285,8 +332,11 @@ src/
     cluster.ts    label propagation over the import graph
     detail.ts     one node's dependents and dependencies, for the panel
     search.ts     subsequence search over the whole graph
-    lanes.ts      lane assignment for the commit graph — pure, and tested
-    lanes.test.ts the first test. `npm test`
+    lanes.ts      lane assignment for the commit graph — pure
+    tests.ts      isTestFile(path): the one predicate clustering, the filter,
+                  search ranking and the box tag share
+    *.test.ts     beside every pure module. `npm test` runs them all, and
+                  web/src/*.test.ts with them
   cli/
     index.ts      arg handling + text/JSON output
   server/
@@ -319,7 +369,7 @@ web/              the browser page (Vite, built into dist/web)
                        actions hidden until hover. Every panel region is one
   src/SearchPalette.tsx  ⌘K, in Quick Pick's shape
   src/AgentStatus.tsx  what the agent is doing, and how long ago
-  src/layout.ts   dagre layout; React Flow does not place nodes itself
+  src/layout.ts   dagre for a view's first layout, keepLayout for every save after
   src/api.ts      fetch + the shared types, imported from src/
 .claude/
   settings.json   the PostToolUse hook, committed so the repo dogfoods itself
@@ -333,28 +383,38 @@ web/              the browser page (Vite, built into dist/web)
 ```
 GET  /api/view          the slice for a ViewSpec, given as a query string.
                         ?at=<sha> draws the project as of that commit; 404 for
-                        an unknown one, never the live graph under its name
+                        an unknown one, never the live graph under its name.
+                        404 too for a focus or scope the graph has not got —
+                        never the root view under a bogus name. The view carries
+                        fileCount, hiddenTests and parseErrors for the whole graph
 GET  /api/project       the current root
 POST /api/project       switch to another root
 GET  /api/detail        one node's dependents and dependencies       (?at=)
-GET  /api/symbol        one symbol's relations, for following it     (?at=)
+GET  /api/symbol        one symbol's relations, plus coverage and the note that
+                        says what an empty list means                (?at=)
 GET  /api/log           the commits on every ref, newest first, plus HEAD and
                         the checked-out branch
 GET  /api/repo          what the repository is: files, remote, hook, MCP, languages
 POST /api/fetch         git fetch. The only verb that is not a read
 GET  /api/changes       this session's change feed
-GET  /api/search        subsequence search over the whole graph
+GET  /api/search        subsequence search over the whole graph, or over a
+                        commit's                                      (?at=)
 GET  /api/agent         what the agent has asked, and when
-GET  /api/clusters      the groups, named and unnamed                (?at=)
-POST /api/clusters      accept or reject one, by membership
-POST /api/groups        create, update or delete one, by storedId
-GET  /api/suggest       the last run's suggested names, or null. Session state,
-                        never disk
+GET  /api/clusters      { clusters, orphans }: the groups, named and unnamed,
+                        and the stored names that match nothing      (?at=)
+POST /api/clusters      accept or reject one, by membership (and by id, so a
+                        rename of a drifted group replaces its entry)
+POST /api/groups        create, update or delete one, by storedId. Answers
+                        { clusters, orphans } like the GET
+GET  /api/suggest       { result, running }: the last run's suggested names, or
+                        null, and whether one is in flight. Session state, never disk
 POST /api/suggest       ask a model for names for the unnamed groups. Awaited,
                         not 202: 400 when nothing is unnamed, 409 while a run is
                         in flight. Spends money, writes nothing
 GET  /api/explain       the readings for the ids asked for, and the run
-POST /api/explain       run (202), cancel, or forget one. Spends money
+POST /api/explain       run (202), cancel, or forget one. Spends money. Skips ids
+                        whose reading is current and names them in `skipped`;
+                        `force: true` re-reads them; 400 when every id was current
 GET  /api/git           the current git status
 POST /api/git-base      change the base the working tree is compared against
 GET  /api/hook-status   is a working hook installed
@@ -409,7 +469,15 @@ back button works and a view is shareable.
 /?focus=<file>&depth=1       a file and its neighbours, imports both ways
 /?changed=1                  only what differs from the git base
 /?at=<sha>                   the whole diagram as of that commit — not a highlight
+/?tests=0                    without tests, fixtures and stories; hiddenTests says how many
 ```
+
+**What a test is** is decided from the path alone, by `isTestFile` in
+`view/tests.ts`: `*.test.*`, `*.spec.*`, `*.stories.*`, `*_test.go`,
+`*Test(s).java`, `*Tests.cs`, `tests.rs`, and any `test/`, `tests/`, `__tests__/`,
+`testdata/` or `fixtures/` segment. One predicate, shared by the clustering (tests
+never vote on who belongs together), the `tests=0` filter, search ranking (code
+before scaffolding) and the `test` tag on a box.
 
 **A frozen view is frozen.** `at` is a view, so it rides the URL and the socket
 spec, and every helper that rebuilds the URL carries it. The server selects from
@@ -430,8 +498,8 @@ or clock to filter by. Escape leaves the commit, unless a menu took the key firs
   model has no business carrying.
 
 **Two wire formats, two readers.** The URL carries the spec as short flat keys
-(`changed`, `edges`, `since`); the websocket carries a `ViewSpec` object with its
-filter nested (`onlyChanged`, `edgeKinds`, `sinceMs`). Reading one with the other's
+(`changed`, `edges`, `since`, `tests`); the websocket carries a `ViewSpec` object
+with its filter nested (`onlyChanged`, `edgeKinds`, `sinceMs`, `hideTests`). Reading one with the other's
 parser silently yields the default filter — no error, just a diagram that quietly
 widens back to everything. Keep `toSpec` and `toSocketSpec` apart.
 
@@ -447,7 +515,12 @@ error, and every caller treats `null` as "no git here".
   It is a **session setting, not a view**, so it does not go in the URL — no more
   than the project root does. The `?changed=1` filter *is* a view, and does.
 - Paths come back relative to the repo root; the project may be opened at a
-  subdirectory, so they are translated and anything outside is dropped.
+  subdirectory, so they are translated and anything outside is dropped. So are
+  the tool's own files — `.codemap/` and `.claude/codemap.port` — from every
+  status, line count and total: three reviewers watched "Changes" count
+  groups.json. Every git command is scoped `-- .` and untracked files are listed
+  one by one (`--untracked-files=all`), or a Java folder of 203 untracked files
+  under one untracked directory read "Changes 0".
 - **A commit is invisible to the watcher.** `isIgnoredDirectoryName` drops every
   dotted directory, so `.git` is never watched. Hence a 3 second poll that publishes
   only when the status actually changed, unref'd so it cannot hold the process open,
@@ -481,6 +554,17 @@ governs membership.
   a decision is made.
 - Names are matched back to freshly computed clusters by member overlap, so they
   survive membership drifting. That is why `storedId` exists — see *Graph model*.
+  The rule: an exact stored id wins; otherwise Jaccard ≥ 0.6, or every stored
+  member present and Jaccard ≥ 0.5 (a group that only grew); pairs are scored and
+  taken best-first so a nested group is not eaten by its parent. A stored group
+  that matches nothing is an *orphan* — returned by `/api/clusters`, listed under
+  "Stored, matches nothing" with a delete — rather than silently never shown, and
+  a group written before ids existed is given one on read.
+- **Tests do not vote.** Clustering ignores test files and the edges into them:
+  express once drew a "Benchmark suite" that was 82 tests out of 131 files. A
+  cohesion percentage counts each edge once and is the share that stays inside
+  the group; propagation is deterministic (sorted iteration), and a cluster found
+  inside another carries `parent`.
 - A group's **size** is the slack around its members, not an absolute rectangle. The
   frame hugs what it encloses; a free-floating box would describe nothing.
 
@@ -497,21 +581,30 @@ governs membership.
   tools stay `list_groups` / `name_group`, the CSS classes stay `.group-*`. Do not
   "fix" either side toward the other.
 - **The status bar.** 22px at the bottom: branch, ahead/behind, the "Changes" count
-  that toggles the filter, then boxes and files, the language summary and the
-  agent's connection. Every item is information or runs something.
+  that toggles the filter, then boxes and files, "N tests hidden" (a button that
+  shows them) while `tests=0`, "N files with syntax errors" and "not read: …" for
+  what the tool cannot fully read, the language summary and the agent's
+  connection. Every item is information or runs something.
 - **The menu bar.** Two rows: menus and project on top, breadcrumb and filter chips
   below. **Nothing in a menu is decoration.** Every item runs something the app can
   already do, and an item that needs a selection is greyed with the reason in its
-  tooltip rather than silently doing nothing.
+  tooltip rather than silently doing nothing. View › "Hide tests" is a checked item
+  that drives `tests=0`; View › "Re-layout" (⇧⌘L) is the only way after the first
+  layout to run dagre again. Above 150 boxes in focus mode a chip in the breadcrumb
+  row says "N boxes — depth 1 is quicker" and sets depth 1.
 - **The welcome screen.** Shown from Help, and when there is genuinely nothing to
   draw. **Not** when a filter emptied the view. It covers the canvas, not the
   window — it used to position against the viewport and painted over the menu bar,
   both side bars and the status bar, which buried every way back out.
-- **Search.** ⌘K searches the **whole graph**, not the slice on screen. Matching is
-  a subsequence, the way editors do it: `gst` finds `GraphStore`.
+- **Search.** ⌘K searches the **whole graph**, not the slice on screen — the
+  commit's graph while frozen. Matching is a subsequence, the way editors do it:
+  `gst` finds `GraphStore`; ranking is exact name, then code before test, fixture
+  and `.d.ts`, then match quality, then the shorter path. The keyboard owns the
+  active row; the mouse only hovers and clicks.
 - **Call edges** are off by default (`?calls=1`). When on, a call edge *replaces* the
   import between the same pair rather than being drawn beside it.
-- **The side panel.** Click inspects, double-click navigates. `zoomOnDoubleClick` is
+- **The side panel.** A followed method or field prints the graph's coverage
+  sentence and "known used by N", never "0 in". Click inspects, double-click navigates. `zoomOnDoubleClick` is
   off and must stay off: d3-zoom handles a double click on the pane and stops it
   bubbling, so `onNodeDoubleClick` never fires and the view silently zooms instead.
 - **The change feed** is the session's own history, the last 200 batches in memory,
@@ -524,14 +617,16 @@ Every connected client is sent a view **computed for its own spec**. The behavio
 *mark, do not move*:
 
 - A touched box pulses and holds a warm tint. The camera does not move.
-- Box positions are preserved across an update, and only re-laid-out when the set of
-  boxes actually changes. **The layout cache has two keys.** `placementKey` is what
-  dagre reads — the boxes, their heights, which group each belongs to; `shapeKey`
-  adds everything a frame is drawn from — colour, slack, lock, hand-placed geometry.
-  A change to the second alone redraws the frames around where the boxes already
-  are (`frameClusters`) and never runs dagre, because running it moved every box
-  for a click that meant "hold this one still", and a frame locked to where it
-  stood was left standing where the boxes used to be.
+- **dagre runs for a view's first layout — once its clusters have arrived — and
+  for View › Re-layout, and for nothing else.** A save that adds a box keeps every
+  existing box where it stands and puts the new one beside its most connected
+  neighbour: to the right on a 40px grid, first free slot, below when the row is
+  full; a box connected to nothing starts a new row under the diagram
+  (`keepLayout` in `web/src/layout.ts`, tested). Frames are redrawn with
+  `frameClusters` around wherever the boxes now are. The one existing box that
+  moves is the column under a box that expanded, by its growth. Five reviewers
+  named the shuffle-on-save as the thing that broke "mark, do not move"; do not
+  bring back a layout key that re-runs dagre when the box set changes.
 - **Dragging a frame locks it**, the way pulling a corner does; the lock button only
   releases. A frame that had to be locked before it could be moved was the wrong
   order, and it was reported as such.
@@ -576,7 +671,9 @@ lightbulb is for when no agent is running, costs about five cents a press, and
 never decides who belongs.
 
 ```
-list_groups     the clusters, named and unnamed
+list_groups     the clusters, named and unnamed; "by hand" for a drawn one,
+                never a cohesion; nested ones under their parent; stored
+                names that match nothing as "stored, matches nothing"
 name_group      accept one with a name
 describe_file   declares / used by / uses
 search_symbols  subsequence search over the whole project
@@ -629,6 +726,12 @@ meant to cost nothing ran the real binary.
 `GET /api/explain` takes ids on purpose — computing `state` re-reads every
 described file off disk, so an unfiltered answer would read the whole project to
 render a panel showing four.
+
+**The prompt is told the graph's blind spots.** A method's caller list is marked
+PARTIAL with `coverageNote`, and the model is told to say "unknown" rather than
+conclude nothing calls it — the reading of cobra's `Command.Execute` had said
+"nothing depends on it", false in sixteen places. A press re-reads only what is
+not `current` ("Explain · N new"); `force` re-reads everything.
 
 **Suggesting names is the same invocation.** `suggest.ts` reuses explain's exported
 helpers — `resolveClaude`, `failureOf`, `parseJsonish`, `timeoutFor`,
@@ -683,8 +786,8 @@ is that every check in DECISIONS.md is a scratch script that was run once and th
 away, so nothing in it can be re-run to see if it still holds.
 
 Use `node --test`. It is built into Node, so this adds no dependency and no ceremony.
-`npm test` compiles and runs every `*.test.ts` beside the module it tests; the first
-is `src/view/lanes.test.ts`.
+`npm test` compiles and runs every `*.test.ts` beside the module it tests — one for
+each pure module in `src/`, and `web/src/*.test.ts` run as they are.
 
 - **Test the pure modules**: `graph/`, `view/`, `project/groups.ts`, and the parsing
   half of `project/git.ts`. These are where logic hides and where a bug is silent.
@@ -721,26 +824,29 @@ measured with `scripts/corpus.mjs` against zustand, type-fest, zod, vuejs/core a
 TanStack/query — 32 to 925 files each — and they are the ones that decide whether
 the graph can be trusted at a glance on a project that is not this one:
 
-- **A monorepo's own structure is invisible.** Packages import each other by
-  name, and a bare specifier resolves to nothing: 357 of vuejs/core's imports are
-  `@vue/*` and 503 of TanStack/query's are `@tanstack/*`, all internal, none
-  drawn. The cross-package architecture is exactly what a map is wanted for, and
-  it is the one part missing. Same cause as tsconfig path aliases (`@/`, `~/`),
-  which cost zod 37 edges and query 25.
+- **A monorepo's structure is drawn now** — workspace packages, tsconfig paths and
+  barrels all resolve (TanStack: `react-query → query-core ×35`, 276 of 280
+  `zod/v4` imports). What is still missing: `package.json` `main` for a directory
+  specifier (only `index.*` is tried), and `export * as ns from`, which names a
+  module and has no node to land on.
 - **A types-only library draws as unconnected boxes.** `.d.ts` is skipped because
   it restates what the source declares — true for an app, false for type-fest,
   where 100% of 487 imports go unresolved, no import edge survives, and the
   clustering finds 0 groups in 221 files.
-- **Enums, namespaces, `declare module` and class expressions are not parsed.**
-  Not dropped with a warning — absent. 54 enums in vuejs/core, 32 in zod.
-- **Files that declare something and yield no symbols**: 86 in TanStack/query,
-  53 in vuejs/core. Cause unknown; that is what makes it worth chasing.
+- **Enums are not parsed.** Not dropped with a warning — absent. 54 in vuejs/core,
+  32 in zod. Namespaces, `declare`, class expressions, property-assigned functions
+  (`app.init = function`) and `#private` members are.
+- **The earlier "files that declare something and yield no symbols" counts (86 in
+  TanStack/query, 53 in vuejs/core)** were measured before property-assigned
+  functions and private members were symbols; re-measure before trusting them.
 - Re-deriving the whole graph on every save is **not** the scaling problem it
   looked like: it tracks edge count at roughly 2 µs each, so 12 ms for zod's 500
   files and 15 ms for vuejs/core. It stays comfortable well past this project.
-- The 89% single-cluster blob is **this project's shape, not the algorithm's**.
-  The same clustering gives 3 groups at 31% on zustand, 5 at 35% on zod, 11 at
-  28% on vuejs/core and 47 at 7% on TanStack/query.
+- The earlier cohesion figures (89% here, 31% zustand, 35% zod, 28% vuejs/core,
+  7% TanStack/query) were measured with every internal edge counted twice and
+  tests voting. Cohesion now counts each edge once, tests are out, and
+  `MIN_COHESION` is 1/3 (the old 0.5 under the doubled count); the numbers are
+  not comparable and have not been re-measured.
 
 - Focus depth 2 on a densely coupled project explodes (64 boxes on the synthetic
   test). There is no cap or warning. At depth 4 the browser main thread blocks for
@@ -750,17 +856,35 @@ the graph can be trusted at a glance on a project that is not this one:
   still costs a parse and a publish.
 - Two symbols sharing a name in one file are disambiguated by document order
   (`path#name~2`), so their ids shift if their relative order changes.
-- A file with a syntax error silently loses symbols. tree-sitter is error-tolerant
-  and `parseSource` never checks `tree.rootNode.hasError`, so a malformed file is
-  indistinguishable from an empty one.
+- A file with a syntax error still loses symbols — tree-sitter is error-tolerant —
+  but the box carries a warning badge and the status bar counts them
+  (`ParsedFile.hasError`). The flag is the grammar's word, not the compiler's:
+  tree-sitter-typescript 0.23.2 marks TS 5.0 `export type * from` and TS 4.7
+  `in`/`out` variance annotations as errors, so a barrel written that way wears
+  the badge until the grammar is upgraded.
+- A directory named `target` is skipped everywhere (`IGNORED_DIRECTORIES`), because
+  Cargo's build output is 2 818 "unreadable" files on this repository alone and
+  the scan drew generated `.rs` from it as source. Honouring `.gitignore` would be
+  the real answer.
+- **Gaps that are gaps on purpose**, TS/JS: a TypeScript `namespace` object has no
+  node, so `errorUtil.errToObj()` through `import { errorUtil }` resolves to
+  nothing (70 true edges in zod); a parameter typed `typeof z4` and a spread alias
+  `const z = { ...schemas }` likewise; a name imported from a package outside the
+  project (lodash's `map`) resolves to nothing rather than to a same-named local;
+  `exports.compileETag` keeps its prefix as the symbol's name, so
+  `require('./utils').compileETag` does not land on it; a static call on a class
+  name (`Store.create()`) is not qualified. A property-assigned function's id
+  (`lib/app.js#app.init`) uses the member separator and would collide with a
+  method `init` of a class `app` in the same file.
+- Java: a bare call from inside an anonymous class body to the enclosing class's
+  method is refused (gson: 14 such, all true), because only the anonymous type's
+  supertype, which is not read, tells it from `new Runnable() { run() { run(); } }`.
+  Go: a package-level variable types receivers only in the file that declares it.
 - Grouping keys off the directory tree only. There is no filtering by name, kind or
   path glob, and a flat directory above the threshold cannot be grouped at all (it
   reports `grouped: false` honestly rather than claiming otherwise).
 - Edges have no obstacle avoidance, so they route through unrelated boxes — 26% of
   edges in a 10-box root view.
-- A group with no `id` in `groups.json` — written before ids existed — cannot be
-  given a colour or a size until it is renamed, which heals the id. Nothing in this
-  repo's file is in that state.
 - **An explanation can be confidently wrong, and nothing checks it.** The measured
   run described `explain()` as "called during session initialization to populate the
   client", which it is not — it runs on a press. The model is given one symbol's
@@ -787,8 +911,6 @@ the graph can be trusted at a glance on a project that is not this one:
   count, so a save that moves one file in or out hides its suggestion without
   saying so — and a swap that keeps both keeps a suggestion whose reason may
   name a file that left.
-- **⌘K searches the live graph while the diagram is frozen**; detail, symbols and
-  groups follow the commit, search does not yet.
 - A commit's graph is built through the same FIFO parser pool as the live updater,
   so a save that arrives after a big commit has queued its files waits behind them
   — seconds on a vuejs/core-sized repository. Decision 1 is about the main thread,

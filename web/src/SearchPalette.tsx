@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { searchGraph, type SearchHit } from './api';
+import { fetchSearch, type SearchHit } from './api';
 
 interface SearchPaletteProps {
+  /**
+   * The commit the diagram is frozen at, or null for now. The search follows
+   * it: ⌘K used to find a symbol that did not exist at the commit on screen,
+   * and miss one that was drawn there.
+   */
+  at: string | null;
   /** Enter opens it in the graph; Shift+Enter opens it in the editor. */
   onPick: (hit: SearchHit, inEditor: boolean) => void;
   onClose: () => void;
@@ -22,11 +28,18 @@ const KIND_ICON: Record<SearchHit['kind'], string> = {
   type: 'symbol-structure',
 };
 
-export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
+export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
   const [query, setQuery] = useState('');
   const [hits, setHits] = useState<SearchHit[]>([]);
+  /**
+   * The row the keyboard is on. The keyboard's alone: the mouse used to move
+   * it on hover, so Enter took the row under a cursor that happened to be
+   * resting on the list rather than the one the arrow keys had picked. Now
+   * the mouse only ever hovers, and a click is what it takes to choose.
+   */
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  const list = useRef<HTMLUListElement>(null);
 
   useEffect(() => {
     input.current?.focus();
@@ -41,7 +54,7 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
     }
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      searchGraph(query).then(
+      fetchSearch(query, at).then(
         (found) => {
           if (cancelled) return;
           setHits(found);
@@ -55,7 +68,13 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [query]);
+  }, [query, at]);
+
+  // The arrow keys can walk past the bottom of a list that scrolls; the
+  // active row has to stay in sight or Enter picks something unseen.
+  useEffect(() => {
+    list.current?.children[active]?.scrollIntoView({ block: 'nearest' });
+  }, [active]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     if (event.key === 'Escape') {
@@ -86,7 +105,7 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
         />
 
         {hits.length > 0 && (
-          <ul>
+          <ul ref={list}>
             {hits.map((hit, index) => {
               // A file was matched on its whole path and its name is the tail
               // of that path, so one match colours both; a symbol was matched
@@ -100,7 +119,6 @@ export function SearchPalette({ onPick, onClose }: SearchPaletteProps) {
                   <button
                     type="button"
                     className={index === active ? 'hit hit-active' : 'hit'}
-                    onMouseEnter={() => setActive(index)}
                     onClick={(event) => onPick(hit, event.shiftKey)}
                   >
                     <i

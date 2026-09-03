@@ -1,4 +1,5 @@
 import type { EdgeKind, NodeKind } from '../graph/types.js';
+import { isTestFile } from './tests.js';
 
 /**
  * What to leave out. Every field is inert when empty, so the default filter is
@@ -20,6 +21,8 @@ export interface ViewFilter {
   sinceMs: number;
   /** Keep only files that differ from the git base. */
   onlyChanged: boolean;
+  /** Leave out tests, fixtures and stories — see `isTestFile`. */
+  hideTests: boolean;
 }
 
 export const DEFAULT_EDGE_KINDS: EdgeKind[] = ['imports', 'extends', 'implements'];
@@ -31,6 +34,7 @@ export const NO_FILTER: ViewFilter = {
   edgeKinds: DEFAULT_EDGE_KINDS,
   sinceMs: 0,
   onlyChanged: false,
+  hideTests: false,
 };
 
 export function isFiltering(filter: ViewFilter): boolean {
@@ -39,7 +43,8 @@ export function isFiltering(filter: ViewFilter): boolean {
     filter.onlyPath !== '' ||
     filter.kinds.length > 0 ||
     filter.sinceMs > 0 ||
-    filter.onlyChanged
+    filter.onlyChanged ||
+    filter.hideTests
   );
 }
 
@@ -75,6 +80,7 @@ export function keepsFile(
   // Without git there is nothing to compare against, so "only changed" keeps
   // nothing rather than quietly keeping everything.
   if (filter.onlyChanged && (changed === null || !changed.has(filePath))) return false;
+  if (filter.hideTests && isTestFile(filePath)) return false;
   return true;
 }
 

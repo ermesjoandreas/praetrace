@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { Cluster } from '../view/cluster.js';
+import { identify, type Cluster } from '../view/cluster.js';
 
 /**
  * The palette a group's frame can be drawn in. Keys, not CSS colours: the
@@ -115,31 +115,61 @@ export interface GroupSuggestion extends Omit<Cluster, 'children'> {
   locked?: boolean;
 }
 
-/**
- * Membership drifts as the code changes, so a stored name is matched to a fresh
- * cluster by overlap rather than by identity. Below this the two are different
- * groups that happen to share a file.
- */
-const MATCH_THRESHOLD = 0.5;
-
-/**
- * Overlap alone cannot separate a group from the one inside it, so a match also
- * has to be about the same size. A parent and child never are.
- */
-const MIN_SIZE_RATIO = 0.75;
-
-function comparable(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length === 0 || b.length === 0) return false;
-  return Math.min(a.length, b.length) / Math.max(a.length, b.length) >= MIN_SIZE_RATIO;
+/** A stored group that describes no cluster the graph currently finds. */
+export interface OrphanGroup {
+  storedId: string;
+  name: string;
+  files: string[];
 }
 
-function matches(cluster: { id: string; files: readonly string[] }, group: NamedGroup): boolean {
-  if (group.id !== undefined && group.id === cluster.id) return true;
-  // A hand-drawn group is not a cluster, so it must not be reachable by overlap:
-  // accepting a derived group that happens to cover the same files would quietly
-  // delete the one someone drew.
-  if (group.origin === 'manual') return false;
-  return comparable(cluster.files, group.files) && overlap(cluster.files, group.files) >= MATCH_THRESHOLD;
+export interface MergedGroups {
+  clusters: GroupSuggestion[];
+  /**
+   * Named, accepted, and matching nothing — shown rather than dropped, because
+   * a name that vanishes from the panel while it sits in a committed file is a
+   * bug the person cannot see. Three of this repository's own were in that
+   * state. A rejection that matches nothing is left out: it is a memory, not
+   * a name, and there is nothing to show for it.
+   */
+  orphans: OrphanGroup[];
+}
+
+/**
+ * Membership drifts as the code changes, so a stored name is matched to a fresh
+ * cluster by overlap rather than by identity. Two rules, because drift comes in
+ * two shapes. A group that changed members must still share most of them: this
+ * is the Jaccard overlap, and below it the two are different groups that happen
+ * to share files. A group that only *grew* — every stored member still there,
+ * new ones beside them — is recognised further, down to half, since nothing it
+ * was has gone anywhere. That is the case that used to strip "View selection"
+ * of its name when three files joined its four. Half is also where growth
+ * stops reading as growth: a stored group inside a cluster twice its size is
+ * a group that has been swallowed, and naming the whole after the part would
+ * be the authoritative-looking lie this feature is not allowed to tell.
+ */
+const MATCH_THRESHOLD = 0.6;
+const GROWN_THRESHOLD = 0.5;
+
+/** Above every overlap score, so a cluster wearing its recorded id is never outbid. */
+const EXACT_ID = 2;
+
+/**
+ * How well a stored group describes a cluster: `EXACT_ID` for its own id, the
+ * overlap when close enough, null when they are not the same group. A
+ * hand-drawn group describes no cluster and answers null to every one, or
+ * accepting a derived group that happened to cover the same files would
+ * quietly delete the one someone drew.
+ */
+function matchScore(cluster: { id: string; files: readonly string[] }, group: NamedGroup): number | null {
+  if (group.origin === 'manual') return null;
+  if (group.id !== undefined && group.id === cluster.id) return EXACT_ID;
+
+  const score = overlap(cluster.files, group.files);
+  if (score >= MATCH_THRESHOLD) return score;
+
+  const inside = new Set(cluster.files);
+  const grown = group.files.length > 0 && group.files.every((file) => inside.has(file));
+  return grown && score >= GROWN_THRESHOLD ? score : null;
 }
 
 function groupsPath(root: string): string {
@@ -152,11 +182,24 @@ export async function readGroups(root: string): Promise<NamedGroup[]> {
 
   try {
     const parsed = JSON.parse(raw) as { groups?: unknown };
-    return Array.isArray(parsed.groups) ? (parsed.groups as NamedGroup[]) : [];
+    return Array.isArray(parsed.groups) ? (parsed.groups as NamedGroup[]).map(withId) : [];
   } catch {
     // A hand-edited file that no longer parses should not take the feature down.
     return [];
   }
+}
+
+/**
+ * A group written before ids existed gets the id it would have been given: a
+ * cluster's is its first member and its size, and a drawn one's is its name.
+ * Without one it can be matched but never addressed — not edited, not deleted,
+ * not even listed as an orphan — and the file is only rewritten on the next
+ * decision, so nothing is touched by merely reading it.
+ */
+function withId(group: NamedGroup): NamedGroup {
+  if (group.id !== undefined) return group;
+  const id = group.origin === 'manual' ? manualId(group.name) : identify([...group.files].sort());
+  return { ...group, id };
 }
 
 export async function writeGroups(root: string, groups: NamedGroup[]): Promise<void> {
@@ -199,49 +242,49 @@ function presentationOf(
  * Flattened, with depth and parent kept, because every consumer — the drawing,
  * the panel, the MCP tools — wants to walk them in order rather than recurse.
  */
-export function mergeGroups(clusters: readonly Cluster[], stored: readonly NamedGroup[]): GroupSuggestion[] {
-  // Hand-drawn groups are held out of the matching entirely. They describe no
-  // cluster, so an overlap match would be wrong twice over: the cluster would
-  // wear a name nobody gave it, and the drawn group would be consumed and then
-  // vanish from the answer.
-  const derived = stored.filter((group) => group.origin !== 'manual');
-  const taken = new Set<NamedGroup>();
-  const out: GroupSuggestion[] = [];
-
+export function mergeGroups(clusters: readonly Cluster[], stored: readonly NamedGroup[]): MergedGroups {
+  const flat: { cluster: Cluster; depth: number; parent: string | null }[] = [];
   const walk = (cluster: Cluster, depth: number, parent: string | null): void => {
-    out.push({ ...describeOne(cluster), depth, parent });
+    flat.push({ cluster, depth, parent });
     for (const child of cluster.children) walk(child, depth + 1, cluster.id);
   };
+  for (const cluster of clusters) walk(cluster, 0, null);
 
-  const describeOne = (cluster: Cluster): Omit<GroupSuggestion, 'depth' | 'parent'> => {
-    // An exact id wins outright; otherwise the closest comparable group.
-    let best = derived.find((group) => !taken.has(group) && group.id === cluster.id) ?? null;
-
-    if (best === null) {
-      let bestScore = MATCH_THRESHOLD;
-      for (const group of derived) {
-        if (taken.has(group) || !comparable(cluster.files, group.files)) continue;
-        const score = overlap(cluster.files, group.files);
-        if (score >= bestScore) {
-          best = group;
-          bestScore = score;
-        }
-      }
+  // Every pair scored first, then paired best-first, rather than each cluster
+  // taking the best group left as it is walked. Walking is outer-first, and an
+  // outer group contains its children — so a name whose own cluster was three
+  // rows down used to be taken by the parent it happened to overlap, and the
+  // child it belonged to came up unnamed.
+  const candidates: { at: number; group: NamedGroup; score: number }[] = [];
+  flat.forEach(({ cluster }, at) => {
+    for (const group of stored) {
+      const score = matchScore(cluster, group);
+      if (score !== null) candidates.push({ at, group, score });
     }
+  });
+  candidates.sort((a, b) => b.score - a.score || a.at - b.at);
 
-    if (best) taken.add(best);
+  const chosen = new Map<number, NamedGroup>();
+  const taken = new Set<NamedGroup>();
+  for (const { at, group } of candidates) {
+    if (chosen.has(at) || taken.has(group)) continue;
+    chosen.set(at, group);
+    taken.add(group);
+  }
 
-    const { children: _children, ...flat } = cluster;
+  const out: GroupSuggestion[] = flat.map(({ cluster, depth, parent }, at) => {
+    const best = chosen.get(at) ?? null;
+    const { children: _children, ...rest } = cluster;
     return {
-      ...flat,
+      ...rest,
       ...(best === null ? {} : presentationOf(best)),
       ...(best?.id === undefined ? {} : { storedId: best.id }),
       name: best?.name ?? null,
       state: best?.state ?? 'suggested',
+      depth,
+      parent,
     };
-  };
-
-  for (const cluster of clusters) walk(cluster, 0, null);
+  });
 
   // Appended rather than woven in: a drawn group has no cohesion to report and
   // no place in the nesting the clustering found, so it is its own outer group.
@@ -264,36 +307,67 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
     });
   }
 
-  return out;
+  const orphans: OrphanGroup[] = [];
+  for (const group of stored) {
+    if (taken.has(group) || group.origin === 'manual' || group.state !== 'accepted') continue;
+    if (group.id === undefined) continue;
+    orphans.push({ storedId: group.id, name: group.name, files: [...group.files] });
+  }
+
+  return { clusters: out, orphans };
+}
+
+/**
+ * Which stored entry a decision about these files should replace, or undefined
+ * when it is a new one. The answer `mergeGroups` gives, asked of the one
+ * cluster with exactly this membership — so the server can settle a decision
+ * that arrived without a `storedId` (the MCP tool passes files and nothing
+ * else) the same way the panel would have, rather than by a second matching
+ * that could disagree with the first.
+ */
+export function storedIdFor(
+  clusters: readonly Cluster[],
+  stored: readonly NamedGroup[],
+  files: readonly string[],
+): string | undefined {
+  const wanted = [...files].sort().join('\n');
+  const merged = mergeGroups(clusters, stored).clusters;
+  return merged.find((group) => group.origin !== 'manual' && [...group.files].sort().join('\n') === wanted)?.storedId;
 }
 
 /**
  * Record a decision, replacing whatever was previously said about *this* group
- * and nothing else. The size test is what stops naming a nested group from
- * wiping the name off the group it sits in.
+ * and nothing else — in place, so the file keeps its order and never gains a
+ * second entry for a group it already had.
+ *
+ * Which entry that is comes from the caller, as `storedId`, because only the
+ * caller has the clusters: naming a nested group used to be matched by overlap
+ * here, found the group it sits in, and wiped that one's name. Without a
+ * `storedId` only the exact cluster id is trusted; a decision that matches
+ * neither is a new group. `storedIdFor` is how a server settles one.
  */
 export function applyDecision(
   stored: readonly NamedGroup[],
   files: readonly string[],
-  decision: { name: string; state: NamedGroup['state']; id?: string },
+  decision: { name: string; state: NamedGroup['state']; id?: string; storedId?: string },
 ): NamedGroup[] {
-  const cluster = { id: decision.id ?? '', files };
-  const previous = stored.find((group) => matches(cluster, group));
-  const kept = stored.filter((group) => !matches(cluster, group));
+  const previous =
+    stored.find((group) => decision.storedId !== undefined && group.id === decision.storedId) ??
+    stored.find((group) => group.origin !== 'manual' && decision.id !== undefined && group.id === decision.id);
 
-  return [
-    ...kept,
-    {
-      // How the group is drawn was decided elsewhere, and renaming it is not a
-      // decision about its colour. Rebuilding the entry from the decision alone
-      // silently reset both.
-      ...(previous === undefined ? {} : presentationOf(previous)),
-      name: decision.name,
-      files: [...files],
-      state: decision.state,
-      ...(decision.id === undefined ? {} : { id: decision.id }),
-    },
-  ];
+  const next: NamedGroup = {
+    // How the group is drawn was decided elsewhere, and renaming it is not a
+    // decision about its colour. Rebuilding the entry from the decision alone
+    // silently reset both.
+    ...(previous === undefined ? {} : presentationOf(previous)),
+    name: decision.name,
+    files: [...files],
+    state: decision.state,
+    ...(decision.id === undefined ? {} : { id: decision.id }),
+  };
+
+  if (previous === undefined) return [...stored, next];
+  return stored.map((group) => (group === previous ? next : group));
 }
 
 /**

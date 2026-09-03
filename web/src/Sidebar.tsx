@@ -50,11 +50,20 @@ export interface Following {
   running: boolean;
   /** The price of the last run that produced words. Null until one has. */
   lastRun: { costUsd: number; ms: number } | null;
-  /** Why the last press produced none, in the server's own wording. */
-  failure: { reason: ExplainFailure; detail: string } | null;
+  /**
+   * Why the last press produced none, in the server's own wording. `refused`
+   * is the press that asked for nothing — every id already current — which
+   * is not a failed run and must not be worded as one.
+   */
+  failure: { reason: ExplainFailure | 'refused'; detail: string } | null;
   /** The answer as it is being written, before it is parsed into entries. */
   streamed: string;
-  onExplain: () => void;
+  /**
+   * `force` re-reads the ids whose reading is current as well. Off, the
+   * server skips them: a press used to buy a second reading of a symbol the
+   * panel already called current, at the same price as the first.
+   */
+  onExplain: (force: boolean) => void;
   onDrop: (id: string) => void;
 }
 
@@ -166,7 +175,8 @@ function FileView({
       <header className="panel-head">
         <h2 title={detail.path}>{detail.path}</h2>
         <p className="panel-meta">
-          {detail.symbols.length} symbols · {detail.lineCount} lines
+          {detail.symbols.length === 1 ? '1 symbol' : `${detail.symbols.length} symbols`} ·{' '}
+          {detail.lineCount === 1 ? '1 line' : `${detail.lineCount} lines`}
         </p>
       </header>
 
@@ -270,7 +280,8 @@ const STATE_WORDS: Record<ExplainState, string> = {
 const CALLABLE: ReadonlySet<string> = new Set(['function', 'method', 'class']);
 
 /** Why a run produced nothing, in words that say what to do about it. */
-const FAILURE_WORDS: Record<ExplainFailure, string> = {
+const FAILURE_WORDS: Record<ExplainFailure | 'refused', string> = {
+  refused: 'Nothing to explain:',
   missing: 'claude was not found.',
   auth: 'claude is installed but not logged in.',
   timeout: 'claude did not answer in time and was stopped.',
@@ -308,10 +319,24 @@ function Followed({
   const answerable = links.length + files.length;
 
   // Six identical "not explained yet" lines under a button that already says
-  // "Explain these · 6" is noise. The line earns its place the moment the list
+  // "Explain · 6 new" is noise. The line earns its place the moment the list
   // is mixed — some rows read, some not — or a run has been and gone leaving
   // this row with nothing to show for it.
   const sayNothingYet = explanations.size > 0 || running || lastRun !== null || failure !== null;
+
+  // What a press would actually spend on: the rows without a current reading.
+  // The server skips the current ones either way, but a button that says 6
+  // and reads 2 has a count nobody can trust. With nothing new to read the
+  // button says what it will do instead — read them all again — and ⌥ does
+  // the same while there still is.
+  const fresh = [...links.map((symbol) => symbol.id), ...files.map((file) => file.path)].filter(
+    (id) => explanations.get(id)?.state !== 'current',
+  ).length;
+  const rereadAll = answerable > 0 && fresh === 0;
+  const lastRunNote =
+    lastRun === null
+      ? ''
+      : ` Last run ${money(lastRun.costUsd)}${lastRun.ms === 0 ? '' : `, ${Math.round(lastRun.ms / 1000)}s`}.`;
 
   return (
     <Section title="Following" className="followed">
@@ -329,19 +354,17 @@ function Followed({
                 ? 'A run is in flight. It takes a minute or so.'
                 : answerable === 0
                   ? 'Nothing here that the graph can still resolve.'
-                  : `Ask Claude what these are for. It spends your Claude quota.${
-                      lastRun === null
-                        ? ''
-                        : ` Last run ${money(lastRun.costUsd)}${
-                            lastRun.ms === 0 ? '' : `, ${Math.round(lastRun.ms / 1000)}s`
-                          }.`
-                    }`
+                  : rereadAll
+                    ? `Every one of these has a current reading. Press to read all ${answerable} again — it spends your Claude quota.${lastRunNote}`
+                    : `Ask Claude what the ${fresh} without a current reading are for. It spends your Claude quota.${
+                        fresh === answerable ? '' : ` ⌥-click to read all ${answerable} again.`
+                      }${lastRunNote}`
             }
-            onClick={following.onExplain}
+            onClick={(event) => following.onExplain(rereadAll || event.altKey)}
           >
-            {running ? 'Explaining' : 'Explain these'}
+            {running ? 'Explaining' : rereadAll ? 'Re-explain all' : 'Explain'}
             <span>·</span>
-            {answerable}
+            {running || rereadAll ? answerable : `${fresh} new`}
           </button>
 
           {running && (
@@ -407,19 +430,36 @@ function Followed({
             sayNothingYet={sayNothingYet}
           />
 
+          {/* The graph's own word on how much of the lists below it can vouch
+              for. A method's callers are the typed ones only, so for one an
+              empty list is a silence, not a count — cobra's Command.Execute
+              read "0 in" with sixteen callers in grep — and this sentence is
+              what keeps the silence from being read as none. */}
+          {symbol.coverage === 'partial' && (
+            <p className="followed-coverage">{symbol.coverageNote}</p>
+          )}
+
           {symbol.usedBy.length === 0 && symbol.uses.length === 0 ? (
-            // A type, an interface or a field is never *called*, so an empty
-            // relation list is the normal case for it and saying so on every one
-            // taught the reader to stop reading the line. It is only worth a
-            // sentence where callers were expected and the graph found none.
+            // A type or an interface is never *called*, so an empty relation
+            // list is the normal case for it and saying so on every one taught
+            // the reader to stop reading the line. It is only worth a sentence
+            // where callers were expected and the graph looked everywhere it
+            // can — a method's sentence is the coverage note above.
+            symbol.coverage === 'full' &&
             CALLABLE.has(symbol.kind) && (
               <p className="followed-none">
-                No resolved references. Method calls are under-reported on purpose.
+                Nothing in the graph references this by name, and it references nothing that
+                resolved.
               </p>
             )
           ) : (
             <>
-              <Relations title="used by" rows={symbol.usedBy} onSelect={onSelect} onFocus={onFocus} />
+              <Relations
+                title={symbol.coverage === 'partial' ? 'known used by' : 'used by'}
+                rows={symbol.usedBy}
+                onSelect={onSelect}
+                onFocus={onFocus}
+              />
               <Relations title="uses" rows={symbol.uses} onSelect={onSelect} onFocus={onFocus} />
             </>
           )}
@@ -501,8 +541,11 @@ function Lost({
   sayNothingYet: boolean;
   onDrop: () => void;
 }) {
-  // Split at the last '#': a path may legally hold one, a symbol name may not.
-  const cut = id.lastIndexOf('#');
+  // Split at the first '#': the path comes first, and a `#private` member's
+  // name holds a '#' of its own — `path#Observer.#tick` cut at the last one
+  // would call the symbol "tick" of the file "path#Observer.". A path holding
+  // one is ambiguous under either rule; the id scheme does not guard it.
+  const cut = id.indexOf('#');
   const name = cut === -1 ? id : id.slice(cut + 1);
   const filePath = cut === -1 ? '' : id.slice(0, cut);
 

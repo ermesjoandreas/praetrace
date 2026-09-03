@@ -111,6 +111,13 @@ Each one is a different *kind* of mark, not just a different hue:
 | language | a small muted tag in the title | none |
 | frozen at a commit | a chip in the breadcrumb row, `Viewing 7fe7f88 · 2 days ago ✕` | badge grey, like the filter chips |
 | a thread in the commit graph | a 1.5px line in the lane column | the accent for lane 0, then graph 1–5 |
+| a test, fixture or story | a small muted `test` tag in the title, beside the language tag | none |
+| a file that would not fully parse | a 16px `codicon-warning` in the title, before the language tag | warning |
+| too many boxes to place quickly | a chip in the breadcrumb row, `⚠ 289 boxes — depth 1 is quicker` | warning |
+| a stored name that matches nothing | a row under "Stored, matches nothing" in Categories | muted |
+
+`--vsc-warning` means one thing: **the tool's own gap** — cannot read, could not
+parse, too many to place. Do not give it a fourth meaning.
 
 Blue is the agent's. Amber is the file system's. The accent is yours. Do not give a
 new signal one of those three hues — the frozen chip was blue for a day and shared
@@ -192,6 +199,12 @@ row and scrolls sideways past the panel; a commit is never drawn without its dot
 22px label · value rows with a 76px muted label, the full value in the row's title,
 and one 26px full-width button under it. In a browser the "Open folder" slot holds
 the CLI line in `<code>` instead.
+
+**Categories** — a group found inside another sits one indent (24px) under its
+parent and its files one more (40px). Names in groups.json that match nothing are
+a block under the list, titled `Stored, matches nothing` the way a Repository block
+is titled; each row is a group row whose name is muted and is not a control, with
+the file count where the cohesion goes and a trash in `.row-actions` on hover.
 
 **Menu, palette, popover** — the only things with `--vsc-shadow-widget`. 5px radius,
 `--vsc-border-menu`. Menu rows 26px, the selected one is the accent full width.

@@ -100,24 +100,47 @@ server.registerTool(
   {
     title: 'List architectural groups',
     description:
-      'Groups of files that depend on each other more than on anything else, found by clustering the import graph. Unnamed ones are waiting for a name. Membership is decided by the graph and must not be changed.',
+      'Groups of files that depend on each other more than on anything else, found by clustering the import graph. Unnamed ones are waiting for a name. Membership is decided by the graph and must not be changed. A group marked "by hand" was drawn by a person, not found by the imports; one marked "stored, matches nothing" is a name in groups.json that no current group fits.',
     inputSchema: {},
   },
   () =>
     run(async () => {
-      const { clusters } = await api('/api/clusters', undefined, { tool: 'list_groups' });
+      const { clusters, orphans = [] } = await api('/api/clusters', undefined, { tool: 'list_groups' });
       const live = clusters.filter((group) => group.state !== 'rejected');
-      if (live.length === 0) return 'No groups found in this project.';
+      if (live.length === 0 && orphans.length === 0) return 'No groups found in this project.';
 
-      return live
-        .map((group) => {
-          const label = group.name ? `"${group.name}"` : 'UNNAMED';
-          const cohesion = `${Math.round(group.cohesion * 100)}% cohesion`;
-          return [`${label} — ${group.files.length} files, ${cohesion}`, ...group.files.map((f) => `  ${f}`)].join(
-            '\n',
-          );
-        })
-        .join('\n\n');
+      const nameOf = new Map(clusters.map((group) => [group.id, group.name]));
+
+      const blocks = live.map((group) => {
+        const label = group.name ? `"${group.name}"` : 'UNNAMED';
+        // A hand-drawn group describes no cluster, so it has no cohesion to
+        // report. Printing "0% cohesion" told the agent the imports had found a
+        // group with no coupling — the one promise the feature makes, broken
+        // for the one consumer most likely to be misled by it.
+        const how = group.origin === 'manual' ? 'by hand' : `${Math.round(group.cohesion * 100)}% cohesion`;
+        const parentName = group.parent === null ? null : nameOf.get(group.parent);
+        const inside =
+          group.parent === null ? '' : `, inside ${parentName ? `"${parentName}"` : `the unnamed group ${group.parent}`}`;
+        const indent = '  '.repeat(group.depth ?? 0);
+        return [
+          `${indent}${label} — ${group.files.length} files, ${how}${inside}`,
+          ...group.files.map((f) => `${indent}  ${f}`),
+        ].join('\n');
+      });
+
+      // Stored names the graph no longer finds a group for. Listed rather than
+      // dropped: three committed groups were invisible everywhere, and a name
+      // that vanishes without a word cannot be fixed or deleted.
+      for (const orphan of orphans) {
+        blocks.push(
+          [
+            `"${orphan.name}" — ${orphan.files.length} files, stored, matches nothing`,
+            ...orphan.files.map((f) => `  ${f}`),
+          ].join('\n'),
+        );
+      }
+
+      return blocks.join('\n\n');
     }),
 );
 

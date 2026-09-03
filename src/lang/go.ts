@@ -1,7 +1,8 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import type { ParsedSymbol, SymbolKind } from '../parser/types.js';
+import { QUALIFIED_SEPARATOR } from '../parser/types.js';
+import type { ImportBinding, ParsedSymbol, SymbolKind } from '../parser/types.js';
 import type { LanguageParse, LanguageSupport, ResolveContext, SyntaxNode } from './types.js';
 
 // The grammars are native CommonJS addons with no ESM entry point.
@@ -58,6 +59,31 @@ interface ImportSpec {
    * this package's, which is why the file has to remember that it happened.
    */
   dot: boolean;
+  /**
+   * The identifier the package is used under in this file — the alias when one
+   * is written, otherwise what the path conventionally implies — or null for a
+   * blank or dot import, which no qualifier can name.
+   */
+  name: string | null;
+}
+
+/**
+ * The identifier an unaliased import is used under.
+ *
+ * Go says it is the imported package's own clause, which this file cannot see,
+ * so the convention stands in: the last element of the path, read the way the
+ * packages that depart from it name themselves — `pflag/v2` is still pflag,
+ * gopkg.in's `yaml.v3` is yaml, `go-isatty` is isatty. A guess that misses
+ * costs precision and nothing else: a qualifier that matches no import is not
+ * read as one, and the import keeps standing for its package's representative
+ * file as it did before.
+ */
+function conventionalName(importPath: string): string {
+  const segments = importPath.split('/');
+  let last = segments.pop() ?? '';
+  if (/^v\d+$/.test(last) && segments.length > 0) last = segments.pop() ?? last;
+  last = last.replace(/\.v\d+$/, '');
+  return last.startsWith('go-') ? last.slice(3) : last;
 }
 
 function unquote(node: SyntaxNode | null): string {
@@ -78,12 +104,15 @@ function importsOf(root: SyntaxNode): ImportSpec[] {
       const importPath = unquote(spec.childForFieldName('path'));
       if (importPath === '') continue;
 
-      // The name the package is imported under is not recorded, because nothing
-      // is answered by it any more: a qualified reference names a declaration in
-      // another package, and every consumer here resolves a bare name against
-      // this one. The one alias worth knowing is `.`, which removes the
-      // qualifier and so stops being another package's business.
-      specs.push({ path: importPath, dot: spec.childForFieldName('name')?.type === 'dot' });
+      // The name decides which qualified references are this import's. `_`
+      // imports for effect only and `.` removes the qualifier altogether, so
+      // neither can be named at a point of use.
+      const alias = spec.childForFieldName('name');
+      const name =
+        alias === null ? conventionalName(importPath)
+        : alias.type === 'package_identifier' ? alias.text
+        : null;
+      specs.push({ path: importPath, dot: alias?.type === 'dot', name });
     }
   }
 
@@ -231,6 +260,21 @@ interface FileScope {
   qualified: ReadonlySet<number>;
   /** Whether any import is a dot import; see `ImportSpec.dot`. */
   dotImported: boolean;
+  /**
+   * Qualifier -> the import path it stands for.
+   *
+   * A name the file also binds is left out: a receiver named `doc` shadows the
+   * package inside its method, and nothing here tracks which scope a use is
+   * in, so the file refuses the qualifier rather than guess. Two imports that
+   * would answer to one name are refused together, for the same reason.
+   */
+  packages: ReadonlyMap<string, string>;
+  /**
+   * Package-level variable -> the type its declaration wrote; see
+   * `packageVariables`. Read once per file, as everything else here is, and
+   * every function's receiver table starts from it.
+   */
+  variables: ReadonlyMap<string, Written | null>;
 }
 
 function fileScope(root: SyntaxNode, imports: readonly ImportSpec[]): FileScope {
@@ -240,12 +284,67 @@ function fileScope(root: SyntaxNode, imports: readonly ImportSpec[]): FileScope 
     if (name) qualified.add(name.startIndex);
   }
 
+  const bound = boundNames(root);
+  const declared = packageLevelNames(root);
+
+  const packages = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const spec of imports) {
+    if (spec.name === null || bound.has(spec.name) || declared.has(spec.name)) continue;
+    if (packages.has(spec.name)) ambiguous.add(spec.name);
+    else packages.set(spec.name, spec.path);
+  }
+  for (const name of ambiguous) packages.delete(name);
+
   return {
-    bound: boundNames(root),
-    declared: packageLevelNames(root),
+    bound,
+    declared,
     qualified,
     dotImported: imports.some((spec) => spec.dot),
+    packages,
+    variables: packageVariables(root),
   };
+}
+
+/**
+ * Import path -> the names this file reaches through it: the `Command` of
+ * `cobra.Command`, the `GenManTree` of `doc.GenManTree(...)`.
+ *
+ * This is what an import alone could not say. An import names a directory,
+ * and the file that stands for it is a convention — so every file in package
+ * doc was drawn as depending on cobra.go, when what they all reach for is
+ * `Command`, declared in command.go. The names are what let `resolve` land
+ * each reference on the file that declares it. Type and expression positions
+ * are read separately because the grammar keeps them apart: `cobra.Command` in
+ * a signature is a `qualified_type`, in `cobra.CompError(...)` a selector.
+ *
+ * A reference is written down as `github.com/spf13/cobra#Command` so it can
+ * survive the trip to the resolver as one more entry in `imports`, with
+ * QUALIFIED_SEPARATOR between — the same character the graph puts between a
+ * file and a symbol, and for the same reason: a file's name followed by
+ * something in it. The Go spec keeps `#` out of import paths, as it keeps the
+ * colon `SAME_PACKAGE` uses, so neither can be mistaken for a path a project
+ * wrote.
+ */
+function qualifiedReferences(root: SyntaxNode, scope: FileScope): Map<string, Set<string>> {
+  const byPath = new Map<string, Set<string>>();
+  const note = (qualifier: SyntaxNode | null, name: SyntaxNode | null): void => {
+    const importPath = qualifier === null ? undefined : scope.packages.get(qualifier.text);
+    if (importPath === undefined || name === null) return;
+    const names = byPath.get(importPath) ?? new Set<string>();
+    names.add(name.text);
+    byPath.set(importPath, names);
+  };
+
+  for (const type of root.descendantsOfType('qualified_type')) {
+    note(type.childForFieldName('package'), type.childForFieldName('name'));
+  }
+  for (const selector of root.descendantsOfType('selector_expression')) {
+    const operand = selector.childForFieldName('operand');
+    if (operand?.type === 'identifier') note(operand, selector.childForFieldName('field'));
+  }
+
+  return byPath;
 }
 
 /**
@@ -277,57 +376,265 @@ function notThisPackage(name: string, scope: FileScope): boolean {
 }
 
 /**
- * Every name invoked or constructed inside a declaration that this package
- * could be the one declaring.
+ * A type as an edge from this file may name it: bare for one this package
+ * could declare, `<importPath>#Name` for one reached through a qualifier — the
+ * form a call already takes, so the graph lands it on the file that declares
+ * the name. Reduced to its tail, `struct { base.Server }` was a bare `Server`,
+ * and the graph answered it with whichever file in reach declared one. A
+ * qualifier this file cannot name — shadowed by a local, or two imports
+ * answering to it — leaves the type unnamed rather than bare, for the same
+ * reason: a sibling's `Server` is not it.
+ */
+function namedType(node: SyntaxNode | null, scope: FileScope): { typeName?: string; many?: boolean } {
+  const reference = typeReference(node);
+  if (node === null || reference.typeName === undefined) return reference;
+  // The name may sit under a slice, a map or a pointer, so the node carrying
+  // it is found by name rather than by position.
+  const qualified = node
+    .descendantsOfType('qualified_type')
+    .find((candidate) => candidate.childForFieldName('name')?.text === reference.typeName);
+  if (qualified === undefined) return reference;
+  const importPath = scope.packages.get(qualified.childForFieldName('package')?.text ?? '');
+  if (importPath === undefined) return {};
+  return { ...reference, typeName: `${importPath}${QUALIFIED_SEPARATOR}${reference.typeName}` };
+}
+
+/** A type as a declaration wrote it: the `T` of `T`, `*T`, `List[T]`, `pkg.T`. */
+interface Written {
+  name: string;
+  /** The package qualifier, when the type was written `pkg.T`. */
+  qualifier: string | null;
+}
+
+/**
+ * The type whose methods a variable declared with this type has. Narrower than
+ * `typeReference` on purpose: `[]T` and `map[K]T` name T while holding many of
+ * it, and a slice has no method of T's to call.
+ */
+function receiverType(node: SyntaxNode | null): Written | null {
+  if (!node) return null;
+  switch (node.type) {
+    case 'type_identifier':
+      return { name: node.text, qualifier: null };
+    case 'qualified_type': {
+      const name = node.childForFieldName('name')?.text;
+      const qualifier = node.childForFieldName('package')?.text;
+      return name === undefined || qualifier === undefined ? null : { name, qualifier };
+    }
+    case 'pointer_type':
+    case 'parenthesized_type':
+      return receiverType(node.namedChildren[0] ?? null);
+    case 'generic_type':
+      return receiverType(node.childForFieldName('type'));
+    default:
+      return null;
+  }
+}
+
+/**
+ * The type an expression names while building it — `&T{}`, `T{}`, `new(T)` —
+ * or null. A call's result type is written at the callee, not here, and is
+ * not guessed at.
+ */
+function builtType(value: SyntaxNode | null): SyntaxNode | null {
+  if (!value) return null;
+  if (value.type === 'unary_expression' && value.childForFieldName('operator')?.text === '&') {
+    return builtType(value.childForFieldName('operand'));
+  }
+  if (value.type === 'composite_literal') return value.childForFieldName('type');
+  if (value.type === 'call_expression' && value.childForFieldName('function')?.text === 'new') {
+    return value.childForFieldName('arguments')?.namedChildren[0] ?? null;
+  }
+  return null;
+}
+
+/**
+ * One declaration of a name, recorded into a table of receiver types.
+ *
+ * A name declared twice is kept only if every declaration agrees, and one
+ * declaration without a type — `c := f()`, `for _, c := range` — refuses the
+ * name outright, since nothing here knows which block a later `c.X()` is in.
+ */
+function bindType(typed: Map<string, Written | null>, name: string, written: Written | null): void {
+  if (name === '_') return;
+  if (!typed.has(name)) {
+    typed.set(name, written);
+    return;
+  }
+  const known = typed.get(name);
+  const agrees =
+    known !== null && known !== undefined && written !== null &&
+    known.name === written.name && known.qualifier === written.qualifier;
+  if (!agrees) typed.set(name, null);
+}
+
+/**
+ * What a parameter or a `var` spec declares, name by name, with the type each
+ * was given. `a, b *Command` repeats the name, so the names are read as
+ * children; `var c = &Command{}` is typed by what it builds, one value per name.
+ */
+function declaredTypes(spec: SyntaxNode): [string, Written | null][] {
+  const names = spec.namedChildren.filter((child) => child.type === 'identifier');
+  const type = spec.childForFieldName('type');
+  if (type) {
+    const written = receiverType(type);
+    return names.map((name) => [name.text, written]);
+  }
+  const values = spec.childForFieldName('value')?.namedChildren ?? [];
+  return names.map((name, index) => [
+    name.text,
+    values.length === names.length ? receiverType(builtType(values[index] ?? null)) : null,
+  ]);
+}
+
+/**
+ * Package-level variable -> the type its declaration wrote, over the file.
+ *
+ * `var rootCmd = &cobra.Command{…}` at the top of the file and
+ * `rootCmd.Execute()` in `main` is how every cobra program begins, and a table
+ * read from the function alone never sees the declaration — so the one call
+ * the program exists to make was refused. Every function's table starts from
+ * this one, and a local of the same name is a second declaration of it, held
+ * to `bindType`'s rule like any other: a variable declared `Store` at package
+ * level and `Cache` in a function is refused in that function, since nothing
+ * here knows which block a call is in.
+ */
+function packageVariables(root: SyntaxNode): Map<string, Written | null> {
+  const typed = new Map<string, Written | null>();
+  for (const declaration of root.namedChildren) {
+    if (declaration.type !== 'var_declaration') continue;
+    // `var ( a *Command; b = &Command{} )` is one declaration of several specs.
+    for (const spec of declaration.descendantsOfType('var_spec')) {
+      for (const [name, written] of declaredTypes(spec)) bindType(typed, name, written);
+    }
+  }
+  return typed;
+}
+
+/**
+ * Variable -> the type its declaration wrote, over one function.
+ *
+ * `c.Execute()` is a call to Command.Execute exactly when `c` was declared a
+ * Command — as the method's receiver, a parameter, a `var` in the body or at
+ * package level, or by building one — and the edge is drawn only when that was
+ * written down. A receiver the source does not type is left out, not inferred:
+ * a missing edge is a gap, a wrong one is a lie.
+ *
+ * One table for the whole body, as `boundNames` is one set for the file,
+ * starting from the package's variables and held to `bindType`'s rule.
+ */
+function receiverTypes(declaration: SyntaxNode, scope: FileScope): Map<string, Written | null> {
+  const typed = new Map(scope.variables);
+
+  // Declared with a type: the receiver, parameters, results, `var c *Command`.
+  for (const node of declaration.descendantsOfType(['parameter_declaration', 'var_spec'])) {
+    for (const [name, written] of declaredTypes(node)) bindType(typed, name, written);
+  }
+  for (const node of declaration.descendantsOfType('short_var_declaration')) {
+    const names = node.childForFieldName('left')?.namedChildren ?? [];
+    const values = node.childForFieldName('right')?.namedChildren ?? [];
+    names.forEach((name, index) => {
+      if (name.type !== 'identifier') return;
+      bindType(typed, name.text, values.length === names.length ? receiverType(builtType(values[index] ?? null)) : null);
+    });
+  }
+  // Bound with no type written: `cmds ...*Command` is a slice of them,
+  // `for _, c := range`, `case v := <-ch`, `switch v := x.(type)`.
+  for (const node of declaration.descendantsOfType([
+    'variadic_parameter_declaration',
+    'range_clause',
+    'receive_statement',
+    'type_switch_statement',
+  ])) {
+    const holder =
+      node.type === 'variadic_parameter_declaration'
+        ? node
+        : node.childForFieldName(node.type === 'type_switch_statement' ? 'alias' : 'left');
+    for (const child of holder?.namedChildren ?? []) {
+      if (child.type === 'identifier') bindType(typed, child.text, null);
+    }
+  }
+
+  return typed;
+}
+
+/**
+ * Every name invoked or constructed inside a declaration, in the three forms
+ * the graph resolves: a bare name this package could declare, `T.m` for a
+ * method on a receiver whose type was written down, and `path#Name` for a
+ * reference through an import.
  *
  * Go declares nothing inside anything else — a method sits beside its type
  * rather than in it — so unlike TypeScript there is no enclosing symbol that
  * has to be stopped from claiming its members' calls.
  *
- * What is left out matters more than what is kept, because these names arrive
- * at the graph bare and are resolved by name alone.
- *
- * **A qualified call is left out altogether**, and that is the decision most
- * likely to be second-guessed. `exec.Command("go", "build")` shells out to a
- * compiler; the only part of it a bare lookup can match is `Command`, and cobra
- * declares a `Command` of its own, so the edge drawn was from a test that runs
- * `go build` to the type at the centre of the library. Not a near miss — a
- * sentence the source never contained.
- *
- * The price is real and was measured: on cobra this removes two false edges and
- * nine true cross-package ones, `doc.GenManTree` and `cobra.WriteStringAndCheck`
- * among them. Nothing here can tell those from the false ones, because which package
- * `doc` names is a question about the project and this only sees one file — and
- * the name it would have to hand over reaches the graph with the qualifier
- * already gone. Restoring them means carrying the qualifier through to
- * resolution, which is a change to the language contract, not to this file.
+ * What is left out matters more than what is kept, because a bare name is
+ * resolved by name alone. That is why a reference through an import is never
+ * reduced to its tail. `exec.Command("go", "build")` shells out to a
+ * compiler; the only part of it a bare lookup can match is `Command`, which
+ * cobra declares, so the edge drawn was from a test that runs `go build` to
+ * the type at the centre of the library. Not a near miss — a sentence the
+ * source never contained. The reference keeps its import instead,
+ * `os/exec#Command`, and the graph either follows that to the file it names
+ * or draws nothing. A receiver of an imported type is the same case:
+ * `cmd.Execute()` on a `*cobra.Command` is `github.com/spf13/cobra#Command.Execute`.
  */
 function collectCalls(declaration: SyntaxNode, scope: FileScope): string[] {
   const names = new Set<string>();
+  const typed = receiverTypes(declaration, scope);
+
+  /** A type as this file may name it, or null when this file cannot name it at all. */
+  const nameOf = (written: Written | null): string | null => {
+    if (written === null) return null;
+    if (written.qualifier === null) return notThisPackage(written.name, scope) ? null : written.name;
+    const importPath = scope.packages.get(written.qualifier);
+    return importPath === undefined ? null : `${importPath}${QUALIFIED_SEPARATOR}${written.name}`;
+  };
+
+  // `&Command{...}` is Go's `new Command()`, and `new(Command)` its other
+  // spelling: the places a type is named while being built.
+  const built = (type: SyntaxNode | null): void => {
+    const reference = typeReference(type).typeName;
+    if (type === null || reference === undefined) return;
+    // The name may sit under a slice, a map or a pointer, so the node carrying
+    // it is found by name rather than by position.
+    const qualified = type
+      .descendantsOfType('qualified_type')
+      .find((node) => node.childForFieldName('name')?.text === reference);
+    const name = nameOf(qualified ? receiverType(qualified) : { name: reference, qualifier: null });
+    if (name !== null) names.add(name);
+  };
 
   for (const node of declaration.descendantsOfType(['call_expression', 'composite_literal'])) {
     if (node.type === 'composite_literal') {
-      // `&Command{...}` is Go's `new Command()`, and the only place a type is
-      // named while being built. `&pflag.FlagSet{}` builds pflag's type, and
-      // reducing it to `FlagSet` is the same lie a qualified call tells.
-      const type = node.childForFieldName('type');
-      if (!type) continue;
-      const built = typeReference(type).typeName;
-      const qualified = type
-        .descendantsOfType('type_identifier')
-        .some((name) => scope.qualified.has(name.startIndex));
-      if (built !== undefined && !qualified && !notThisPackage(built, scope)) names.add(built);
+      built(node.childForFieldName('type'));
       continue;
     }
 
-    // A bare callee is a function this package declares — unless it is a local
-    // holding one, or a parameter, which is what the guard is for. Everything
-    // else is a selector: `c.Execute()` is a method on a value and
-    // `exec.Command()` is another package's function, and neither is a name a
-    // file in this project can be asked for.
     const callee = node.childForFieldName('function');
-    if (callee?.type !== 'identifier') continue;
-    if (!notThisPackage(callee.text, scope)) names.add(callee.text);
+    if (callee?.type === 'identifier') {
+      // A bare callee is a function this package declares — unless it is a
+      // local holding one, or a parameter, which is what the guard is for.
+      // `new` is the universe's, and what it names is the type it builds.
+      if (callee.text === 'new') built(node.childForFieldName('arguments')?.namedChildren[0] ?? null);
+      else if (!notThisPackage(callee.text, scope)) names.add(callee.text);
+      continue;
+    }
+
+    // `x.m()`: a function in another package when `x` names an import, a method
+    // when `x` was declared with a type, and nothing otherwise.
+    if (callee?.type !== 'selector_expression') continue;
+    const operand = callee.childForFieldName('operand');
+    const member = callee.childForFieldName('field')?.text;
+    if (operand?.type !== 'identifier' || member === undefined) continue;
+
+    const importPath = scope.packages.get(operand.text);
+    if (importPath !== undefined) {
+      names.add(`${importPath}${QUALIFIED_SEPARATOR}${member}`);
+      continue;
+    }
+    const owner = nameOf(typed.get(operand.text) ?? null);
+    if (owner !== null) names.add(`${owner}.${member}`);
   }
 
   return [...names];
@@ -393,14 +700,14 @@ function symbolAt(node: SyntaxNode, name: string, kind: SymbolKind, calls: strin
 }
 
 /** A struct's fields, as symbols owned by it. Returns the types it embeds. */
-function collectFields(struct: SyntaxNode, owner: string, out: ParsedSymbol[]): string[] {
+function collectFields(struct: SyntaxNode, owner: string, scope: FileScope, out: ParsedSymbol[]): string[] {
   const embedded: string[] = [];
   const list = struct.namedChildren.find((child) => child.type === 'field_declaration_list');
   if (!list) return embedded;
 
   for (const field of list.namedChildren) {
     if (field.type !== 'field_declaration') continue;
-    const declared = typeReference(field.childForFieldName('type'));
+    const declared = namedType(field.childForFieldName('type'), scope);
     // `A, B int` declares two fields of one type, so the names are read as a
     // list rather than through the single `name` field.
     const names = field.namedChildren.filter((child) => child.type === 'field_identifier');
@@ -425,6 +732,7 @@ function collectFields(struct: SyntaxNode, owner: string, out: ParsedSymbol[]): 
 function collectInterfaceMembers(
   declaration: SyntaxNode,
   owner: string,
+  scope: FileScope,
   out: ParsedSymbol[],
 ): string[] {
   const embedded: string[] = [];
@@ -437,7 +745,7 @@ function collectInterfaceMembers(
       // `interface { io.Reader }` embeds another interface: every method of it
       // is a method of this one. A generic constraint (`~int | ~string`) is the
       // same node and names no single type, so it reduces to nothing.
-      const { typeName } = typeReference(member.namedChildren[0] ?? null);
+      const { typeName } = namedType(member.namedChildren[0] ?? null, scope);
       if (typeName !== undefined) embedded.push(typeName);
     }
   }
@@ -445,7 +753,7 @@ function collectInterfaceMembers(
   return embedded;
 }
 
-function collectTypeSpec(spec: SyntaxNode, out: ParsedSymbol[]): void {
+function collectTypeSpec(spec: SyntaxNode, scope: FileScope, out: ParsedSymbol[]): void {
   const name = spec.childForFieldName('name')?.text;
   if (name === undefined) return;
 
@@ -458,10 +766,10 @@ function collectTypeSpec(spec: SyntaxNode, out: ParsedSymbol[]): void {
     // A struct holds fields and gathers methods, which is all a class is. Go
     // just writes the methods outside the braces.
     kind = 'class';
-    embedded = collectFields(declared, name, members);
+    embedded = collectFields(declared, name, scope, members);
   } else if (declared?.type === 'interface_type') {
     kind = 'interface';
-    embedded = collectInterfaceMembers(declared, name, members);
+    embedded = collectInterfaceMembers(declared, name, scope, members);
   }
 
   // The type is pushed before its members, and the graph layer relies on that
@@ -491,7 +799,7 @@ function collectTopLevel(node: SyntaxNode, scope: FileScope, out: ParsedSymbol[]
     case 'type_declaration':
       // `type ( A struct{}; B struct{} )` is one declaration of several specs.
       for (const spec of node.namedChildren) {
-        if (spec.type === 'type_spec' || spec.type === 'type_alias') collectTypeSpec(spec, out);
+        if (spec.type === 'type_spec' || spec.type === 'type_alias') collectTypeSpec(spec, scope, out);
       }
       return;
 
@@ -558,9 +866,11 @@ function goFilesByDirectory(files: ReadonlySet<string>): ReadonlyMap<string, str
  * Test files are passed over: an importer of a package cannot see them, and an
  * external `package foo_test` is not even part of it.
  *
- * This only answers what an import names. A package's other files are reached
- * by `siblingReferences` instead, which is a different question with a different
- * answer: not "who stands for this package" but "who declares this name".
+ * This only answers what a plain import names. A reference that names what it
+ * wants from the package — `cobra.Command`, or a sibling's bare `Command` — is
+ * a different question with a different answer: not "who stands for this
+ * package" but "who declares this name", which is `declaringIn` and
+ * `siblingDeclaring` below.
  */
 function representativeOf(directory: string, packageName: string, files: ReadonlySet<string>): string | null {
   const candidates = goFilesByDirectory(files).get(directory);
@@ -570,6 +880,26 @@ function representativeOf(directory: string, packageName: string, files: Readonl
   const listed = importable.length > 0 ? importable : candidates;
   const principal = path.posix.join(directory, `${packageName}.go`);
   return listed.find((file) => file === principal) ?? listed[0] ?? null;
+}
+
+/**
+ * The one importable file in a directory that declares a name, or null.
+ *
+ * Test files are passed over as `representativeOf` passes them over: an
+ * importer cannot see them. The package clause is not consulted, because Go
+ * allows a directory one package plus its `_test` twin and nothing else, and
+ * the twin is already gone. Two files declaring the name is the build-tag case
+ * `siblingDeclaring` describes, and it is refused here too; the caller falls
+ * back to the representative, which says "this package" and not which file.
+ */
+function declaringIn(directory: string, name: string, context: ResolveContext): string | null {
+  let found: string | null = null;
+  for (const file of goFilesByDirectory(context.files).get(directory) ?? []) {
+    if (file.endsWith('_test.go') || context.declarations.get(file)?.has(name) !== true) continue;
+    if (found !== null) return null;
+    found = file;
+  }
+  return found;
 }
 
 /**
@@ -642,12 +972,37 @@ export const go: LanguageSupport = {
       symbols.filter((symbol) => symbol.owner === undefined).map((symbol) => symbol.name),
     );
 
+    // An import the file reaches through its qualifier is written down as the
+    // names reached, one reference each, so the edge can land on the file that
+    // declares them. One used no other way — blank, dot, or a name the file
+    // never wrote — stays the path, standing for the package as before.
+    const qualified = qualifiedReferences(root, scope);
+    const references: string[] = [];
+    for (const spec of imports) {
+      const names = qualified.get(spec.path);
+      if (names === undefined) references.push(spec.path);
+      else for (const name of names) references.push(`${spec.path}${QUALIFIED_SEPARATOR}${name}`);
+    }
+
+    // A sibling reference is a binding too, under the name itself: the
+    // specifier names the one file that declares it, so the graph reads a
+    // bare `New` from that sibling and from nowhere else. Before the file
+    // said so, the graph read every imported file's whole table in order, and
+    // `path#Name` references come first — so a `New` this package declares
+    // was drawn on an imported package's `New`, exported or not. A reference
+    // through a qualifier binds nothing: it is written as `path#Name`
+    // wherever it is used, and the graph follows that to the import directly.
+    const siblings = siblingReferences(root, declaredHere, scope);
+    const bindings: ImportBinding[] = siblings.map((name) => ({
+      local: name,
+      specifier: SAME_PACKAGE + name,
+      imported: name,
+    }));
+
     return {
-      imports: [
-        ...imports.map((spec) => spec.path),
-        ...siblingReferences(root, declaredHere, scope).map((name) => SAME_PACKAGE + name),
-      ],
+      imports: [...references, ...siblings.map((name) => SAME_PACKAGE + name)],
       symbols,
+      bindings,
       ...(moduleName === undefined ? {} : { moduleName }),
     };
   },
@@ -663,6 +1018,12 @@ export const go: LanguageSupport = {
    * A same-package reference is answered first, and without go.mod: it never
    * leaves the directory, so which module the directory belongs to — or whether
    * it belongs to one at all — does not come into it.
+   *
+   * A qualified reference lands on the file in the directory that declares the
+   * name. When none does — a package-level `var` or `const` is not a symbol, so
+   * `cobra.ShellCompDirectiveDefault` names nothing in the table — it falls
+   * back to the package's representative, which is the answer a plain import
+   * gives: this file uses that package, and which file of it is not claimed.
    */
   resolve(context: ResolveContext): string | null {
     const { specifier, files, facts } = context;
@@ -673,16 +1034,23 @@ export const go: LanguageSupport = {
     const module = facts.goModule;
     if (module === null) return null;
 
+    const hash = specifier.indexOf(QUALIFIED_SEPARATOR);
+    const importPath = hash < 0 ? specifier : specifier.slice(0, hash);
     const directory =
-      specifier === module
+      importPath === module
         ? ''
-        : specifier.startsWith(`${module}/`)
-          ? specifier.slice(module.length + 1)
+        : importPath.startsWith(`${module}/`)
+          ? importPath.slice(module.length + 1)
           : null;
     if (directory === null) return null;
 
+    if (hash >= 0) {
+      const declaring = declaringIn(directory, specifier.slice(hash + 1), context);
+      if (declaring !== null) return declaring;
+    }
+
     // A package is conventionally named after the last segment of its path;
     // for the module root that segment lives in the module path itself.
-    return representativeOf(directory, specifier.slice(specifier.lastIndexOf('/') + 1), files);
+    return representativeOf(directory, importPath.slice(importPath.lastIndexOf('/') + 1), files);
   },
 };

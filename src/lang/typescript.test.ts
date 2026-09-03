@@ -1,0 +1,470 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { test } from 'node:test';
+import type Parser from 'tree-sitter';
+import type { ParsedSymbol } from '../parser/types.js';
+import { typescript } from './typescript.js';
+
+// The grammar is a native addon; the test parses real trees rather than
+// hand-built ones because the node shapes are the thing under test.
+const require = createRequire(import.meta.url);
+const TreeSitter = require('tree-sitter') as new () => Parser;
+
+function parse(source: string, filePath = 'a.ts') {
+  const parser = new TreeSitter();
+  parser.setLanguage(typescript.grammar(filePath) as Parser.Language);
+  return typescript.extract(parser.parse(source).rootNode, source);
+}
+
+const byName = (symbols: readonly ParsedSymbol[], name: string): ParsedSymbol => {
+  const found = symbols.find((symbol) => symbol.name === name);
+  assert.ok(found, `no symbol named ${name} in ${symbols.map((s) => s.name).join(', ')}`);
+  return found;
+};
+
+test('ES private members are fields and methods, private by syntax', () => {
+  const { symbols } = parse(`
+    class Observer {
+      #count = 0
+      #client: Client
+      #tick() { this.#count += 1 }
+      run() { this.#tick() }
+    }
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.visibility ?? '-']),
+    [
+      ['Observer', 'class', '-'],
+      ['#count', 'field', 'private'],
+      ['#client', 'field', 'private'],
+      ['#tick', 'method', 'private'],
+      ['run', 'method', '-'],
+    ],
+  );
+  assert.deepEqual(byName(symbols, 'run').calls, ['Observer.#tick']);
+});
+
+test('re-exports are recorded with the names that travel through them', () => {
+  const parse1 = parse(`
+    export * from './a'
+    export { A, B as C, type D } from './b'
+    export * as ns from './c'
+    export { E }
+    export const F = 1
+  `);
+  assert.deepEqual(parse1.imports, ['./a', './b', './c']);
+  assert.deepEqual(parse1.reexports, [
+    { specifier: './a', names: '*' },
+    {
+      specifier: './b',
+      names: [
+        { exported: 'A', local: 'A' },
+        { exported: 'C', local: 'B' },
+        { exported: 'D', local: 'D' },
+      ],
+    },
+    { specifier: './c', names: [{ exported: 'ns', local: '*' }] },
+  ]);
+});
+
+test('a function assigned to a property is a symbol named as written', () => {
+  const { symbols } = parse(`
+    app.init = function init() {
+      configure()
+    }
+    Foo.prototype.bar = () => 1
+    app.count = 1
+    app[name] = function () {}
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine]),
+    [
+      ['app.init', 'function', 2, 4],
+      ['Foo.prototype.bar', 'function', 5, 5],
+    ],
+  );
+  assert.deepEqual(byName(symbols, 'app.init').calls, ['configure']);
+});
+
+test('a call through this is a call on the enclosing class', () => {
+  const { symbols } = parse(`
+    class Store {
+      add() {}
+      addAll() { this.add(); this.missing() }
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'addAll').calls, ['Store.add', 'Store.missing']);
+});
+
+test('a call through a receiver with a written type is qualified by it', () => {
+  const { symbols } = parse(`
+    class Cache {
+      private log: Logger
+      timer: Timer | null = null
+      pool = new Pool()
+      constructor(private repo: Repo, other: Other) {
+        this.log.info()
+      }
+      run(s: Store, maybe?: Thing, xs: Store[], untyped) {
+        s.add()
+        maybe.poke()
+        xs.map()
+        untyped.go()
+        this.repo.save()
+        this.timer.stop()
+        this.pool.drain()
+        const built = new Builder()
+        built.build()
+        const t: Thing = make()
+        t.x()
+        other.z()
+      }
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'constructor').calls, ['Logger.info']);
+  assert.deepEqual(byName(symbols, 'run').calls, [
+    'Store.add',
+    'Thing.poke',
+    // An array's methods are the array's, not the element type's, and an
+    // untyped receiver's are nobody's: neither `xs.map()` nor `untyped.go()`
+    // names anything.
+    'Repo.save',
+    'Timer.stop',
+    'Pool.drain',
+    'Builder.build',
+    'make',
+    'Thing.x',
+    // `other` is the constructor's parameter, not this method's, so `other.z()`
+    // has no receiver here and says nothing.
+    'Builder',
+  ]);
+});
+
+test('a name bound in a nested callback means that only inside the callback', () => {
+  const { symbols } = parse(`
+    function f(a: A) {
+      a.run()
+      items.forEach((a: B) => a.run())
+      a.stop()
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'f').calls, ['A.run', 'B.run', 'A.stop']);
+});
+
+test('two bindings of one name in one scope that disagree are not guessed between', () => {
+  const { symbols } = parse(`
+    function f() {
+      var a = new A()
+      var a = new B()
+      a.run()
+    }
+    function g(b: B) {
+      { const b = new C(); b.run() }
+      b.stop()
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'f').calls, ['A', 'B']);
+  // A block's `const` is that block's; the parameter is what the name means outside it.
+  assert.deepEqual(byName(symbols, 'g').calls, ['C.run', 'B.stop', 'C']);
+});
+
+test('a typed parameter of a callback does not describe the import it shadows', () => {
+  const { symbols } = parse(`
+    import { store } from './store'
+    function f(items: Item[]) {
+      items.forEach((store: Cache) => store.get())
+      store.add()
+    }
+  `);
+  // The import names itself: the graph is what knows what `store` is.
+  assert.deepEqual(byName(symbols, 'f').calls, ['Cache.get', 'store.add']);
+});
+
+test('this inside a nested function is not the class', () => {
+  const { symbols } = parse(`
+    class Widget {
+      render() {}
+      attach(el: Element) {
+        el.addEventListener('click', function () { this.render() })
+        el.addEventListener('keydown', () => this.render())
+        const helpers = { draw() { this.render() } }
+        this.render()
+      }
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'attach').calls, ['Element.addEventListener', 'Widget.render']);
+});
+
+test('a call through an untyped receiver names nothing, not the top-level name it shares', () => {
+  // The two survivors after bindings: zod's `values.map()` inside the file
+  // that declares `map`, and express's `JSON.stringify()` beside `stringify`.
+  const { symbols } = parse(`
+    export function map() {}
+    export function stringify() {}
+    export function _enum(values) { return values.map((v) => v) }
+    export function send(obj) { return JSON.stringify(obj) }
+    export function drain(self) { return this.flush(), super.flush() }
+  `);
+  assert.deepEqual(byName(symbols, '_enum').calls, []);
+  assert.deepEqual(byName(symbols, 'send').calls, []);
+  assert.deepEqual(byName(symbols, 'drain').calls, []);
+});
+
+test('a call through an import is qualified by the name the file bound', () => {
+  const { symbols } = parse(`
+    import * as ns from './ns'
+    import { Store as S } from './store'
+    import Client from './client'
+    import { helper } from './helper'
+    function f() {
+      ns.helper()
+      S.create()
+      Client.connect()
+      helper()
+      helper.call(null)
+      const x = new ns.Remote()
+      x.ping()
+    }
+    function g(ns: Local) { ns.helper() }
+  `);
+  assert.deepEqual(byName(symbols, 'f').calls, [
+    'ns.helper',
+    'S.create',
+    'Client.connect',
+    'helper',
+    'helper.call',
+    // `x` was constructed as `ns.Remote`, qualifier and all: the graph resolves
+    // the head through the binding, and a bare `Remote` would land on whatever
+    // Remote the file bound directly.
+    'ns.Remote.ping',
+    'ns.Remote',
+  ]);
+  // A parameter shadows the import, and its written type is what counts.
+  assert.deepEqual(byName(symbols, 'g').calls, ['Local.helper']);
+});
+
+test('a module-level binding types the receiver in every function below it', () => {
+  const { symbols } = parse(`
+    const store = new Store()
+    export const client: Client = create()
+    function save() { store.add(); client.send() }
+    const load = () => { const store = new Cache(); store.get() }
+  `);
+  assert.deepEqual(byName(symbols, 'save').calls, ['Store.add', 'Client.send']);
+  // The local binding shadows the module's.
+  assert.deepEqual(byName(symbols, 'load').calls, ['Cache.get', 'Cache']);
+});
+
+test('an untyped name shadows the typed one it hides, and is not guessed from it', () => {
+  const { symbols } = parse(`
+    const store = new Store()
+    function f(store) { store.add() }
+    function g({ store }) { store.add() }
+    const h = (store) => store.add()
+    function i() { const store = make(); store.add() }
+    function j(store = fallback()) { store.add() }
+    function k() { store.add() }
+  `);
+  for (const name of ['f', 'g', 'h', 'i', 'j']) {
+    assert.ok(!byName(symbols, name).calls.includes('Store.add'), `${name} guessed through a shadowing name`);
+    assert.ok(!byName(symbols, name).calls.includes('add'), `${name} reported a bare tail`);
+  }
+  assert.deepEqual(byName(symbols, 'k').calls, ['Store.add']);
+});
+
+test('a class-level call outside any method is qualified by the class scope too', () => {
+  const { symbols } = parse(`
+    const helper = new Helper()
+    class Widget {
+      value = helper.compute()
+      static { helper.init() }
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'value').calls, ['Helper.compute']);
+  // The class claims its field initialisers as well as its static block; only
+  // method bodies are excluded from it, which is how it was before this.
+  assert.deepEqual(byName(symbols, 'Widget').calls, ['Helper.compute', 'Helper.init']);
+});
+
+test('every import form is recorded as the names it binds', () => {
+  const { imports, bindings } = parse(`
+    import d, { a, b as c, type T } from 'x'
+    import * as ns from 'y'
+    import type { U } from 'z'
+    import e = require('w')
+    import 'side-effect'
+  `);
+  assert.deepEqual(imports, ['x', 'y', 'z', 'w', 'side-effect']);
+  assert.deepEqual(bindings, [
+    { local: 'd', specifier: 'x', imported: 'default' },
+    { local: 'a', specifier: 'x', imported: 'a' },
+    { local: 'c', specifier: 'x', imported: 'b' },
+    { local: 'T', specifier: 'x', imported: 'T' },
+    { local: 'ns', specifier: 'y', imported: '*' },
+    { local: 'U', specifier: 'z', imported: 'U' },
+    { local: 'e', specifier: 'w', imported: '*' },
+  ]);
+});
+
+test('a symbol is exported only under its own name, and the default is named apart', () => {
+  const parsed = parse(`
+    function secret() {}
+    export function pub() {}
+    export const arrow = () => {}
+    export abstract class Base {}
+    export interface Shape {}
+    export type Alias = string
+    export enum Mode {}
+    export declare function ambient(): void
+    declare function hidden(): void
+    class Late {}
+    class Aliased {}
+    export { Late, Aliased as Other }
+    export default class Main { run() {} }
+    export namespace NS { export function inner() {} }
+  `);
+  assert.deepEqual(
+    parsed.symbols.filter((s) => s.owner === undefined).map((s) => [s.name, s.exported]),
+    [
+      ['secret', false],
+      ['pub', true],
+      ['arrow', true],
+      ['Base', true],
+      ['Shape', true],
+      ['Alias', true],
+      ['Mode', true],
+      ['ambient', true],
+      ['hidden', false],
+      ['Late', true],
+      ['Aliased', false],
+      ['Main', false],
+      ['NS', true],
+      // Exported from the namespace, not from the file.
+      ['inner', false],
+    ],
+  );
+  assert.equal(parsed.defaultExport, 'Main');
+  // A member is reached through its owner and never by name.
+  assert.equal(byName(parsed.symbols, 'run').exported, undefined);
+});
+
+test('the default export is named whichever way it is written', () => {
+  assert.equal(parse('function f() {}\nexport default f').defaultExport, 'f');
+  assert.equal(parse('function f() {}\nexport { f as default }').defaultExport, 'f');
+  assert.equal(parse('function f() {}\nexport = f').defaultExport, 'f');
+  assert.equal(parse('export default function () {}').defaultExport, undefined);
+  assert.equal(parse('export function f() {}').defaultExport, undefined);
+});
+
+test('a barrel cannot carry what its source never exported', () => {
+  // The fixture from the review: b.ts must not reach a.ts#secret through the
+  // barrel. The parser's half is the flag; the store's half reads it.
+  const a = parse('function secret() {}\nexport function pub() {}');
+  assert.deepEqual(a.symbols.map((s) => [s.name, s.exported]), [['secret', false], ['pub', true]]);
+  const index = parse("export * from './a'");
+  assert.deepEqual(index.reexports, [{ specifier: './a', names: '*' }]);
+  const b = parse("import * as ns from './index'\nexport function f() { ns.secret(); ns.pub() }");
+  assert.deepEqual(b.bindings, [{ local: 'ns', specifier: './index', imported: '*' }]);
+  assert.deepEqual(byName(b.symbols, 'f').calls, ['ns.secret', 'ns.pub']);
+});
+
+test('a heritage named through a namespace import keeps its qualifier', () => {
+  // base1 and base2 both export a Base; the first is bound directly and the
+  // second through `ns`. `extends ns.Base` used to be emitted as bare `Base`,
+  // which landed on base1 — the one file the class does not extend.
+  const { symbols } = parse(`
+    import { Base } from './base1'
+    import * as ns from './base2'
+    export class A extends ns.Base {}
+    export class B extends ns.Base<T> implements ns.I, a.b.J {}
+    export interface I extends ns.J<T>, K {}
+    export class C extends mixin(Base) {}
+    export class D extends make().Base {}
+  `);
+  assert.deepEqual(byName(symbols, 'A').extends, ['ns.Base']);
+  assert.deepEqual(byName(symbols, 'B').extends, ['ns.Base']);
+  assert.deepEqual(byName(symbols, 'B').implements, ['ns.I', 'a.b.J']);
+  assert.deepEqual(byName(symbols, 'I').extends, ['ns.J', 'K']);
+  // A call names no class, and neither does a property of what a call returned.
+  assert.deepEqual(byName(symbols, 'C').extends, []);
+  assert.deepEqual(byName(symbols, 'D').extends, []);
+});
+
+test('a receiver typed through a namespace import keeps its qualifier in every call', () => {
+  // t1 and t2 both export a Thing. `new ns.Thing()` typed x as bare `Thing`,
+  // so `x.run()` landed on t1's while the `new` itself landed on t2's.
+  const { symbols } = parse(`
+    import { Thing } from './t1'
+    import * as ns from './t2'
+    export function f() { const x = new ns.Thing(); x.run() }
+    export function g(y: ns.Thing) { y.go() }
+    export class C {
+      private t: ns.Thing
+      list: ns.Thing[]
+      run() { this.t.poke(); const z = new this.Ctor(); z.go() }
+    }
+  `);
+  assert.deepEqual(byName(symbols, 'f').calls, ['ns.Thing.run', 'ns.Thing']);
+  assert.deepEqual(byName(symbols, 'g').calls, ['ns.Thing.go']);
+  // `new this.Ctor()` is a call through `this`, as any is; but it names no
+  // class a reference could match, so z has no type and `z.go()` says nothing.
+  assert.deepEqual(byName(symbols, 'run').calls, ['ns.Thing.poke', 'C.Ctor']);
+  assert.equal(byName(symbols, 't').typeName, 'ns.Thing');
+  assert.deepEqual(byName(symbols, 'list'), { ...byName(symbols, 'list'), typeName: 'ns.Thing', many: true });
+});
+
+test('a loop head and a catch parameter are locals that hide the typed name they shadow', () => {
+  const { symbols } = parse(`
+    import { Store, Cache } from './store'
+    const store = new Store()
+    export function f(caches: Cache[]) { for (const store of caches) store.get(); store.put() }
+    export function g(o: Record<string, Cache>) { for (const store in o) store.get() }
+    export function h(pairs: [string, Cache][]) { for (const [, store] of pairs) store.get() }
+    export function i(xs: Cache[]) { for (store of xs) store.get() }
+    export function c(x: unknown) {
+      try { throw x } catch (store) { store.get() }
+      try { throw x } catch ({ store }) { store.get() }
+      try { throw x } catch (store: unknown) { store.get() }
+      store.get()
+    }
+  `);
+  // The loop variable is the loop's; after it the name is the module's again.
+  assert.deepEqual(byName(symbols, 'f').calls, ['Store.put']);
+  assert.deepEqual(byName(symbols, 'g').calls, []);
+  assert.deepEqual(byName(symbols, 'h').calls, []);
+  assert.deepEqual(byName(symbols, 'i').calls, []);
+  assert.deepEqual(byName(symbols, 'c').calls, ['Store.get']);
+});
+
+test('a type parameter is not a written class type', () => {
+  // `Box<Item>` beside `import { Item }`: every `: Item` inside the class is
+  // the parameter, which stands for whatever the caller supplies. The value
+  // `Item` is still the import — TypeScript keeps the two namespaces apart.
+  const { symbols } = parse(`
+    import { Item } from './item'
+    export class Box<Item> {
+      item!: Item
+      items: Item[] = []
+      more: Array<Item>
+      constructor(private first: Item) {}
+      run() { this.item.go(); this.first.go(); Item.create() }
+      every<Key>(k: Key, i: Item) { k.go(); i.go() }
+    }
+    export function each<Item>(x: Item) { x.go?.() }
+    export const map = <Item,>(x: Item) => x.go()
+    export function outer(x: Item) { const inner = <Item,>(y: Item) => y.go(); x.go() }
+    export interface Shape<Item> { item: Item }
+  `);
+  const item = byName(symbols, 'item');
+  assert.equal(item.typeName, undefined);
+  assert.deepEqual(byName(symbols, 'items'), { ...byName(symbols, 'items'), many: true });
+  assert.equal(byName(symbols, 'items').typeName, undefined);
+  assert.equal(byName(symbols, 'more').typeName, undefined);
+  assert.deepEqual(byName(symbols, 'run').calls, ['Item.create']);
+  assert.deepEqual(byName(symbols, 'every').calls, []);
+  assert.deepEqual(byName(symbols, 'each').calls, []);
+  assert.deepEqual(byName(symbols, 'map').calls, []);
+  // A `<T>` is in force in the function that declares it, not around it.
+  assert.deepEqual(byName(symbols, 'outer').calls, ['Item.go']);
+  assert.equal(symbols.find((s) => s.owner === 'Shape' && s.name === 'item')?.typeName, undefined);
+});

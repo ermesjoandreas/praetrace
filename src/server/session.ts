@@ -170,6 +170,12 @@ export interface Session {
   /** The last suggest run that produced names. Null until one does. */
   lastSuggest(): SuggestResult | null;
   /**
+   * Whether a suggest run is in flight. The page could not ask this before,
+   * so a tab that lost the held fetch — a reload, a second window — showed
+   * "Suggesting…" until it was reloaded, or nothing while money was being spent.
+   */
+  suggestRunning(): boolean;
+  /**
    * Ask a model what the unnamed groups are called, or refuse: one press, one
    * subprocess, so null while a run is in flight. Awaited rather than reported
    * later, unlike explain — a single call fits inside a held fetch, and the
@@ -429,6 +435,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     },
 
     lastSuggest: () => lastSuggest,
+    suggestRunning: () => suggesting,
 
     suggest(targets, named) {
       if (suggesting) return null;

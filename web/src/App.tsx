@@ -58,6 +58,7 @@ import {
   type SymbolLinks,
   type GroupSuggestion,
   type LanguageReport,
+  type OrphanGroup,
   type SearchHit,
   type ViewGraph,
   type ViewResponse,
@@ -76,7 +77,7 @@ import { Repository } from './Repository';
 import { findCommit, relativeTime } from './GitGraph';
 import { SourceControl } from './SourceControl';
 import { ContextMenu } from './ContextMenu';
-import { frameClusters, NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds } from './layout';
+import { frameClusters, keepLayout, NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds, type Rect } from './layout';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
 
@@ -101,7 +102,15 @@ function edgeParam(calls: boolean, associates: boolean): string | null {
 const NO_SUGGESTIONS: ReadonlyMap<string, Suggestion> = new Map();
 
 /** How often to ask a run in flight whether it has finished. */
-const EXPLAIN_POLL_MS = 3000;
+const RUN_POLL_MS = 3000;
+
+/**
+ * Above this many boxes the page itself is what is slow: dagre and the React
+ * Flow mount both run on the main thread, and at depth 2 on a coupled project
+ * that is two seconds with nothing on screen to say why. The server answered
+ * in three milliseconds. So the page says so, with the way back beside it.
+ */
+const MANY_BOXES = 150;
 
 /**
  * What one followed symbol reaches, when that is known. A symbol the graph has
@@ -165,6 +174,15 @@ export function App() {
   const [search, setSearch] = useState(() => window.location.search);
   const [data, setData] = useState<ViewResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The URL asks for a view the server refused — a focus or scope the graph
+   * has not got, a sha that is not a commit. `data` still holds the previous
+   * view, because the chrome around the canvas reads from it and has to stay
+   * up so there is a way out; the canvas itself goes blank, because drawing
+   * the previous graph under a URL that names something else is the silent
+   * fallback the server just stopped making.
+   */
+  const [viewMissing, setViewMissing] = useState(false);
   const [live, setLive] = useState(false);
   /** Bumped to refetch the current view without changing the URL. */
   const [reloadToken, setReloadToken] = useState(0);
@@ -303,8 +321,12 @@ export function App() {
    * exactly when someone is deciding whether to spend it again.
    */
   const [lastRun, setLastRun] = useState<{ costUsd: number; ms: number } | null>(null);
-  /** A press that never became a run — no ids the graph knows, or no server. */
-  const [explainError, setExplainError] = useState<string | null>(null);
+  /**
+   * A press that never became a run. `refused` is the server declining to
+   * spend: every id already had a current reading, or none is in the graph —
+   * no money moved, so it is not worded as a failure. `failed` is no server.
+   */
+  const [explainError, setExplainError] = useState<{ reason: ExplainFailure | 'refused'; detail: string } | null>(null);
 
   const takeRun = useCallback((next: ExplainRun | null) => {
     setRun(next);
@@ -330,6 +352,28 @@ export function App() {
   const [agentLooking, setAgentLooking] = useState<string[]>([]);
   const flow = useReactFlow();
   const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
+  /**
+   * Stored names that match no group the graph finds now. Listed rather than
+   * lost: three committed names were never shown anywhere before this, and
+   * the only way to learn a name had gone was to open groups.json.
+   */
+  const [orphans, setOrphans] = useState<OrphanGroup[]>([]);
+  /**
+   * Which project and commit the clusters on hand were fetched for. The
+   * groups arrive from their own request, after the view, and dagre is what
+   * keeps a group's members together — so the layout that runs once those
+   * groups have arrived still counts as the view's first. Anything after it
+   * keeps every box where it stands. Compared with the view rather than reset
+   * with it: the clusters of one view are the project's, and are usually
+   * right for the next.
+   */
+  const [clustersFor, setClustersFor] = useState<string | null>(null);
+  /**
+   * Bumped by View › Re-layout, the one gesture other than opening a view that
+   * runs dagre. Everything else — a save, a new file, a new import — keeps
+   * every box where it stands and puts the new one beside its neighbour.
+   */
+  const [relayoutToken, setRelayoutToken] = useState(0);
   /**
    * Bumped when the server says groups.json changed under it — the agent named
    * a category through MCP, or another tab did. Its own counter rather than
@@ -383,16 +427,22 @@ export function App() {
         specRef.current = JSON.stringify(result.view.spec);
         setData(result);
         setError(null);
+        setViewMissing(false);
         setRevision((n) => n + 1);
       },
       (cause: unknown) => {
         if (cancelled) return;
         const message = cause instanceof Error ? cause.message : String(cause);
-        // The one 404 a view can answer is "no such commit", and the chip with
-        // the way out stays on screen, so the banner only has to say which.
+        // A 404 is the server refusing to draw what the URL asked for — a
+        // commit it has not got, or a focus or scope the graph has never
+        // heard of — and never the root view under that name. The banner
+        // carries the server's own words for a file or directory. A commit is
+        // reworded because the chip with the way out stays on screen for it,
+        // so the banner says which.
         const wanted = new URLSearchParams(search).get('at');
+        setViewMissing(true);
         setError(
-          wanted !== null && message.includes('404')
+          wanted !== null && /404|commit/.test(message)
             ? `No commit ${wanted.slice(0, 7)} in this repository`
             : message,
         );
@@ -402,6 +452,30 @@ export function App() {
       cancelled = true;
     };
   }, [search, reloadToken]);
+
+  /**
+   * A page opened straight onto a URL the server refuses has no view at all,
+   * and everything around the canvas — the left bar, the breadcrumb, the
+   * counts — reads from one. The root view stands the chrome up so there is a
+   * project on screen and a crumb to click; the canvas stays blank under the
+   * banner, because the root is not what the URL asked for.
+   */
+  useEffect(() => {
+    if (!viewMissing || data !== null) return;
+    let cancelled = false;
+    fetchView('').then(
+      (result) => {
+        if (cancelled) return;
+        coveredRef.current = new Set(result.view.nodes.flatMap((node) => node.files));
+        specRef.current = JSON.stringify(result.view.spec);
+        setData(result);
+      },
+      () => undefined,
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMissing, data]);
 
   useEffect(() => {
     let socket: WebSocket | null = null;
@@ -622,7 +696,12 @@ export function App() {
 
   const decide = useCallback(
     (group: GroupSuggestion, name: string, state: 'accepted' | 'rejected') => {
-      decideCluster(group.files, name, state).then(
+      // Both ids, so a rename of a group whose members drifted replaces the
+      // entry it was recorded under rather than appending a second one.
+      decideCluster(group.files, name, state, {
+        id: group.id,
+        ...(group.storedId === undefined ? {} : { storedId: group.storedId }),
+      }).then(
         () => {
           setRevision((n) => n + 1);
           // A decision is what a guess was waiting for, and either way it is
@@ -658,8 +737,12 @@ export function App() {
    * knows which.
    */
   const editGroup = useCallback((body: unknown) => {
-    groupAction(body).then(setClusters, (cause: unknown) =>
-      setError(cause instanceof Error ? cause.message : String(cause)),
+    groupAction(body).then(
+      (next) => {
+        setClusters(next.clusters);
+        setOrphans(next.orphans);
+      },
+      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
     );
   }, []);
 
@@ -690,7 +773,8 @@ export function App() {
     (name: string) => {
       groupAction({ action: 'create', name, files: selection.files }).then(
         (next) => {
-          setClusters(next);
+          setClusters(next.clusters);
+          setOrphans(next.orphans);
           setCreating(false);
         },
         (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
@@ -707,6 +791,13 @@ export function App() {
   const showAssoc = view?.spec.filter.edgeKinds.includes('associates') ?? false;
   const onlyChanged = view?.spec.filter.onlyChanged ?? false;
   /**
+   * Tests, fixtures and stories left out. Carried through every navigation
+   * the way "changes only" is: it says what is worth drawing wherever you
+   * are, and a click that quietly brought eighty test files back would be
+   * answering a question nobody asked.
+   */
+  const hideTests = view?.spec.filter.hideTests ?? false;
+  /**
    * The commit on screen, or null for now. Threaded through every navigation
    * the way the calls and changed flags are: a helper that rebuilt the URL
    * without it would snap the user back to the present on the first click.
@@ -716,9 +807,13 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
+    const root = data?.root ?? null;
     fetchClusters(at).then(
       (found) => {
-        if (!cancelled) setClusters(found);
+        if (cancelled) return;
+        setClusters(found.clusters);
+        setOrphans(found.orphans);
+        setClustersFor(`${root ?? ''}\n${at ?? ''}`);
       },
       () => undefined,
     );
@@ -733,10 +828,13 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     fetchSuggestions().then(
-      (result) => {
+      ({ result, running }) => {
         if (cancelled) return;
         setSuggestions(new Map(result?.ok ? result.suggestions.map((s) => [s.id, s]) : []));
         setSuggestCost(result?.ok ? { costUsd: result.costUsd, ms: result.ms } : null);
+        // A run another tab started, or this one before a reload, is still
+        // spending; the section says so, and the poll below sees it end.
+        setSuggesting(running);
       },
       () => undefined,
     );
@@ -744,6 +842,32 @@ export function App() {
       cancelled = true;
     };
   }, [data?.root]);
+
+  /**
+   * While a run is in flight, ask every few seconds whether it has ended. The
+   * fetch that started it is the first to hear, but only if this page holds
+   * it: a run seen from a reload or a second tab has no fetch to answer, and
+   * one run sat on "Suggesting…" until the page was reloaded because of that.
+   */
+  useEffect(() => {
+    if (!suggesting) return;
+    const timer = window.setInterval(() => {
+      fetchSuggestions().then(
+        ({ result, running }) => {
+          if (running) return;
+          setSuggesting(false);
+          if (result?.ok) {
+            setSuggestions(new Map(result.suggestions.map((s) => [s.id, s])));
+            setSuggestCost({ costUsd: result.costUsd, ms: result.ms });
+          } else if (result !== null) {
+            setSuggestError(result.detail === '' ? result.reason : result.detail);
+          }
+        },
+        () => undefined,
+      );
+    }, RUN_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [suggesting]);
 
   /** How many categories a press would name. Counted from what is on screen. */
   const unnamed = useMemo(
@@ -958,12 +1082,19 @@ export function App() {
     const uses = found.reduce((total, entry) => total + entry.uses.length, 0);
     const usedBy = found.reduce((total, entry) => total + entry.usedBy.length, 0);
     const only = found.length === 1 ? found[0] : undefined;
+    // A method or a field is reached through a receiver, and a receiver whose
+    // type is not written down is not followed — so its "in" count is what is
+    // known, never what there is, and the chip must not say "0 in" as if the
+    // graph had looked everywhere. The graph's own sentence about that rides
+    // along, for the tooltip.
+    const partial = found.find((entry) => entry.coverage === 'partial') ?? null;
     return {
       settled,
       uses,
       usedBy,
       total: uses + usedBy,
       label: only === undefined ? ids.length + ' symbols' : only.name,
+      partial: partial === null ? null : partial.coverageNote,
       found,
       gone,
     };
@@ -1017,7 +1148,7 @@ export function App() {
           if (cancelled) return;
           setExplanations(new Map(summary.explanations.map((entry) => [entry.id, entry])));
           takeRun(summary.run);
-          if (summary.run?.state === 'running') timer = window.setTimeout(ask, EXPLAIN_POLL_MS);
+          if (summary.run?.state === 'running') timer = window.setTimeout(ask, RUN_POLL_MS);
         },
         // Leave on screen what is on screen: a poll that did not arrive is not
         // an answer that changed, and blanking the panel would claim it was.
@@ -1036,15 +1167,29 @@ export function App() {
    * Spend the user's quota, on exactly what the list already holds. Nothing is
    * ever explained automatically; this only ever happens on a press.
    */
-  const explainFollowed = useCallback(() => {
-    if (explainIds.length === 0) return;
-    setExplainError(null);
-    setStreamed('');
-    requestExplanations(explainIds).then(
-      (result) => takeRun(result.run),
-      (cause: unknown) => setExplainError(cause instanceof Error ? cause.message : String(cause)),
-    );
-  }, [explainIds, takeRun]);
+  const explainFollowed = useCallback(
+    (force: boolean) => {
+      // Only what has no current reading, unless told otherwise: a plain press
+      // used to buy a second reading of a symbol the panel already called
+      // current, at the same price as the first. The server skips those too;
+      // not sending them is what keeps the run's own id list honest.
+      const ids = force
+        ? explainIds
+        : explainIds.filter((id) => explanations.get(id)?.state !== 'current');
+      if (ids.length === 0) return;
+      setExplainError(null);
+      setStreamed('');
+      requestExplanations(ids, force).then(
+        (result) => {
+          if (result.refused !== null) setExplainError({ reason: 'refused', detail: result.refused });
+          takeRun(result.run);
+        },
+        (cause: unknown) =>
+          setExplainError({ reason: 'failed', detail: cause instanceof Error ? cause.message : String(cause) }),
+      );
+    },
+    [explainIds, explanations, takeRun],
+  );
 
   const cancelExplain = useCallback(() => {
     cancelExplanations().then(
@@ -1067,7 +1212,8 @@ export function App() {
           next.delete(id);
           return next;
         }),
-      (cause: unknown) => setExplainError(cause instanceof Error ? cause.message : String(cause)),
+      (cause: unknown) =>
+        setExplainError({ reason: 'failed', detail: cause instanceof Error ? cause.message : String(cause) }),
     );
   }, []);
 
@@ -1076,8 +1222,8 @@ export function App() {
    * reported the same way, in the server's own wording — the useful half of a
    * failure is always the detail, not the label.
    */
-  const explainFailure = useMemo(() => {
-    if (explainError !== null) return { reason: 'failed' as ExplainFailure, detail: explainError };
+  const explainFailure = useMemo((): { reason: ExplainFailure | 'refused'; detail: string } | null => {
+    if (explainError !== null) return explainError;
     if (run?.state !== 'failed') return null;
     return { reason: run.reason ?? ('failed' as ExplainFailure), detail: run.detail ?? '' };
   }, [explainError, run]);
@@ -1186,13 +1332,18 @@ export function App() {
 
   // Positions survive live updates: a box must not jump because the agent saved.
   const layoutRef = useRef<{
-    positions: Map<string, { x: number; y: number }>;
+    /** Where every box stands and how big it is, for placing the next one beside it. */
+    rects: Map<string, Rect>;
     clusters: ClusterBounds[];
     /** Everything the cached frames were drawn from. */
     clusterKey: string;
-    /** Only what dagre read to place the boxes. */
-    placementKey: string;
-  }>({ positions: new Map(), clusters: [], clusterKey: '', placementKey: '' });
+    /**
+     * Which view these positions belong to, and which run of dagre. A new
+     * value is a first layout and runs dagre; the same value keeps every box
+     * where it stands whatever else changed.
+     */
+    layoutKey: string;
+  }>({ rects: new Map(), clusters: [], clusterKey: '', layoutKey: '' });
 
   const { nodes, edges } = useMemo(() => {
     if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
@@ -1241,6 +1392,8 @@ export function App() {
         gitChanged: node.gitChanged,
         language: node.language,
         showLanguage: mixedProject,
+        test: node.test,
+        parseError: node.parseError,
         root: data?.root ?? '',
         following,
         related: relatedIds,
@@ -1277,44 +1430,53 @@ export function App() {
       // the same trap a group's colour and padding fell into: the cached bounds
       // come back and the growth never appears.
       .concat('#', [...expanded].sort().join(','));
-    // What dagre reads, and nothing more: which boxes, how tall, and which
-    // group each belongs to. A frame's colour, slack, lock or hand-placed
-    // geometry is left out on purpose — see below.
-    const placementKey = shown
-      .map((group) => `${group.id}~${group.files.join(',')}~${group.parent ?? ''}`)
-      .join('|')
-      .concat('#', [...expanded].sort().join(','));
     const previous = layoutRef.current;
 
-    // The groups arrive from their own request, after the first layout. Without
-    // comparing them too, that first cluster-less layout would be reused for
-    // ever and no frame would ever appear.
-    const samePlacement =
-      placementKey === previous.placementKey &&
-      boxes.length === previous.positions.size &&
-      boxes.every((box) => previous.positions.has(box.id));
-    const sameShape = samePlacement && shapeKey === previous.clusterKey;
+    // Mark, do not move. dagre has no memory, so running it again for a save
+    // that added one file placed every box afresh and the whole diagram
+    // shuffled — which is exactly what makes a change impossible to follow.
+    // It runs for a view's first layout and for an explicit Re-layout, and
+    // for nothing else. The first layout is the one that has the groups: they
+    // arrive from their own request, after the view, and dagre is what keeps
+    // a group's members together, so a layout without them does not count.
+    const clustersReady = clustersFor === `${data?.root ?? ''}\n${view.at ?? ''}`;
+    const layoutKey = `${data?.root ?? ''}\n${viewKey}\n${clustersReady ? 'grouped' : 'plain'}\n${relayoutToken}`;
+    const fresh = layoutKey !== previous.layoutKey;
 
-    const kept = boxes.map((box) => ({
-      ...box,
-      position: previous.positions.get(box.id) ?? box.position,
-    }));
+    // Every box already placed, at the same size it had.
+    const sameBoxes =
+      !fresh &&
+      boxes.length === previous.rects.size &&
+      boxes.every((box) => previous.rects.get(box.id)?.height === box.height);
+    const sameShape = sameBoxes && shapeKey === previous.clusterKey;
+
     // Only the contents changed: every box and frame stays exactly where it was.
     // Only a frame changed — a colour, a lock, a drag: every box stays, and the
     // frames are redrawn around where the boxes already are. Running dagre
     // again for that moved every box, and a frame locked to where it stood was
     // left standing where the boxes used to be.
-    const laid = sameShape
-      ? { nodes: kept, clusters: previous.clusters }
-      : samePlacement
-        ? { nodes: kept, clusters: frameClusters(kept, shown) }
-        : layoutNodes(boxes, builtEdges, shown);
+    // A box came or went, or grew: the ones that were there keep their place,
+    // the new one goes beside its most connected neighbour, and the frames
+    // are redrawn around where everything now is.
+    const laid = fresh
+      ? layoutNodes(boxes, builtEdges, shown)
+      : sameShape
+        ? { nodes: keepLayout(previous.rects, boxes, []), clusters: previous.clusters }
+        : (() => {
+            const kept = keepLayout(previous.rects, boxes, view.edges);
+            return { nodes: kept, clusters: frameClusters(kept, shown) };
+          })();
 
     layoutRef.current = {
-      positions: new Map(laid.nodes.map((box) => [box.id, box.position])),
+      rects: new Map(
+        laid.nodes.map((box) => [
+          box.id,
+          { x: box.position.x, y: box.position.y, width: box.width ?? NODE_WIDTH, height: box.height ?? 0 },
+        ]),
+      ),
       clusters: laid.clusters,
       clusterKey: shapeKey,
-      placementKey,
+      layoutKey,
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
@@ -1406,6 +1568,8 @@ export function App() {
     mixedProject,
     data?.root,
     clusters,
+    clustersFor,
+    relayoutToken,
     decide,
     editGroup,
     renameGroup,
@@ -1478,10 +1642,11 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, depth, showCalls, showAssoc, onlyChanged, at],
+    [navigate, depth, showCalls, showAssoc, onlyChanged, hideTests, at],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -1499,10 +1664,11 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, showCalls, showAssoc, onlyChanged, at],
+    [navigate, showCalls, showAssoc, onlyChanged, hideTests, at],
   );
 
   const changeDepth = useCallback(
@@ -1514,10 +1680,11 @@ export function App() {
       const edges = edgeParam(showCalls, showAssoc);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
+      if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [focus, navigate, showCalls, showAssoc, onlyChanged, at],
+    [focus, navigate, showCalls, showAssoc, onlyChanged, hideTests, at],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -1601,6 +1768,9 @@ export function App() {
       } else if (command && event.shiftKey && event.key.toLowerCase() === 'f') {
         event.preventDefault();
         fitRef.current?.();
+      } else if (command && event.shiftKey && event.key.toLowerCase() === 'l') {
+        event.preventDefault();
+        relayoutRef.current?.();
       } else if (event.key === 'Escape') {
         clearSelection();
         // The lens, and not the list. `reading` survives on purpose: a keystroke
@@ -1624,6 +1794,7 @@ export function App() {
 
   const openProjectRef = useRef<(() => void) | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
+  const relayoutRef = useRef<(() => void) | null>(null);
   const backToNowRef = useRef<(() => void) | null>(null);
 
   const openProject = useCallback(() => {
@@ -1636,6 +1807,14 @@ export function App() {
   // callbacks without tearing the listener down on every render.
   openProjectRef.current = openProject;
   fitRef.current = () => void flow.fitView({ padding: 0.15 });
+  /**
+   * Place everything afresh. The only way, other than opening a view, to
+   * make dagre run: every save since the first layout put its new boxes
+   * beside their neighbours and moved nothing, and after enough of them the
+   * diagram is worth tidying — on request, never on a save.
+   */
+  const relayout = useCallback(() => setRelayoutToken((n) => n + 1), []);
+  relayoutRef.current = relayout;
 
   const setFilter = useCallback(
     (key: string, value: string | null) => {
@@ -1649,7 +1828,7 @@ export function App() {
 
   const clearFilters = useCallback(() => {
     const params = new URLSearchParams(window.location.search);
-    for (const key of ['hide', 'only', 'kinds', 'since', 'changed']) params.delete(key);
+    for (const key of ['hide', 'only', 'kinds', 'since', 'changed', 'tests']) params.delete(key);
     navigate(params);
   }, [navigate]);
 
@@ -1706,7 +1885,23 @@ export function App() {
       ? { key: 'kinds', label: (params.get('kinds') ?? '').split(',').join(' + ') }
       : null,
     params.get('since') ? { key: 'since', label: `last ${params.get('since') ?? ''}` } : null,
+    // The count is the whole project's, from the view: the chip says what the
+    // filter took away, not what this directory happens to hold.
+    params.get('tests') === '0'
+      ? { key: 'tests', label: `${view?.hiddenTests ?? 0} tests hidden` }
+      : null,
   ].filter((chip): chip is { key: string; label: string } => chip !== null);
+
+  /**
+   * Too many boxes for the page to be quick about, and one hop fewer is the
+   * usual answer. The server is not the cost — it answered in milliseconds;
+   * the page laying out and mounting 287 boxes is — so the chip lives on the
+   * page and names the remedy rather than the symptom.
+   */
+  const manyBoxes =
+    view !== undefined && focus !== null && depth > 1 && view.nodes.length > MANY_BOXES
+      ? view.nodes.length
+      : null;
 
   const isFiltered = activeFilters.length > 0;
 
@@ -1776,7 +1971,9 @@ export function App() {
     onRename: renameGroup,
     onColor: (group, color) => editGroup({ action: 'update', id: addressOf(group), color }),
     onMembers: (group, files) => editGroup({ action: 'update', id: addressOf(group), files }),
-    onDelete: (group) => editGroup({ action: 'delete', id: addressOf(group) }),
+    // By stored id, because an orphan has no group to hand over — only the
+    // entry in groups.json it came from, which is also what a delete removes.
+    onDelete: (storedId) => editGroup({ action: 'delete', id: storedId }),
   };
 
   const menus: Menu[] = [
@@ -1886,6 +2083,13 @@ export function App() {
               ? { disabledBecause: 'A past commit has no working-tree changes' }
               : { run: toggleChanged }),
         },
+        {
+          // Tests are still in the graph and still on screen by default; this
+          // takes them off the canvas, and the status bar says how many.
+          label: 'Hide tests',
+          checked: hideTests,
+          run: () => setFilter('tests', hideTests ? null : '0'),
+        },
         { label: 'Clear filters', run: clearFilters },
         ...GIT_BASES.map(
           (base, index): MenuItem => ({
@@ -1900,6 +2104,15 @@ export function App() {
         { label: 'Zoom in', separatorBefore: true, run: () => void flow.zoomIn() },
         { label: 'Zoom out', run: () => void flow.zoomOut() },
         { label: 'Fit to screen', shortcut: '⇧⌘F', run: () => void flow.fitView({ padding: 0.15 }) },
+        {
+          // A save never moves a box; this is the one thing that does, and it
+          // is asked for by name.
+          label: 'Re-layout',
+          shortcut: '⇧⌘L',
+          ...(view === undefined || view.nodes.length === 0
+            ? { disabledBecause: 'Nothing on the canvas to lay out' }
+            : { run: relayout }),
+        },
       ],
     },
     {
@@ -2080,20 +2293,43 @@ export function App() {
         {following.size > 0 && (
           <button
             type="button"
-            className={reach.total === 0 && reach.settled ? 'symbol-chip symbol-chip-empty' : 'symbol-chip'}
+            // The grey "nothing links to this" reading is a claim, and the
+            // graph may only make it where it looked everywhere: a member's
+            // zero is unknown, not none, and keeps the accent.
+            className={
+              reach.total === 0 && reach.settled && reach.partial === null
+                ? 'symbol-chip symbol-chip-empty'
+                : 'symbol-chip'
+            }
             onClick={() => setFollowing(new Set())}
             title={
               !reach.settled
                 ? 'Looking up what these are connected to'
-                : reach.total === 0
-                  ? 'Nothing in this project references them, and nothing they reference resolved. Method calls in particular are under-reported on purpose — see CLAUDE.md.'
-                  : 'Click to stop following'
+                : reach.partial !== null
+                  ? `${reach.partial} Click to stop following.`
+                  : reach.total === 0
+                    ? 'Nothing in this project references them, and nothing they reference resolved.'
+                    : 'Click to stop following'
             }
           >
             {!reach.settled
               ? 'following…'
-              : `${reach.label} — ${reach.usedBy} in, ${reach.uses} out`}
+              : `${reach.label} — ${reach.usedBy}${reach.partial === null ? '' : ' known'} in, ${reach.uses} out`}
             <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+        )}
+
+        {/* Too many boxes, and the way back. Only at depth: a scope above
+            forty files is already drawn as directories. */}
+        {manyBoxes !== null && (
+          <button
+            type="button"
+            className="depth-chip"
+            onClick={() => changeDepth(1)}
+            title={`${manyBoxes} boxes take the page seconds to lay out and mount — the server answered at once. Click for depth 1.`}
+          >
+            <i className="codicon codicon-warning" aria-hidden="true" />
+            {manyBoxes} boxes — depth 1 is quicker
           </button>
         )}
 
@@ -2169,7 +2405,7 @@ export function App() {
         </button>
       </nav>
 
-      {searchOpen && <SearchPalette onPick={handlePick} onClose={() => setSearchOpen(false)} />}
+      {searchOpen && <SearchPalette at={at} onPick={handlePick} onClose={() => setSearchOpen(false)} />}
 
       {contextAt !== null && (
         <ContextMenu
@@ -2198,6 +2434,9 @@ export function App() {
               <Repository
                 repo={repo}
                 boxes={view?.nodes.length ?? 0}
+                // The commit's own count: /api/repo counts the working tree,
+                // and "Files 1128" beside a frozen "712 files" was that.
+                frozen={view !== undefined && view.at !== null ? { at: view.at, files: view.fileCount } : null}
                 onSwitchProject={handleSwitchProject}
                 onFetched={handleFetched}
                 onHookInstalled={handleHookInstalled}
@@ -2221,6 +2460,7 @@ export function App() {
                 guesses, and a guess stays on this page until accepted. */}
             <Categories
               groups={clusters}
+              orphans={orphans}
               onDecide={decide}
               groupEditor={groupEditor}
               onSelect={setSelected}
@@ -2270,8 +2510,11 @@ export function App() {
           // slice, so fitView fits the old graph and the new one arrives with no
           // refit at all. A live update keeps the same spec, so the camera holds.
           key={viewKey}
-          nodes={nodes}
-          edges={edges}
+          // Blank under a URL the server refused: the previous graph drawn
+          // there would be the root view under another name, which is the
+          // silent fallback the 404 exists to stop.
+          nodes={viewMissing ? [] : nodes}
+          edges={viewMissing ? [] : edges}
           nodeTypes={nodeTypes}
           onPaneContextMenu={(event) => openContext(event as MouseEvent, null)}
           onNodeContextMenu={openContext}
@@ -2359,6 +2602,9 @@ export function App() {
         }
         languages={languageSummary}
         unreadable={unreadableReport}
+        hiddenTests={hideTests ? (view?.hiddenTests ?? 0) : 0}
+        onShowTests={() => setFilter('tests', null)}
+        parseErrors={view?.parseErrors ?? 0}
         agentLast={agentCalls[0] ?? null}
         agentTotal={agentCalls.length}
       />

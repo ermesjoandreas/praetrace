@@ -179,6 +179,177 @@ export function layoutNodes<T extends Node>(
   return { nodes: placed, clusters: frameClusters(placed, clusters) };
 }
 
+/** A box where it stands: React Flow's top-left corner and the size dagre was given. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** An edge as the view reports it, with the weight the aggregated ones carry. */
+export interface Link {
+  from: string;
+  to: string;
+  weight: number;
+}
+
+/**
+ * The grid a new box is placed on, and the gap it keeps from its neighbour.
+ * Also how far to the right of the neighbour to look before giving up and
+ * going below it: past four boxes' worth the new one is no longer beside
+ * anything.
+ */
+export const GRID = 40;
+const REACH = 4 * (NODE_WIDTH + GRID);
+/** Two boxes closer than this read as touching. */
+const CLEARANCE = 20;
+
+const snap = (value: number): number => Math.round(value / GRID) * GRID;
+
+/**
+ * Mark, do not move. A save that adds a file used to run dagre again, and dagre
+ * has no memory: every box was placed afresh and the whole diagram shuffled for
+ * one new box. So the boxes that were there keep the position they had, and
+ * each new one is put beside the box it is most connected to — to its right,
+ * in the first free slot on a 40px grid, and below it when the right is full.
+ * A box connected to nothing goes on a new row under the diagram.
+ *
+ * A box that changed height — expanded to show every member, or folded back —
+ * stays put too, and the boxes under it in its column move by the difference,
+ * or the taller box would cover its neighbour. That is the one case in which
+ * an existing box moves, and it moves by exactly what the user asked for.
+ *
+ * Pure: the previous rectangles come in, the new positions go out, and nothing
+ * here knows about React Flow.
+ */
+export function keepLayout<T extends { id: string; width?: number; height?: number }>(
+  previous: ReadonlyMap<string, Rect>,
+  boxes: readonly T[],
+  links: readonly Link[],
+): (T & { position: { x: number; y: number } })[] {
+  const placed = new Map<string, Rect>();
+  const arriving: T[] = [];
+
+  for (const box of boxes) {
+    const was = previous.get(box.id);
+    if (was === undefined) {
+      arriving.push(box);
+      continue;
+    }
+    placed.set(box.id, {
+      x: was.x,
+      y: was.y,
+      width: box.width ?? NODE_WIDTH,
+      height: box.height ?? DEFAULT_HEIGHT,
+    });
+  }
+
+  // Growth pushes the column below it down; shrinking pulls it back up by the
+  // same amount, so a fold undoes exactly what the expand did.
+  for (const [id, rect] of placed) {
+    const was = previous.get(id);
+    if (was === undefined) continue;
+    const delta = rect.height - was.height;
+    if (delta === 0) continue;
+    for (const [otherId, other] of placed) {
+      if (otherId === id || other.y <= rect.y) continue;
+      if (other.x < rect.x + rect.width && rect.x < other.x + other.width) other.y += delta;
+    }
+  }
+
+  // Where a new row starts, fixed before anything is added so unconnected
+  // boxes line up along it instead of stacking under one another.
+  let floor = -Infinity;
+  let left = Infinity;
+  for (const rect of placed.values()) {
+    floor = Math.max(floor, rect.y + rect.height);
+    left = Math.min(left, rect.x);
+  }
+  if (!Number.isFinite(floor)) {
+    floor = 0;
+    left = 0;
+  }
+  const newRow = { x: snap(left), y: snap(floor + GRID) };
+
+  const free = (candidate: Rect): boolean => {
+    for (const other of placed.values()) {
+      const apart =
+        candidate.x + candidate.width + CLEARANCE <= other.x ||
+        other.x + other.width + CLEARANCE <= candidate.x ||
+        candidate.y + candidate.height + CLEARANCE <= other.y ||
+        other.y + other.height + CLEARANCE <= candidate.y;
+      if (!apart) return false;
+    }
+    return true;
+  };
+
+  const slotBeside = (neighbour: Rect, width: number, height: number): Rect => {
+    // To the right first, along the neighbour's own row.
+    const startX = snap(neighbour.x + neighbour.width + GRID);
+    const rowY = snap(neighbour.y);
+    for (let x = startX; x <= startX + REACH; x += GRID) {
+      const candidate = { x, y: rowY, width, height };
+      if (free(candidate)) return candidate;
+    }
+    // Then below it. Under the whole diagram is always free, so this ends.
+    const columnX = snap(neighbour.x);
+    for (let y = snap(neighbour.y + neighbour.height + GRID); ; y += GRID) {
+      const candidate = { x: columnX, y, width, height };
+      if (free(candidate)) return candidate;
+    }
+  };
+
+  const slotOnNewRow = (width: number, height: number): Rect => {
+    for (let x = newRow.x; ; x += GRID) {
+      const candidate = { x, y: newRow.y, width, height };
+      if (free(candidate)) return candidate;
+    }
+  };
+
+  /** The placed box this one shares the most edges with, if any. */
+  const neighbourOf = (id: string): { id: string; weight: number } | null => {
+    const weights = new Map<string, number>();
+    for (const link of links) {
+      const other = link.from === id ? link.to : link.to === id ? link.from : null;
+      if (other === null || other === id || !placed.has(other)) continue;
+      weights.set(other, (weights.get(other) ?? 0) + link.weight);
+    }
+    let best: { id: string; weight: number } | null = null;
+    for (const [other, weight] of weights) {
+      if (best === null || weight > best.weight) best = { id: other, weight };
+    }
+    return best;
+  };
+
+  // Best-connected first, so a new box whose only link is to another new box
+  // finds that one already placed rather than landing on the bottom row.
+  while (arriving.length > 0) {
+    let pick = 0;
+    let best: { id: string; weight: number } | null = null;
+    for (let index = 0; index < arriving.length; index++) {
+      const candidate = arriving[index];
+      if (candidate === undefined) continue;
+      const neighbour = neighbourOf(candidate.id);
+      if (neighbour !== null && (best === null || neighbour.weight > best.weight)) {
+        pick = index;
+        best = neighbour;
+      }
+    }
+    const [box] = arriving.splice(pick, 1);
+    if (box === undefined) break;
+    const width = box.width ?? NODE_WIDTH;
+    const height = box.height ?? DEFAULT_HEIGHT;
+    const beside = best === null ? undefined : placed.get(best.id);
+    placed.set(box.id, beside === undefined ? slotOnNewRow(width, height) : slotBeside(beside, width, height));
+  }
+
+  return boxes.map((box) => {
+    const rect = placed.get(box.id);
+    return { ...box, position: rect === undefined ? { x: 0, y: 0 } : { x: rect.x, y: rect.y } };
+  });
+}
+
 /**
  * The frame each group occupies, drawn tight around where its members actually
  * landed — not dagre's own parent box, which spans every rank its children

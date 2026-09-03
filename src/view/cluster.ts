@@ -1,4 +1,5 @@
 import type { Graph } from '../graph/types.js';
+import { isTestFile } from './tests.js';
 
 /**
  * Groups of files that lean on each other more than on anything else.
@@ -11,7 +12,15 @@ import type { Graph } from '../graph/types.js';
  * The method is label propagation — each file repeatedly adopts whichever label
  * is heaviest among its neighbours. It is near-linear, needs no tuning, and is
  * made deterministic here by fixing the visiting order and breaking ties on the
- * lowest path, so the same graph always yields the same groups.
+ * lowest path, so the same graph always yields the same groups — the test
+ * beside this file feeds it the same graph twice, once with every node and
+ * edge in reverse order, and expects the same answer.
+ *
+ * Tests are left out, and so are the edges into them. A suite imports
+ * everything it exercises, which is the opposite of belonging: express drew a
+ * "Benchmark suite" of 131 files, 82 of them tests, and TanStack's one heavy
+ * edge was query-core → query-test-utils, all of it from __tests__. The tests
+ * stay in the graph and on the screen; they just do not get a vote.
  */
 export interface Cluster {
   /**
@@ -22,7 +31,13 @@ export interface Cluster {
    */
   id: string;
   files: string[];
-  /** Share of the group's edges that stay inside it, 0..1. */
+  /**
+   * Share of the group's edges that stay inside it, 0..1, each edge counted
+   * once. It used to be counted from both ends, which made every group look
+   * tighter than it was — a triangle with one edge out read 86%, and a
+   * reviewer counting the edges by hand got 75% and could not reproduce the
+   * figure. The number now means what the tooltip says it means.
+   */
   cohesion: number;
   /**
    * Groups found inside this one by running the same clustering on just its
@@ -33,7 +48,12 @@ export interface Cluster {
 
 /** Below this, a "group" is just a couple of files that happen to touch. */
 const MIN_SIZE = 3;
-const MIN_COHESION = 0.5;
+/**
+ * A third of a group's edges staying inside. The same cut as before the count
+ * was made honest — 0.5 under the doubled count is 1/3 under this one — so no
+ * group anyone has named disappeared for the sake of a truer percentage.
+ */
+const MIN_COHESION = 1 / 3;
 const MAX_ROUNDS = 20;
 
 /** Fewer members than this and there is nothing worth dividing. */
@@ -117,6 +137,9 @@ function cohesionOf(files: readonly string[], neighbours: ReadonlyMap<string, Ma
       else external += weight;
     }
   }
+  // The map is undirected, so an edge inside the group was seen from both of
+  // its ends and an edge leaving it from one. Halving puts them on one footing.
+  internal /= 2;
   const total = internal + external;
   return total === 0 ? 0 : internal / total;
 }
@@ -184,12 +207,17 @@ export function identify(files: readonly string[]): string {
   return `${files[0] ?? ''}~${files.length}`;
 }
 
-/** Direction says who depends on whom; belonging is mutual. */
+/**
+ * Direction says who depends on whom; belonging is mutual. Tests are not in
+ * the map at all, and an edge touching one is dropped with them — from both
+ * ends, or a source file would still count its tests as neighbours and read
+ * as leaking edges to files that are not there.
+ */
 function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
   const neighbours = new Map<string, Map<string, number>>();
 
   for (const node of graph.nodes.values()) {
-    if (node.kind === 'file') neighbours.set(node.filePath, new Map());
+    if (node.kind === 'file' && !isTestFile(node.filePath)) neighbours.set(node.filePath, new Map());
   }
 
   for (const edge of graph.edges) {
@@ -197,6 +225,7 @@ function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
     const from = graph.nodes.get(edge.from)?.filePath;
     const to = graph.nodes.get(edge.to)?.filePath;
     if (!from || !to || from === to) continue;
+    if (!neighbours.has(from) || !neighbours.has(to)) continue;
 
     // Repeated edges between the same pair are a stronger tie, not a duplicate.
     bump(neighbours, from, to);
@@ -226,23 +255,11 @@ function assemble(
   }
 
   return [...grouped.values()].map((members) => {
-    const inside = new Set(members);
-    let internal = 0;
-    let external = 0;
-
-    for (const member of members) {
-      for (const [neighbour, weight] of neighbours.get(member) ?? []) {
-        if (inside.has(neighbour)) internal += weight;
-        else external += weight;
-      }
-    }
-
-    const total = internal + external;
     const sorted = [...members].sort();
     return {
       id: identify(sorted),
       files: sorted,
-      cohesion: total === 0 ? 0 : internal / total,
+      cohesion: cohesionOf(sorted, neighbours),
       children: [],
     };
   });

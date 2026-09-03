@@ -34,6 +34,18 @@ export interface ExplainTarget {
    * sentence is not a stable thing to hash.
    */
   related: string[];
+  /**
+   * How much of `context` the graph can vouch for, in the graph's own words.
+   *
+   * A method's callers are only known when the call went through a receiver
+   * whose type was written down, so an empty list under a method means
+   * unknown, not none. The reading of cobra's `Command.Execute` said nothing
+   * depended on it — false in sixteen places — because the prompt let the
+   * model read an empty list as a fact. `describeSymbol` decides which it is;
+   * the prompt repeats its note beside the relations so the model cannot miss it.
+   */
+  coverage?: 'full' | 'partial';
+  coverageNote?: string;
 }
 
 export interface Explanation {
@@ -342,17 +354,31 @@ function deltaOf(line: string): string | null {
  * is the thing the reader can already do by opening the file. The relations are
  * passed in because they are the graph's own answer to "where does this sit",
  * and a model that has them reasons about position instead of guessing it.
+ *
+ * It also says what the graph cannot see. Static analysis tracks a call only
+ * when the receiver's type is written down, so an empty list under a method is
+ * not "nothing calls this" — and a model that is not told so will conclude
+ * exactly that, confidently, which is the one failure this project cares most
+ * about. Exported for the test beside this module: the prompt is the product,
+ * and a paid run is not the way to check its words.
  */
-function buildPrompt(targets: ExplainTarget[]): string {
+export function buildPrompt(targets: ExplainTarget[]): string {
   const blocks = targets.map((target, index) => {
     const context = target.context.length > 0 ? target.context.join('\n') : '(nothing in the graph touches it)';
+    // The graph's own note goes beside the list it qualifies, not only in the
+    // rules above: a caveat forty lines away from an empty list is one that
+    // gets forgotten by the time the list is read.
+    const coverage =
+      target.coverage === 'partial'
+        ? `relations (PARTIAL — ${target.coverageNote ?? 'an empty list means unknown, not none'}):`
+        : 'relations:';
     return [
       `--- target ${index + 1} of ${targets.length} ---`,
       `id: ${target.id}`,
       `kind: ${target.kind}`,
       `name: ${target.name}`,
       `file: ${target.filePath}`,
-      'relations:',
+      coverage,
       context,
       'source:',
       clip(target.source),
@@ -382,6 +408,16 @@ function buildPrompt(targets: ExplainTarget[]): string {
     '  read why it is here.',
     '- The relations are the graph’s own answer for what touches this. Reason from',
     '  them — they are the position you are being asked about.',
+    '- The graph has blind spots, and it says so. It was built by static analysis:',
+    '  a call is tracked only when the receiver’s type is written in the source, so',
+    '  a call through an untyped variable, a callback, an interface value or a',
+    '  dynamic lookup is invisible to it. A method’s or a field’s relations are',
+    '  marked PARTIAL for exactly this reason. Under a PARTIAL list, an empty',
+    '  "used by" means UNKNOWN, not none: say that callers are not tracked, and',
+    '  never conclude that nothing depends on it. A non-empty PARTIAL list is a',
+    '  lower bound, not the whole set. A list that is not marked PARTIAL — a',
+    '  top-level function, a class, an interface, a type, a file — is what the',
+    '  graph actually found, and may be read as such.',
     '- If the code does not tell you why it exists, say that plainly in a clause',
     '  rather than inventing a reason.',
     '- Plain prose. No markdown, no headings, no bullet lists, no code fences.',

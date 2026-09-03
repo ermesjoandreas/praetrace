@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 
-import type { ParsedSymbol, SymbolKind } from '../parser/types.js';
+import type { ImportBinding, ParsedSymbol, SymbolKind } from '../parser/types.js';
 import type { LanguageParse, LanguageSupport, ResolveContext, SyntaxNode } from './types.js';
 
 // The grammars are native CommonJS addons with no ESM entry point.
@@ -152,6 +152,156 @@ function modifiersOf(node: SyntaxNode): Pick<ParsedSymbol, 'visibility' | 'isSta
 }
 
 /**
+ * A type expression as a variable's declaration wrote it, or null where it
+ * names nothing a call could land on: a primitive, `var`, an array.
+ *
+ * `List<Item>` is List here, where `associationOf` makes it Item — a call on
+ * `items` is a call on the list, and the element is what the list holds.
+ */
+function writtenType(type: SyntaxNode | null): string | null {
+  if (!type || type.type === 'array_type') return null;
+  const name = typeNameOf(type);
+  return name === 'var' ? null : name;
+}
+
+/** The names a declaration's `<T, U extends Base>` introduces. */
+function typeParametersOf(declaration: SyntaxNode): Set<string> {
+  const names = new Set<string>();
+  for (const parameter of declaration.childForFieldName('type_parameters')?.namedChildren ?? []) {
+    const name = parameter.namedChildren[0]?.text;
+    if (parameter.type === 'type_parameter' && name !== undefined) names.add(name);
+  }
+  return names;
+}
+
+/**
+ * What a member's calls are read against: the type whose body it is in, so
+ * that `this.m()` and a bare `m()` it declares are its own operation, and the
+ * fields whose declared type says which class `field.m()` reaches.
+ */
+interface Enclosing {
+  owner: string;
+  /**
+   * Operations the type declares itself. A bare `m()` it does not declare may
+   * be inherited or an outer class's, and neither is guessed at.
+   */
+  methods: ReadonlySet<string>;
+  /** Field -> its written type, null where that names nothing to land on. */
+  fields: ReadonlyMap<string, string | null>;
+  /**
+   * The type's own `<T>`. A parameter declared `T item` is typed, but by a name
+   * that stands for whatever the caller supplies, and a project can declare a
+   * class called `Node` as easily as it can name a type parameter that.
+   */
+  typeParameters: ReadonlySet<string>;
+}
+
+/**
+ * Variable -> the type its declaration wrote, over one member.
+ *
+ * The enclosing type's fields first, then every parameter, local, loop
+ * variable, resource and pattern the member declares with a type. One table
+ * for the whole member rather than a scope chain, so a name declared twice is
+ * kept only if both declarations agree, and a name bound with no type written
+ * — a lambda's `it -> it.go()`, a `var`, a catch parameter that may be a union
+ * — refuses the name outright. An untyped receiver is a gap, not a guess.
+ */
+function typedNames(member: SyntaxNode, enclosing: Enclosing): Map<string, string | null> {
+  const typed = new Map(enclosing.fields);
+  // Every `<T>` in reach — the member's own and any a generic method inside an
+  // anonymous class declares — names whatever the caller supplies, never a class.
+  const generic = new Set(enclosing.typeParameters);
+  for (const parameter of member.descendantsOfType('type_parameter')) {
+    const name = parameter.namedChildren[0]?.text;
+    if (name !== undefined) generic.add(name);
+  }
+  const bind = (name: string | undefined, type: SyntaxNode | null | undefined): void => {
+    if (name === undefined) return;
+    const written = type === undefined ? null : writtenType(type);
+    const known = written !== null && generic.has(written) ? null : written;
+    if (!typed.has(name)) typed.set(name, known);
+    else if (typed.get(name) !== known) typed.set(name, null);
+  };
+
+  for (const node of member.descendantsOfType([
+    'formal_parameter',
+    'enhanced_for_statement',
+    'resource',
+    'instanceof_expression',
+  ])) {
+    const type = node.type === 'instanceof_expression' ? node.childForFieldName('right') : node.childForFieldName('type');
+    bind(node.childForFieldName('name')?.text, type);
+  }
+  for (const declaration of member.descendantsOfType('local_variable_declaration')) {
+    const type = declaration.childForFieldName('type');
+    for (const declarator of declaration.namedChildren) {
+      if (declarator.type === 'variable_declarator') bind(declarator.childForFieldName('name')?.text, type);
+    }
+  }
+  for (const lambda of member.descendantsOfType('lambda_expression')) {
+    const parameters = lambda.childForFieldName('parameters');
+    if (parameters?.type === 'identifier') bind(parameters.text, undefined);
+    else if (parameters?.type === 'inferred_parameters') {
+      for (const parameter of parameters.namedChildren) bind(parameter.text, undefined);
+    }
+  }
+  for (const node of member.descendantsOfType(['catch_formal_parameter', 'spread_parameter'])) {
+    const name =
+      node.childForFieldName('name') ?? node.descendantsOfType('variable_declarator')[0]?.childForFieldName('name');
+    bind(name?.text, undefined);
+  }
+
+  return typed;
+}
+
+/**
+ * The bodies under a node that belong to some other type: an anonymous class,
+ * `new Runnable() { … }`, and a class declared inside a block.
+ *
+ * `this` in one of them is that type's instance, a bare `run()` is its own
+ * before it is the outer type's, and a field it declares — or inherits from a
+ * supertype nothing here has read — shadows any outer name. So a call in one
+ * is read against that body's own declarations and nothing outside them:
+ * `out.beginObject()` on the `JsonWriter out` its `write` declares is kept,
+ * which is most of what gson's adapters do; `this.run()` is not the enclosing
+ * class calling itself, and a captured field is refused rather than guessed.
+ *
+ * A member type nested in a body is one too, but it is a symbol of its own and
+ * reaches `collectCalls` as claimed already.
+ */
+function innerBodies(node: SyntaxNode): SyntaxNode[] {
+  const bodies: SyntaxNode[] = [];
+  for (const created of node.descendantsOfType('object_creation_expression')) {
+    // The body carries no field name; it is the one child of its type, when present.
+    for (const child of created.namedChildren) if (child.type === 'class_body') bodies.push(child);
+  }
+  for (const declaration of node.descendantsOfType([...TYPE_KINDS.keys()])) {
+    // A node is among its own descendants, and its body is the one being read.
+    if (declaration.startIndex === node.startIndex) continue;
+    const body = declaration.childForFieldName('body');
+    if (body) bodies.push(body);
+  }
+  return bodies;
+}
+
+/** One inner body and what it declared; see `innerBodies`. */
+interface InnerBody {
+  body: SyntaxNode;
+  typed: ReadonlyMap<string, string | null>;
+}
+
+/** The innermost of the bodies holding a node, or null when it is in none. */
+function innermost(bodies: readonly InnerBody[], node: SyntaxNode): InnerBody | null {
+  let found: InnerBody | null = null;
+  for (const candidate of bodies) {
+    const { body } = candidate;
+    if (node.startIndex < body.startIndex || node.endIndex > body.endIndex) continue;
+    if (found === null || body.startIndex > found.body.startIndex) found = candidate;
+  }
+  return found;
+}
+
+/**
  * Every name invoked inside a symbol, with the subtrees that became symbols of
  * their own left out — a class must not claim what its methods and its nested
  * classes call, or every call would produce two edges and double the weight on
@@ -160,19 +310,71 @@ function modifiersOf(node: SyntaxNode): Pick<ParsedSymbol, 'visibility' | 'isSta
  * A qualified call contributes its *receiver*, not its method: `Helper.go()`
  * reaches the class Helper, and `go` alone could never resolve because members
  * stay out of the graph's name table on purpose.
+ *
+ * A call on a variable is the exception, and only when its type was written
+ * down: `this.m()` is `T.m` for the T whose body this is, and `store.save()`
+ * is `Store.save` when `store` was declared a Store — as a field, a parameter,
+ * or a local. That is the one form the graph admits into the member namespace.
+ * `cfg.load()` on a `cfg` nothing declared is left out rather than guessed, and
+ * so is any of these inside a body that is another type's; see `innerBodies`.
  */
-function collectCalls(node: SyntaxNode, exclude: readonly SyntaxNode[] = []): string[] {
+function collectCalls(
+  node: SyntaxNode,
+  exclude: readonly SyntaxNode[] = [],
+  enclosing: Enclosing | null = null,
+): string[] {
   const names = new Set<string>();
-  const inside = (candidate: SyntaxNode): boolean =>
-    exclude.some((skip) => candidate.startIndex >= skip.startIndex && candidate.endIndex <= skip.endIndex);
+  const within = (candidate: SyntaxNode, regions: readonly SyntaxNode[]): boolean =>
+    regions.some((region) => candidate.startIndex >= region.startIndex && candidate.endIndex <= region.endIndex);
+  const typed = enclosing === null ? null : typedNames(node, enclosing);
+  // What each inner body declared for itself, with the enclosing type's fields
+  // withheld and the member's own `<T>` still refused; see `innerBodies`.
+  const inner: InnerBody[] =
+    enclosing === null
+      ? []
+      : innerBodies(node).map((body) => ({
+          body,
+          typed: typedNames(body, {
+            ...enclosing,
+            fields: new Map(),
+            typeParameters: new Set([...enclosing.typeParameters, ...typeParametersOf(node)]),
+          }),
+        }));
 
   for (const call of node.descendantsOfType('method_invocation')) {
-    if (inside(call)) continue;
+    if (within(call, exclude)) continue;
     const receiver = receiverOf(call);
-    if (receiver) names.add(receiver);
+    if (receiver) {
+      names.add(receiver);
+      continue;
+    }
+    if (enclosing === null || typed === null) continue;
+
+    const method = call.childForFieldName('name')?.text;
+    if (method === undefined) continue;
+    const object = call.childForFieldName('object');
+    const own = innermost(inner, call);
+    if (own !== null) {
+      // Its own declaration first, then a parameter or local of the member,
+      // which it captures as the same variable. Never `this`, a bare name or a
+      // field: those are its own or a supertype's before they are the outer type's.
+      if (object?.type !== 'identifier') continue;
+      const type =
+        own.typed.has(object.text) ? own.typed.get(object.text)
+        : enclosing.fields.has(object.text) ? null
+        : typed.get(object.text);
+      if (type !== null && type !== undefined) names.add(`${type}.${method}`);
+    } else if (object === null) {
+      if (enclosing.methods.has(method)) names.add(`${enclosing.owner}.${method}`);
+    } else if (object.type === 'this') {
+      names.add(`${enclosing.owner}.${method}`);
+    } else if (object.type === 'identifier') {
+      const type = typed.get(object.text);
+      if (type !== null && type !== undefined) names.add(`${type}.${method}`);
+    }
   }
   for (const created of node.descendantsOfType('object_creation_expression')) {
-    if (inside(created)) continue;
+    if (within(created, exclude)) continue;
     const name = typeNameOf(created.childForFieldName('type'));
     if (name) names.add(name);
   }
@@ -218,10 +420,38 @@ interface Collected {
   packageName: string | null;
   /** Simple names a single-type import already binds, so the package cannot. */
   bound: Set<string>;
+  /**
+   * Each name the file can write bare, and the reference that binds it — a
+   * single-type import here, and the packages an unbound name could have come
+   * from once `extract` has expanded them. The graph reads a bare name from
+   * the file its binding resolves to and from nowhere else; without this it
+   * read every imported file's whole table, single-type imports first, and
+   * `Builder` in a package that declares one was drawn on the `Foo.Builder`
+   * nested in an import, because that file came first.
+   */
+  bindings: ImportBinding[];
+}
+
+/**
+ * A type body's entries, flat. An enum keeps its constants beside a wrapper
+ * holding its declarations, and both are members of the one type.
+ */
+function bodyEntries(body: SyntaxNode | null): SyntaxNode[] {
+  const entries: SyntaxNode[] = [];
+  for (const child of body?.namedChildren ?? []) {
+    if (child.type === 'enum_body_declarations') entries.push(...child.namedChildren);
+    else entries.push(child);
+  }
+  return entries;
 }
 
 /** One member of a type body, or nothing if the node is not a member. */
-function collectMember(member: SyntaxNode, owner: string, symbols: ParsedSymbol[]): SyntaxNode | null {
+function collectMember(
+  member: SyntaxNode,
+  enclosing: Enclosing,
+  symbols: ParsedSymbol[],
+): SyntaxNode | null {
+  const owner = enclosing.owner;
   const common = {
     owner,
     startLine: member.startPosition.row + 1,
@@ -235,7 +465,7 @@ function collectMember(member: SyntaxNode, owner: string, symbols: ParsedSymbol[
     // A constructor's name node is the type's own name, which is what a UML
     // operation compartment shows for it too.
     const name = member.childForFieldName('name')?.text ?? owner;
-    symbols.push({ ...common, name, kind: 'method', calls: collectCalls(member) });
+    symbols.push({ ...common, name, kind: 'method', calls: collectCalls(member, [], enclosing) });
     return member;
   }
 
@@ -249,7 +479,13 @@ function collectMember(member: SyntaxNode, owner: string, symbols: ParsedSymbol[
       const name = declarator.childForFieldName('name')?.text;
       // `int a, b;` is two fields sharing one type and one line range.
       if (name) {
-        symbols.push({ ...common, name, kind: 'field', calls: collectCalls(member), ...association });
+        symbols.push({
+          ...common,
+          name,
+          kind: 'field',
+          calls: collectCalls(member, [], enclosing),
+          ...association,
+        });
       }
     }
     return null;
@@ -259,7 +495,9 @@ function collectMember(member: SyntaxNode, owner: string, symbols: ParsedSymbol[
     const name = member.childForFieldName('name')?.text;
     // Constants are the enum's instances, so they are its attributes — static
     // and of its own type, which the diagram already knows from the owner.
-    if (name) symbols.push({ ...common, name, kind: 'field', calls: collectCalls(member), isStatic: true });
+    if (name) {
+      symbols.push({ ...common, name, kind: 'field', calls: collectCalls(member, [], enclosing), isStatic: true });
+    }
     return null;
   }
 
@@ -291,6 +529,35 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
     node.type === 'record_declaration'
       ? node.namedChildren.find((child) => child.type === 'formal_parameters')
       : undefined;
+
+  // What the members' calls are read against has to be known before the first
+  // member is read: `run()` at the top of the body is this type's own only if
+  // something further down declares it.
+  const typeParameters = typeParametersOf(node);
+  const methods = new Set<string>();
+  const fields = new Map<string, string | null>();
+  const fieldType = (type: SyntaxNode | null): string | null => {
+    const written = writtenType(type);
+    return written !== null && typeParameters.has(written) ? null : written;
+  };
+  for (const parameter of components?.namedChildren ?? []) {
+    const component = parameter.childForFieldName('name')?.text;
+    if (component) fields.set(component, fieldType(parameter.childForFieldName('type')));
+  }
+  const body = node.childForFieldName('body');
+  for (const entry of bodyEntries(body)) {
+    if (METHOD_NODES.has(entry.type)) {
+      methods.add(entry.childForFieldName('name')?.text ?? name);
+    } else if (entry.type === 'field_declaration' || entry.type === 'constant_declaration') {
+      const type = fieldType(entry.childForFieldName('type'));
+      for (const declarator of entry.namedChildren) {
+        const field = declarator.childForFieldName('name')?.text;
+        if (declarator.type === 'variable_declarator' && field) fields.set(field, type);
+      }
+    }
+  }
+  const enclosing: Enclosing = { owner: name, methods, fields, typeParameters };
+
   if (components) {
     for (const parameter of components.namedChildren) {
       const component = parameter.childForFieldName('name')?.text;
@@ -309,19 +576,14 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
     }
   }
 
-  const body = node.childForFieldName('body');
-  for (const child of body?.namedChildren ?? []) {
-    // An enum's constants and its declarations sit in separate wrappers.
-    const children = child.type === 'enum_body_declarations' ? child.namedChildren : [child];
-    for (const entry of children) {
-      if (TYPE_KINDS.has(entry.type)) {
-        nested.push(entry);
-        claimed.push(entry);
-        continue;
-      }
-      const taken = collectMember(entry, name, members);
-      if (taken) claimed.push(taken);
+  for (const entry of bodyEntries(body)) {
+    if (TYPE_KINDS.has(entry.type)) {
+      nested.push(entry);
+      claimed.push(entry);
+      continue;
     }
+    const taken = collectMember(entry, enclosing, members);
+    if (taken) claimed.push(taken);
   }
 
   const heritage = heritageOf(node);
@@ -332,7 +594,7 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
     endLine: node.endPosition.row + 1,
     extends: heritage.extends,
     implements: heritage.implements,
-    calls: collectCalls(node, claimed),
+    calls: collectCalls(node, claimed, enclosing),
     ...modifiersOf(node),
   });
   out.symbols.push(...members);
@@ -369,6 +631,10 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
     out.imports.push(reference.text);
     const simple = reference.text.slice(reference.text.lastIndexOf('.') + 1);
     out.bound.add(simple);
+    // `import q.Foo.Builder` binds Builder in Foo.java, which the resolver
+    // finds by reading the name right to left and the graph by the simple
+    // name, since a nested type is in its file's table under its own name.
+    out.bindings.push({ local: simple, specifier: reference.text, imported: simple });
     return;
   }
 
@@ -567,6 +833,7 @@ export const java: LanguageSupport = {
       symbols: [],
       packageName: null,
       bound: new Set(),
+      bindings: [],
     };
     for (const child of root.namedChildren) collectTopLevel(child, out);
 
@@ -575,13 +842,18 @@ export const java: LanguageSupport = {
     const packages = out.packageName === null ? out.wildcards : [out.packageName, ...out.wildcards];
     if (packages.length > 0) {
       for (const name of unboundNames(root, out)) {
-        references.add(packages.map((from) => `${from}.${name}`).join(CANDIDATES));
+        const specifier = packages.map((from) => `${from}.${name}`).join(CANDIDATES);
+        references.add(specifier);
+        // The binding carries the same candidates, so the graph reads the
+        // name from exactly the file the import edge went to.
+        out.bindings.push({ local: name, specifier, imported: name });
       }
     }
 
     return {
       imports: [...references],
       symbols: out.symbols,
+      bindings: out.bindings,
       ...(out.packageName === null ? {} : { moduleName: out.packageName }),
     };
   },

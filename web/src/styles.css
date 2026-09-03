@@ -370,7 +370,7 @@ main { display: flex; flex: 1; min-height: 0; }
 
 /* Chips. Following is a mode, and wears the accent like every other mode here;
    a filter is a count of what was left out, and wears the badge grey. */
-.symbol-chip, .filter-chip, .missed {
+.symbol-chip, .filter-chip, .missed, .depth-chip {
   display: inline-flex;
   align-items: center;
   gap: 2px;
@@ -396,6 +396,18 @@ main { display: flex; flex: 1; min-height: 0; }
   color: var(--vsc-git-modified);
 }
 .missed:hover { border-color: var(--vsc-git-modified); }
+
+/* Too many boxes for the page to place quickly. The badge above's shape, in
+   the warning colour: this is the page telling on itself, so not amber, which
+   is the file system's, and not blue, which is the agent's. The click is the
+   way out, and the chip says so in its own words. */
+.depth-chip {
+  gap: 4px;
+  padding: 0 6px 0 4px;
+  border: 1px solid color-mix(in srgb, var(--vsc-warning) 40%, transparent);
+  color: var(--vsc-warning);
+}
+.depth-chip:hover { border-color: var(--vsc-warning); }
 
 /* Which commit the diagram is frozen at. A filter chip, in the filter chips'
    badge grey: not the accent, which is the selection, and not the info blue,
@@ -545,11 +557,25 @@ main { display: flex; flex: 1; min-height: 0; }
   text-align: left;
 }
 
-/* What a box is written in: text, no badge and no colour of its own. Three
-   signals already compete on this surface — amber for just written, blue for
-   the agent just asked, and the git letter — and a fourth with any weight to
-   it would cost the three that are about right now. */
-.box-lang { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+/* What a box is written in, and whether it is a test: text, no badge and no
+   colour of its own. Three signals already compete on this surface — amber
+   for just written, blue for the agent just asked, and the git letter — and a
+   fourth with any weight to it would cost the three that are about right now. */
+.box-lang, .box-test { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+
+/* A file that would not fully parse. The warning colour on an icon, not a
+   tint: the parse is a fact about the file, and both tints on this surface
+   are about this minute. 16px inside the 18px title line, so HEADER_HEIGHT
+   holds — an inline icon would sit on the baseline and grow the line. */
+.box-warning {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--vsc-warning);
+}
 
 /* Inside the 18px title line, so 16px with no padding at all. */
 .box-open {
@@ -1053,7 +1079,7 @@ main { display: flex; flex: 1; min-height: 0; }
    A block title wears what a list heading wears in the detail panel: muted,
    small, bold — a heading inside a section, not a section. */
 .repo-block { padding-bottom: 4px; }
-.repo-block-title {
+.repo-block-title, .categories-orphans-title {
   margin: 0;
   height: var(--vsc-row-h);
   padding: 0 8px;
@@ -1512,6 +1538,25 @@ main { display: flex; flex: 1; min-height: 0; }
 .group-files .group-row > button { flex: 1; min-width: 0; }
 .group-files .group-row:hover > button { color: var(--vsc-fg); }
 
+/* A group found inside another sits one indent under it, and everything that
+   hangs off its row — the name being typed, a suggestion, the palette, its
+   files — one more, so the list reads as the outline the frames draw. The
+   li's own children only: a member row under a group being edited is a
+   .group-row too, and keeps the edge the rule above gave it. */
+li.group-nested > .group-row { padding-left: 24px; }
+li.group-nested > input { width: calc(100% - 32px); margin-left: 24px; }
+li.group-nested > .category-suggestion,
+li.group-nested > .group-palette { padding-left: 40px; }
+li.group-nested .group-files > button,
+li.group-nested .group-files .group-row > button { padding-left: 40px; }
+
+/* Names in groups.json that match nothing the graph finds now. A block under
+   the list, titled the way the repository panel titles one — the title's
+   rule is beside .repo-block-title. The name is a span, not a button: it
+   opens no editor, so it stays muted under the cursor and only the row
+   lights, for the delete that is the one thing to do with it. */
+.group-orphan .group-title:hover { color: var(--vsc-fg-muted); }
+
 /* --- the side bar (right) -------------------------------------------------- */
 
 .sidebar {
@@ -1617,7 +1662,10 @@ main { display: flex; flex: 1; min-height: 0; }
   white-space: nowrap;
 }
 
-.followed-none {
+/* Two sentences the graph says about itself: that nothing references this,
+   and — for a member, where it only saw the typed calls — that its lists are
+   the known ones. The same quiet prose; the words carry the difference. */
+.followed-none, .followed-coverage {
   margin: 0;
   padding: 2px 8px;
   color: var(--vsc-fg-muted);
@@ -1851,8 +1899,9 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .git-drop-hint { margin-left: auto; padding-left: 12px; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 .menu-item:hover:not(:disabled) .git-drop-hint { color: var(--vsc-fg-strong); }
 
-/* Source the tool cannot read: a gap rather than a fact, and still not an error. */
-.unread { color: var(--vsc-warning); }
+/* Source the tool cannot read, or could not fully parse: a gap rather than a
+   fact, and still not an error. */
+.unread, .parse-errors { color: var(--vsc-warning); }
 
 .counts, .langs { color: var(--vsc-fg-muted); }
 .langs { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }

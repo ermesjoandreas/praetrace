@@ -29,6 +29,7 @@ import { Section } from './Section';
 export function Repository({
   repo,
   boxes,
+  frozen,
   onSwitchProject,
   onFetched,
   onHookInstalled,
@@ -36,6 +37,14 @@ export function Repository({
   repo: RepoInfo;
   /** Boxes in the view on screen: the page's own count, which the server has no view of. */
   boxes: number;
+  /**
+   * The commit the diagram is frozen at, and how many files it held. `/api/repo`
+   * counts the working tree and cannot know what last week held, so while a
+   * commit is on screen the Files row reads the view's count instead — "Files
+   * 1128" beside "712 files" in the status bar was the live number under a
+   * commit. Null while the diagram is the working tree's.
+   */
+  frozen: { at: string; files: number } | null;
   onSwitchProject: (root: string) => void;
   /** A fetch finished. `remote` in it is fresh; the log may have new commits. */
   onFetched: (result: FetchResponse) => void;
@@ -108,8 +117,15 @@ export function Repository({
           <Row label="Root" title={repo.root}>
             {repo.root}
           </Row>
-          <Row label="Files" title="Source files in the graph">
-            {repo.files}
+          <Row
+            label="Files"
+            title={
+              frozen === null
+                ? 'Source files in the graph'
+                : `at ${frozen.at.slice(0, 7)} — the commit on screen; the working tree has ${repo.files}`
+            }
+          >
+            {frozen === null ? repo.files : frozen.files}
           </Row>
           <Row label="On screen" title="Boxes in the view on screen — a commit's, while one is frozen">
             {boxes}

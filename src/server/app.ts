@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fastifyStatic from '@fastify/static';
@@ -23,7 +23,7 @@ import {
 } from '../project/git.js';
 import { changeFromHook, type HookPayload } from '../project/hook.js';
 import { portFilePath } from '../project/port-file.js';
-import { isIgnoredDirectoryName } from '../project/walk.js';
+import { countUnreadable } from '../project/walk.js';
 import {
   applyDecision,
   createManualGroup,
@@ -62,24 +62,6 @@ const MAX_DEPTH = 4;
  * before that" and "everything on this branch".
  */
 const GIT_BASES = ['HEAD', 'HEAD~1', 'branch'] as const;
-
-/**
- * Program text no language here can read.
- *
- * Curated, rather than "every extension nothing claims": a repository is full of
- * JSON, Markdown, lockfiles and images, and counting those as unread would bury
- * the one line that matters under noise nobody expected a diagram of. Every
- * entry below is unambiguously source, so a hit means a real part of the project
- * is missing from the graph — which is the failure this whole thing exists to
- * stop happening in silence. Extend it when a language is worth naming.
- */
-const UNREADABLE_EXTENSIONS = new Set([
-  '.vue', '.svelte', '.astro',
-  '.py', '.rb', '.php', '.lua',
-  '.c', '.h', '.cc', '.cpp', '.hpp',
-  '.swift', '.kt', '.scala', '.dart',
-  '.ex', '.hs', '.elm', '.zig',
-]);
 
 /**
  * How a stored explanation stands to the code it describes.
@@ -229,26 +211,30 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     const session = host.current();
     const spec = toSpec(request.query as Record<string, unknown>);
 
-    if (spec.at === null) {
-      return {
-        root: session.root,
-        // The cutoff for "changed recently" is computed per request, so a stored
-        // spec does not freeze time at the moment it was set.
-        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus()),
-      };
-    }
-
     // A commit that cannot be drawn is a 404 and never the live graph: a page
     // showing now under a banner naming a commit is exactly the wrong picture
     // that looks authoritative, and the one thing this feature must not do.
-    if (!isCommitId(spec.at)) {
+    if (spec.at !== null && !isCommitId(spec.at)) {
       return reply.code(404).send({ error: `not a commit id: ${spec.at}` });
     }
-    const graph = await session.graphAt(spec.at);
+    const graph = await graphFor(session, spec.at);
     if (graph === null) return reply.code(404).send({ error: `unknown commit ${spec.at}` });
 
-    // No git status: a past commit has no working tree to differ from a base.
-    return { root: session.root, view: selectView(graph, spec, Date.now(), null) };
+    // A focus or scope the graph has never heard of is a 404 for the same
+    // reason. It used to answer the root view, which is a diagram of the whole
+    // project under a URL naming one file — the reader has no way to tell that
+    // from a file with no imports.
+    const missing = missingFrom(graph, spec);
+    if (missing !== null) return reply.code(404).send({ error: missing });
+
+    // No git status at a commit: it has no working tree to differ from a base.
+    // The cutoff for "changed recently" is computed per request, so a stored
+    // spec does not freeze time at the moment it was set.
+    const git = spec.at === null ? session.gitStatus() : null;
+    // The view carries the graph's own `fileCount`, so the Repository panel
+    // can say the frozen number: "Files 1128" under a commit was the live
+    // count, beside a status bar that said 712.
+    return { root: session.root, view: selectView(graph, spec, Date.now(), git) };
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
@@ -328,7 +314,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
    */
   app.post('/api/explain', async (request, reply) => {
     const session = host.current();
-    const body = (request.body ?? {}) as { action?: unknown; ids?: unknown; id?: unknown };
+    const body = (request.body ?? {}) as { action?: unknown; ids?: unknown; id?: unknown; force?: unknown };
 
     if (body.action === 'cancel') {
       return { cancelled: session.cancelExplain(), run: session.explainRun() };
@@ -346,16 +332,32 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       return reply.code(400).send({ error: "action must be 'run', 'cancel' or 'forget'" });
     }
 
+    const force = body.force === true;
+    const stored = new Map(session.explanations().map((entry) => [entry.id, entry]));
     const targets: ExplainTarget[] = [];
+    const skipped: string[] = [];
     for (const id of readStrings(body.ids)) {
+      // A reading that still matches the code it described is not bought
+      // twice unless the request says so: "Explain these" re-read a symbol
+      // whose panel already said current, and charged for it. The skipped ids
+      // are named in the answer so the page can say why the count is smaller.
+      const entry = stored.get(id);
+      if (!force && entry !== undefined && (await explainState(session.store.graph, session.root, entry)) === 'current') {
+        skipped.push(id);
+        continue;
+      }
       const target = await resolveTarget(session.store.graph, session.root, id);
       if (target) targets.push(target);
     }
     // Not a failed run — nothing was asked. A run that produces no answers is
-    // reported as a run; a request naming ids the graph has never heard of is a
-    // bad request, and telling them apart is what stops a spinner starting.
+    // reported as a run; a request naming ids the graph has never heard of, or
+    // only ids already current, is a bad request, and telling them apart is
+    // what stops a spinner starting.
     if (targets.length === 0) {
-      return reply.code(400).send({ error: 'none of those ids are in the graph' });
+      return reply.code(400).send({
+        error: skipped.length > 0 ? 'every one of those already has a current reading' : 'none of those ids are in the graph',
+        skipped,
+      });
     }
 
     const run = session.startExplain(
@@ -366,13 +368,18 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     if (!run) {
       return reply.code(409).send({ error: 'a run is already in flight', run: session.explainRun() });
     }
-    return reply.code(202).send({ run });
+    return reply.code(202).send({ run, skipped });
   });
 
-  app.get('/api/search', async (request) => {
+  // Searches the graph on screen. At a commit that is the commit's graph, or
+  // ⌘K finds a symbol the diagram does not have and misses one it shows.
+  app.get('/api/search', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
     const term = typeof query['q'] === 'string' ? query['q'] : '';
-    return { hits: search(host.current().store.graph, term) };
+    const at = readAt(query['at']);
+    const graph = await graphFor(host.current(), at);
+    if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
+    return { hits: search(graph, term) };
   });
 
   app.get('/api/clusters', async (request, reply) => {
@@ -383,7 +390,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     // to be what last week's imports produced, or it is a tidy lie.
     const graph = await graphFor(session, at);
     if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
-    return { clusters: mergeGroups(clusterFiles(graph), await readGroups(session.root)) };
+    // `{ clusters, orphans }`: the orphans are stored names that match no
+    // cluster any more. They used to be dropped here, so three committed
+    // groups were never shown anywhere and nobody could say why.
+    return mergeGroups(clusterFiles(graph), await readGroups(session.root));
   });
 
   app.post('/api/clusters', async (request, reply) => {
@@ -431,12 +441,19 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 
     // Merged rather than returned raw: `mergeGroups` is what pairs a stored name
     // with the cluster the graph currently finds, and it is the only shape the
-    // page has a state setter for.
+    // page has a state setter for. The same `{ clusters, orphans }` as the GET,
+    // so a delete of an orphan sees it leave the list it was shown in.
     const session = host.current();
-    return { clusters: mergeGroups(clusterFiles(session.store.graph), next) };
+    return mergeGroups(clusterFiles(session.store.graph), next);
   });
 
-  app.get('/api/suggest', async () => ({ result: host.current().lastSuggest() }));
+  // `running` beside the result: the fetch that started a run is the only
+  // thing that used to know one was in flight, so a reload showed
+  // "Suggesting…" for ever, or nothing while the money was still being spent.
+  app.get('/api/suggest', async () => {
+    const session = host.current();
+    return { result: session.lastSuggest(), running: session.suggestRunning() };
+  });
 
   /**
    * Ask a model what the unnamed groups are called. Spends the user's money, so
@@ -448,7 +465,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
    */
   app.post('/api/suggest', async (_request, reply) => {
     const session = host.current();
-    const groups = mergeGroups(clusterFiles(session.store.graph), await readGroups(session.root));
+    const { clusters: groups } = mergeGroups(clusterFiles(session.store.graph), await readGroups(session.root));
 
     const targets = groups
       .filter((group) => group.state === 'suggested')
@@ -596,41 +613,6 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 }
 
 /**
- * Count the source files no language claims, biggest extension first.
- *
- * The same walk `findSourceFiles` does and the same directories it ignores, over
- * the complement of the same question — which is why it belongs beside that walk
- * rather than here, and would cost nothing if the scan counted these on its way
- * past. A directory it cannot read is skipped rather than fatal: an unreadable
- * corner of the tree must not take down the answer for the rest of it.
- */
-async function countUnreadable(root: string): Promise<{ extension: string; files: number }[]> {
-  const counted = new Map<string, number>();
-
-  async function visit(directory: string): Promise<void> {
-    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (!isIgnoredDirectoryName(entry.name)) await visit(path.join(directory, entry.name));
-        continue;
-      }
-      const name = entry.name.toLowerCase();
-      const extension = name.slice(name.lastIndexOf('.'));
-      if (UNREADABLE_EXTENSIONS.has(extension)) {
-        counted.set(extension, (counted.get(extension) ?? 0) + 1);
-      }
-    }
-  }
-
-  await visit(root);
-
-  return [...counted]
-    .map(([extension, files]) => ({ extension, files }))
-    .sort((a, b) => b.files - a.files || a.extension.localeCompare(b.extension));
-}
-
-/**
  * One id — a file path or a symbol id — as something worth sending to a model.
  *
  * The source is read from disk rather than carried on the graph, which holds
@@ -667,6 +649,10 @@ async function resolveTarget(
     kind: 'symbol',
     context: links ? symbolContext(links) : [],
     related: relatedFilesOf(graph, id),
+    // The graph's own word on how much of that context it can vouch for. A
+    // method's callers are only the typed ones, and the model is told so in
+    // the same words the panel uses, not left to read an empty list as none.
+    ...(links ? { coverage: links.coverage, coverageNote: links.coverageNote } : {}),
   };
 }
 
@@ -812,6 +798,28 @@ async function graphFor(session: Session, at: string | null): Promise<Graph | nu
   return session.graphAt(at);
 }
 
+/**
+ * Why this spec cannot be drawn from this graph, or null when it can.
+ *
+ * A focus names a file; a scope names a directory with at least one file
+ * under it. Checked against the whole graph and not the filtered slice: a
+ * file the "changes only" filter hid is still a file, and the filter
+ * emptying the view is its own honest answer. The scope is normalised the way
+ * `selectView` normalises it, so `src/graph/` and `src/graph` are one question.
+ */
+function missingFrom(graph: Graph, spec: ViewSpec): string | null {
+  if (spec.focus !== null) {
+    return graph.nodes.get(spec.focus)?.kind === 'file' ? null : `no such file: ${spec.focus}`;
+  }
+  const scope = spec.scope.replace(/^\/+|\/+$/g, '');
+  if (scope === '') return null;
+  const prefix = `${scope}/`;
+  for (const node of graph.nodes.values()) {
+    if (node.kind === 'file' && node.filePath.startsWith(prefix)) return null;
+  }
+  return `no such directory: ${scope}`;
+}
+
 /** The count a page asked for, or null for the log's own default. */
 function readLimit(raw: unknown): number | null {
   if (typeof raw !== 'string' || raw === '') return null;
@@ -855,6 +863,7 @@ function toSocketSpec(raw: Record<string, unknown>): ViewSpec {
       edgeKinds: edges.length > 0 ? edges : DEFAULT_EDGE_KINDS,
       sinceMs: typeof since === 'number' && Number.isFinite(since) && since > 0 ? since : 0,
       onlyChanged: filter['onlyChanged'] === true,
+      hideTests: filter['hideTests'] === true,
     },
     at: readAt(raw['at']),
   };
@@ -887,6 +896,9 @@ function toFilter(raw: Record<string, unknown>): ViewFilter {
     // A flag and nothing more: which base it compares against belongs to the
     // session, so a URL cannot narrow the view to a base nobody is looking at.
     onlyChanged: raw['changed'] === '1',
+    // `tests=0`, the way a URL says "without": the default shows them, and the
+    // key names what is being turned off.
+    hideTests: raw['tests'] === '0',
   };
 }
 

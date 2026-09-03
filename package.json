@@ -10,7 +10,7 @@
     "build": "tsc && vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
-    "test": "tsc && node --test \"dist/**/*.test.js\"",
+    "test": "tsc && node --test \"dist/**/*.test.js\" \"web/src/*.test.ts\"",
     "codemap": "node dist/cli/index.js",
     "serve": "node dist/server/main.js",
     "tauri": "tauri"

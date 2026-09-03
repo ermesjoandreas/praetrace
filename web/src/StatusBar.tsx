@@ -54,6 +54,17 @@ interface StatusBarProps {
   /** "TypeScript 479 · JavaScript 31", or '' when nothing was parsed. */
   languages: string;
   unreadable: Unreadable | null;
+  /**
+   * Test files the `tests=0` filter took off the diagram, project-wide. 0 when
+   * the filter is off. Said beside the file count because that count just
+   * shrank, and a diagram that lost its suite without a word would read as a
+   * project that has none.
+   */
+  hiddenTests: number;
+  /** Turn the filter off again. */
+  onShowTests: () => void;
+  /** Files the parser could not fully read. Their boxes carry the badge; this is the total. */
+  parseErrors: number;
   agentLast: AgentCall | null;
   agentTotal: number;
 }
@@ -77,6 +88,9 @@ export function StatusBar({
   counts,
   languages,
   unreadable,
+  hiddenTests,
+  onShowTests,
+  parseErrors,
   agentLast,
   agentTotal,
 }: StatusBarProps) {
@@ -234,10 +248,39 @@ export function StatusBar({
             {unreadable.kinds.length > 3 ? ` +${unreadable.kinds.length - 3}` : ''}
           </span>
         )}
+
+        {/* Beside "not read", because it is the same kind of fact: source the
+            graph holds less of than the box count suggests. A file with a
+            syntax error keeps its box and loses its symbols, silently, until
+            this said so. */}
+        {parseErrors > 0 && (
+          <span
+            className="status-item parse-errors"
+            title={`${
+              parseErrors === 1 ? '1 file' : `${parseErrors} files`
+            } in this project would not fully parse, so symbols may be missing — each box carries a warning badge`}
+          >
+            <i className="codicon codicon-warning" aria-hidden="true" />
+            {parseErrors === 1 ? '1 file with a syntax error' : `${parseErrors} files with syntax errors`}
+          </span>
+        )}
       </div>
 
       <div className="statusbar-right">
         {counts !== '' && <span className="status-item counts">{counts}</span>}
+        {/* Runs something: a click is the way the filter comes off from here,
+            the same as the Changes badge toggles its own. */}
+        {hiddenTests > 0 && (
+          <button
+            type="button"
+            className="status-item tests-hidden"
+            onClick={onShowTests}
+            title="Test files, fixtures and stories are left out of the diagram — click to show them"
+          >
+            <i className="codicon codicon-eye-closed" aria-hidden="true" />
+            {hiddenTests === 1 ? '1 test hidden' : `${hiddenTests} tests hidden`}
+          </button>
+        )}
         {languages !== '' && (
           <span className="status-item langs" title="What codemap parsed here, biggest first">
             {languages}
