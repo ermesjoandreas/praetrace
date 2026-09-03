@@ -82,7 +82,7 @@ rather than building it.
 ## Many languages
 
 **The direction changed on 2026-09-01.** The tool reads TypeScript, JavaScript,
-Java, Go, C# and Rust. Anyone can point it at their repository. VISION.md's
+Java, Go, C#, Rust and Python. Anyone can point it at their repository. VISION.md's
 "language sprawl" line is overridden by this section, and its reasoning — a
 mediocre parser for six languages is worse than an excellent one for a single
 language — is answered by the rule below rather than dismissed.
@@ -101,6 +101,23 @@ look broken. It looks like code with no coupling — wrong in a way that reads a
 authoritative, which is the failure this project cares about most. Parsing is the
 easy half; resolution is the half that decides whether the picture is true.
 
+**Python is the one added on that rule, and it names its own gaps.** A module's
+name is its path, and `from a.b import c` cannot say whether `c` is a name in
+`a/b.py` or the submodule `a/b/c.py`, so the reference is written `a.b#c` — Go's
+qualified form — and the resolver, which has the file set, decides: submodule
+first, then the module, from every source root (a directory that holds a package
+without being one, `src/` above `src/flask/`) and last from the importing file's
+own directory. Every name a module imports it also exports, because that is how
+a Python package's `__init__.py` presents its API, so `from flask import Flask`
+lands on app.py and not on the barrel. Checked against flask, requests and
+werkzeug: 0 parse failures, 0 unresolved relative imports, 0 guessed edges, and
+twenty sampled edges all real. What it does not draw, honestly: a call through a
+receiver nobody annotated (`x = f(); x.m()`), which is most of Python; a method
+inherited from a base class, which the store does not walk for any language; and
+a class nested in a class. `moduleName` waits on `extract` being handed the file
+path — the source cannot say it — so an unresolved `flask.x` is not yet counted
+as internal.
+
 **Detected, never declared.** Opening a project does not ask what language it is.
 File extensions are unambiguous, and real repositories are mixed — TanStack/query is
 TypeScript, JSX, JavaScript, Svelte and Vue at once, so any single declared answer
@@ -112,8 +129,10 @@ project contains files the tool cannot read at all.
 `Cannot read properties of undefined (reading '<n>')` from inside `parse` rather
 than from the call that was wrong, which reads exactly like an ABI mismatch and is
 not one. `tree-sitter-typescript` is the exception: it exports `typescript` and
-`tsx` and wants one of those. All six grammars need `.npmrc`'s `legacy-peer-deps`,
-for the same stale peer range documented under Dependency note.
+`tsx` and wants one of those. All seven grammars need `.npmrc`'s `legacy-peer-deps`,
+for the same stale peer range documented under Dependency note, and every one of
+them belongs in `RUNTIME_DEPENDENCIES` in `scripts/prepare-resources.mjs`, or the
+desktop app ships without it and the worker hangs at module load.
 
 ---
 
@@ -351,6 +370,8 @@ src/
     typescript.ts the reference reader the JS one shares: scopes, typed
                   receivers, re-exports, bindings, property-assigned functions
     javascript.ts, java.ts, go.ts, csharp.ts, rust.ts
+    python.ts     module path -> file from every source root; `a.b#c` for a
+                  from-import, decided by the resolver; every import a re-export
   oracle/         a second opinion from the TypeScript checker — dev only, never
                   in the live path, never imported from server/, cli/ or project/:
                   it pulls in `typescript`, a devDependency

@@ -66,6 +66,17 @@ export type BoxData = {
   root: string;
   /** Nothing in this box takes part in what is being followed. */
   aside: boolean;
+  /**
+   * The graph's sentence about how much of that it can vouch for, or null when
+   * nothing is being followed.
+   *
+   * A dimmed box is the diagram drawing "this has no part in it", and the list
+   * it is drawn from is a floor — a class handed to a function as a value, or
+   * a method reached through an untyped receiver, is a use nothing here can
+   * see. The panel prints the same sentence beside its count; the box, which
+   * is where the claim is loudest, used to make it in silence.
+   */
+  asideNote: string | null;
   /** Showing every member rather than the first twelve. */
   expanded: boolean;
   onExpand: (id: string, expanded: boolean) => void;
@@ -83,6 +94,16 @@ export type BoxData = {
    */
   followed: boolean;
   onFollowFile: (path: string, on: boolean) => void;
+  /**
+   * Hold this file and ask a model what it is for, in one press.
+   *
+   * The reading itself has always been here; the way in had not. It rendered
+   * only inside a panel section that is null until something is already being
+   * followed, so three of seven readers walked every menu, the panel and ⌘K
+   * and never found the word Explain at all. A file box is the surface those
+   * three were looking at, so the gesture goes on it.
+   */
+  onExplain: (path: string) => void;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
@@ -121,6 +142,7 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
   go: 'go',
   csharp: 'c#',
   rust: 'rs',
+  python: 'py',
 };
 
 /**
@@ -164,12 +186,18 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   // sentence says "measured" rather than leaving the reader to assume the file
   // is 122 lines long. A report entry with nothing in it says nothing.
   const measured = data.coverage === undefined || data.coverage.lines === 0 ? null : data.coverage;
-  const title =
+  const measure =
     measured === null
       ? data.label
       : `${data.label} — ${measured.covered} of ${measured.lines} measured lines ran (${Math.round(
           (measured.covered / measured.lines) * 100,
         )}%)`;
+  // Only on a box the following actually dimmed: on a lit one the sentence
+  // would be qualifying a claim the box is not making.
+  const title =
+    data.aside && data.asideNote !== null
+      ? `${measure}\n\nDimmed because nothing in it took part in what is being followed. ${data.asideNote}`
+      : measure;
 
   // Names, not a count: a bundle exists because 258 boxes answer nothing, and
   // the first few paths are what say whether the pile is worth opening. Eight
@@ -308,6 +336,22 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 data.onFollowFile(file, !data.followed);
               }}
             />
+            {/* The sparkle is VS Code's own mark for "a model did this", and
+                the tooltip says what it costs before it is pressed — the one
+                thing on this box that spends money must not be the one thing
+                that is coy about it. */}
+            <button
+              type="button"
+              className="box-explain"
+              title="Ask Claude what this file is for — it spends your Claude quota"
+              aria-label="Explain this file"
+              onClick={(event) => {
+                event.stopPropagation();
+                data.onExplain(file);
+              }}
+            >
+              <i className="codicon codicon-sparkle" aria-hidden="true" />
+            </button>
             {/* A codicon rather than a glyph: it is monochrome and takes
                 currentColor, so it dims and lights with the button instead of
                 sitting on it as a sticker. The label lives in aria-label now

@@ -72,13 +72,15 @@ interface StatusBarProps {
   /** Files the parser could not fully read. Their boxes carry the badge; this is the total. */
   parseErrors: number;
   /**
-   * Every reference the drawn boxes could not follow — `totalUnresolved`. null
-   * when they followed all of them, which is what a healthy project says.
+   * Every reference in the whole project that landed nowhere —
+   * `totalUnresolved`, which reads `ViewGraph.unresolved` and not the boxes.
+   * null when every one of them resolved, which is what a healthy project says.
    *
    * Beside "not read" and the syntax errors because it is the same kind of
-   * fact: source the graph holds less of than the box count suggests. It is
-   * the largest of the three by far — zod 2 966, TanStack/query 4 728 — and
-   * until it was counted it was the only one that was invisible.
+   * fact, measured over the same files: source the graph holds less of than
+   * the box count suggests. It is the largest of the three by far — zod 2 966,
+   * TanStack/query 4 728 — and until it was counted it was the only one that
+   * was invisible.
    */
   unresolved?: Unresolved | null;
   agentLast: AgentCall | null;
@@ -287,13 +289,19 @@ export function StatusBar({
             every project measured so far. Said out loud all the same — it is
             the difference between a diagram of a project with little coupling
             and a diagram missing most of it, and nothing else on the page
-            tells the two apart. */}
+            tells the two apart.
+
+            Project-wide, and the words have to say so. The count moved from
+            the drawn boxes to every file in the graph — the same population
+            the syntax-error count beside it is measured over, which is the
+            point of the pair — and the sentence was left describing the slice,
+            so scoping into a directory read as a claim about that directory. */}
         {unresolved !== null && (
           <span
             className="status-item unresolved"
             title={`${describeUnresolved(
               unresolved,
-            )} in the boxes drawn here named something codemap could not find, so some coupling is missing from the diagram. The boxes it came from carry the same mark; a box with no arrows and no mark really does stand alone.`}
+            )} across every file in this project named something codemap could not find, so some coupling is missing from the diagram — including from files no box on screen stands for. Each box that made some carries its own count; a box with no arrows and no mark really does stand alone.`}
           >
             <i className="codicon codicon-question" aria-hidden="true" />
             {unresolved.imports + unresolved.calls} unresolved

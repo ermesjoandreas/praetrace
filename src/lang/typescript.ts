@@ -958,18 +958,38 @@ export const FUNCTION_VALUES: ReadonlySet<string> = new Set(['arrow_function', '
  * defines its API, and before it was read application.js — 632 lines, all of
  * them this — drew two symbols. The name is the property exactly as written,
  * which is the only name the file gives it.
+ *
+ * One assignment can write several names, and none of them used to survive.
+ * `res.set =` newline `res.header = function header(…)` is a single expression
+ * with two targets, so the outermost right-hand side is another assignment
+ * rather than a function and the whole statement was refused: express aliases
+ * six of its methods that way, and res.contentType, res.type, res.set,
+ * res.header, req.get and req.header were all missing from boxes headed "20
+ * symbols" as though the list were complete — while res.send, which calls two
+ * of them, named callees its own file said it did not declare.
  */
-function assignedFunctionOf(statement: SyntaxNode): { name: string; value: SyntaxNode } | null {
+function assignedFunctionOf(statement: SyntaxNode): { names: string[]; value: SyntaxNode } | null {
   const expression = statement.namedChildren[0] ?? null;
   if (!expression) return null;
 
   if (expression.type === 'assignment_expression') {
-    const left = expression.childForFieldName('left');
-    const value = expression.childForFieldName('right');
-    if (left?.type !== 'member_expression' || !value || !FUNCTION_VALUES.has(value.type)) return null;
-    // `app[method] = function` is a subscript and names nothing static.
-    if (left.childForFieldName('property')?.type !== 'property_identifier') return null;
-    return { name: left.text.replace(/\s+/g, ''), value };
+    const names: string[] = [];
+    let node: SyntaxNode | null = expression;
+    // Down the right-hand side: each rung of `a.x = a.y = fn` is another
+    // assignment, and the function is what the innermost one holds.
+    while (node?.type === 'assignment_expression') {
+      const left = node.childForFieldName('left');
+      // `app[method] = function` is a subscript and names nothing static — see
+      // computedSymbolsOf, which is where that one is read. A target this
+      // cannot name is stepped over rather than abandoning the chain, because
+      // `exports = module.exports = f` writes one of each.
+      if (left?.type === 'member_expression' && left.childForFieldName('property')?.type === 'property_identifier') {
+        names.push(left.text.replace(/\s+/g, ''));
+      }
+      node = node.childForFieldName('right');
+    }
+    if (names.length === 0 || !node || !FUNCTION_VALUES.has(node.type)) return null;
+    return { names, value: node };
   }
 
   if (expression.type === 'call_expression' && nameOf(expression.childForFieldName('function')) === 'defineGetter') {
@@ -978,30 +998,231 @@ function assignedFunctionOf(statement: SyntaxNode): { name: string; value: Synta
       return null;
     }
     const property = specifierOf(key);
-    return property === null ? null : { name: `${target.text}.${property}`, value };
+    return property === null ? null : { names: [`${target.text}.${property}`], value };
   }
 
   return null;
 }
 
 /**
- * The symbol for a property-assigned function, or null when the statement is
- * not one. Its range is the whole statement, which is where a reader would
- * look for it; its calls are the function's own, because the `defineGetter`
- * that installs a getter is the module's doing at load and not the getter's.
+ * The symbols for a property-assigned function — one per name the assignment
+ * writes — or none when the statement is not one. Each range is the whole
+ * statement, which is where a reader would look for it; the calls are the
+ * function's own, because the `defineGetter` that installs a getter is the
+ * module's doing at load and not the getter's.
+ *
+ * An alias carries the calls too. `res.type` and `res.contentType` are two
+ * ways in to one body, and a box for either that showed nothing called would
+ * describe neither.
  */
-export function assignedSymbolOf(statement: SyntaxNode, scope: Scope): ParsedSymbol | null {
+export function assignedSymbolsOf(statement: SyntaxNode, scope: Scope): ParsedSymbol[] {
   const assigned = assignedFunctionOf(statement);
-  if (!assigned) return null;
-  return {
-    name: assigned.name,
+  if (!assigned) return [];
+  const calls = collectCalls(assigned.value, [], scopeOf(assigned.value, scope));
+  return assigned.names.map((name) => ({
+    name,
     kind: 'function',
     startLine: statement.startPosition.row + 1,
     endLine: statement.endPosition.row + 1,
     extends: [],
     implements: [],
-    calls: collectCalls(assigned.value, [], scopeOf(assigned.value, scope)),
+    calls: [...calls],
+  }));
+}
+
+/**
+ * A function installed under a computed name, and the subtree it owns.
+ *
+ * express writes `methods.forEach(function (method) { app[method] = function
+ * (path) { … } })`, and that is where app.get, app.post, app.put and app.delete
+ * come from — four of the five methods anyone opens express to look up.
+ *
+ * The name is `app[method]`, exactly as the source spells it, and that is a
+ * decision rather than an accident. Emitting one symbol per HTTP verb would
+ * invent four names the file never writes, which is the kind of authoritative
+ * wrongness this project refuses; emitting nothing left the box headed "18
+ * symbols" with those four absent and no sign a count could be short. A name
+ * that cannot be referenced still says the file defines methods here and points
+ * at the line that does it, and nothing resolves against it: a call is never
+ * written `app[method]`.
+ *
+ * Read through the whole statement rather than off its top, because the
+ * assignment is inside the callback. Only the function is claimed, so the
+ * `forEach` around it stays what it is — a call the module makes at load.
+ */
+/**
+ * The functions written as an argument to a call inside this statement, so they
+ * run when the call does. `arr.forEach(function () {…})` and an IIFE are the
+ * module's own work; a function stored in a property, a variable or a class is
+ * somebody else's. Found by walking down from each call, because a SyntaxNode
+ * in this contract has children and no parent.
+ */
+function immediateCallbacks(statement: SyntaxNode): Set<string> {
+  const keys = new Set<string>();
+  for (const call of statement.descendantsOfType(['call_expression', 'parenthesized_expression'])) {
+    for (const child of call.namedChildren) {
+      const candidates = child.type === 'arguments' ? child.namedChildren : [child];
+      for (const value of candidates) {
+        if (FUNCTION_VALUES.has(value.type)) keys.add(`${value.startIndex}:${value.endIndex}`);
+      }
+    }
+  }
+  return keys;
+}
+
+export function computedSymbolsOf(
+  statement: SyntaxNode,
+  scope: Scope,
+): { symbols: ParsedSymbol[]; claimed: SyntaxNode[] } {
+  const symbols: ParsedSymbol[] = [];
+  const claimed: SyntaxNode[] = [];
+
+  // `descendantsOfType` reaches every depth, and only some of those depths run
+  // when the module loads. express writes its verb methods inside a callback —
+  // `methods.forEach(function (method) { app[method] = ... })` — and that
+  // callback runs immediately, so the assignment is the module's. A function
+  // that is STORED rather than run is a different thing: the `register` of
+  // `module.exports = { register: function (app) { app.locals[n] = ... } }`
+  // runs whenever somebody calls it, and reading its body as the file's own
+  // declarations invents a top-level symbol and takes the calls under it away
+  // from whatever really wrote them. So: an anonymous function handed straight
+  // to a call is transparent, and everything else is a wall.
+  const immediate = immediateCallbacks(statement);
+  const stored = new Set(
+    statement
+      .descendantsOfType([...FUNCTION_VALUES, ...PACKAGING_NODES, ...NAMED_DECLARATIONS])
+      .map((node) => `${node.startIndex}:${node.endIndex}`)
+      .filter((key) => !key.startsWith(`${statement.startIndex}:`) && !immediate.has(key)),
+  );
+  const behindAWall = (node: SyntaxNode): boolean => {
+    for (const key of stored) {
+      const [start, end] = key.split(':').map(Number);
+      if (start === undefined || end === undefined) continue;
+      if (node.startIndex > start && node.endIndex <= end) return true;
+    }
+    return false;
   };
+
+  for (const assignment of statement.descendantsOfType('assignment_expression')) {
+    const left = assignment.childForFieldName('left');
+    const value = assignment.childForFieldName('right');
+    if (left?.type !== 'subscript_expression' || !value || !FUNCTION_VALUES.has(value.type)) continue;
+    if (behindAWall(assignment)) continue;
+    symbols.push({
+      name: left.text.replace(/\s+/g, ''),
+      kind: 'function',
+      startLine: assignment.startPosition.row + 1,
+      endLine: assignment.endPosition.row + 1,
+      extends: [],
+      implements: [],
+      calls: collectCalls(value, [], scopeOf(value, scope)),
+    });
+    claimed.push(value);
+  }
+
+  return { symbols, claimed };
+}
+
+/**
+ * The object an initialiser is, through `as` and `satisfies` — both of which
+ * wrap the object without changing what it is. This module's own
+ * `export const typescript = { … } satisfies LanguageSupport` is one.
+ */
+export function objectOf(value: SyntaxNode | null): SyntaxNode | null {
+  if (!value) return null;
+  if (value.type === 'object') return value;
+  return value.type === 'as_expression' || value.type === 'satisfies_expression'
+    ? objectOf(value.namedChildren[0] ?? null)
+    : null;
+}
+
+/**
+ * An exported object literal, and the members written inside it.
+ *
+ * query's environmentManager headed a box reading "3 symbols · 23 lines" that
+ * listed a module-private helper and dropped the object 257 files import,
+ * because an object bound to a name was no symbol at all: neither it nor its
+ * methods were in a box, in a panel or in ⌘K.
+ *
+ * 'class' is the kind, and both halves of that are deliberate. A property
+ * holding a function is an operation and a plain one is an attribute, which is
+ * exactly what a UML class box holds; and 'class' is the one kind the graph
+ * lets own members, so `environmentManager.setIsServer()` reaches the member
+ * rather than nothing. A namespace is 'type' because it has no instances — an
+ * object literal is the one instance, and its operations are real.
+ *
+ * Exported only, for the reason a call-bound const is: the members of an object
+ * the file keeps to itself are not names another file can write down.
+ */
+export function objectSymbolsOf(
+  declarator: SyntaxNode,
+  object: SyntaxNode,
+  name: string,
+  scope: Scope,
+): ParsedSymbol[] {
+  const fields: ParsedSymbol[] = [];
+  const methods: ParsedSymbol[] = [];
+  const bodies: SyntaxNode[] = [];
+
+  for (const member of object.namedChildren) {
+    // A spread declares no member of its own, and a computed key names nothing
+    // a reference elsewhere could be matched to.
+    const named =
+      member.type === 'method_definition'
+        ? member.childForFieldName('name')
+        : member.type === 'pair'
+          ? member.childForFieldName('key')
+          : member.type === 'shorthand_property_identifier'
+            ? member
+            : null;
+    if (!named) continue;
+    const memberName =
+      named.type === 'shorthand_property_identifier'
+        ? named.text
+        // A quoted key and a numeric one are both names a reference can be
+        // matched to — `codes['ok']`, `codes[1]` — unlike a computed one.
+        : named.type === 'string'
+          ? specifierOf(named)
+          : named.type === 'number'
+            ? named.text
+            : nameOf(named);
+    if (memberName === null) continue;
+
+    const common = {
+      name: memberName,
+      owner: name,
+      startLine: member.startPosition.row + 1,
+      endLine: member.endPosition.row + 1,
+      extends: [],
+      implements: [],
+      // A property's initialiser can call things, the way a field's can.
+      calls: collectCalls(member, [], scopeOf(member, scope)),
+    };
+    const value = member.type === 'pair' ? member.childForFieldName('value') : member;
+
+    if (member.type === 'method_definition' || FUNCTION_VALUES.has(value?.type ?? '')) {
+      bodies.push(member);
+      methods.push({ ...common, kind: 'method' });
+    } else {
+      fields.push({ ...common, kind: 'field' });
+    }
+  }
+
+  // The object before its members, which is the order the graph layer reads to
+  // attach each one; attributes before operations, which is how a UML box reads.
+  return [
+    {
+      name,
+      kind: 'class',
+      startLine: declarator.startPosition.row + 1,
+      endLine: declarator.endPosition.row + 1,
+      extends: [],
+      implements: [],
+      calls: collectCalls(declarator, bodies, scope),
+    },
+    ...fields,
+    ...methods,
+  ];
 }
 
 /**
@@ -1264,11 +1485,21 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
   }
 
   if (node.type === 'expression_statement') {
-    const assigned = assignedSymbolOf(node, out.scope);
-    if (assigned) {
-      out.symbols.push(assigned);
+    const assigned = assignedSymbolsOf(node, out.scope);
+    if (assigned.length > 0) {
+      out.symbols.push(...assigned);
       out.claimed.push(node);
       return;
+    }
+    // Not a return: a namespace at statement position is an expression too, and
+    // the packaging branch below is what reads it. Which is also why that shape
+    // is skipped here — a computed assignment is looked for through a whole
+    // statement, so a namespace's body would be read twice and every symbol in
+    // it counted once for each.
+    if (!node.namedChildren.some((child) => PACKAGING_NODE_SET.has(child.type))) {
+      const computed = computedSymbolsOf(node, out.scope);
+      out.symbols.push(...computed.symbols);
+      out.claimed.push(...computed.claimed);
     }
   }
 
@@ -1345,6 +1576,15 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
 
       if (value.type === 'arrow_function' || value.type === 'function_expression') {
         out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+        out.claimed.push(declarator);
+        continue;
+      }
+
+      // `export const environmentManager = { … }` — an object with methods is
+      // the thing other files import, and neither it nor its members had a node.
+      const object = out.exports.names.has(name) ? objectOf(value) : null;
+      if (object) {
+        out.symbols.push(...objectSymbolsOf(declarator, object, name, scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
         continue;
       }

@@ -3,15 +3,18 @@ import { createRequire } from 'node:module';
 import type { ParsedSymbol, Reexport, SymbolKind } from '../parser/types.js';
 import {
   FUNCTION_VALUES,
-  assignedSymbolOf,
+  assignedSymbolsOf,
   classScope,
   collectCalls,
   collectFileCalls,
+  computedSymbolsOf,
   exportsOf,
   importBindings,
   markExports,
   moduleScope,
   nameOf,
+  objectOf,
+  objectSymbolsOf,
   reexportOf,
   requireBindings,
   scopeOf,
@@ -165,14 +168,20 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
     return;
   }
 
-  // `app.init = function` — a CommonJS module's API is defined this way and no
-  // other, and a module written like express is nothing but these.
+  // `app.init = function` — this is how a CommonJS module defines its API, and
+  // a module written like express is very nearly nothing but these.
   if (node.type === 'expression_statement') {
-    const assigned = assignedSymbolOf(node, out.scope);
-    if (assigned) {
-      out.symbols.push(assigned);
+    const assigned = assignedSymbolsOf(node, out.scope);
+    if (assigned.length > 0) {
+      out.symbols.push(...assigned);
       out.claimed.push(node);
+      return;
     }
+    // `methods.forEach(function (method) { app[method] = … })` is where
+    // express's four busiest methods are written; see computedSymbolsOf.
+    const computed = computedSymbolsOf(node, out.scope);
+    out.symbols.push(...computed.symbols);
+    out.claimed.push(...computed.claimed);
     return;
   }
 
@@ -213,6 +222,15 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
 
       if (FUNCTION_VALUES.has(value.type)) {
         out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+        out.claimed.push(declarator);
+        continue;
+      }
+
+      // An exported object with methods is a symbol here for the same reason it
+      // is in TypeScript, and the grammars spell an object literal alike.
+      const object = out.exports.names.has(name) ? objectOf(value) : null;
+      if (object) {
+        out.symbols.push(...objectSymbolsOf(declarator, object, name, scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
         continue;
       }

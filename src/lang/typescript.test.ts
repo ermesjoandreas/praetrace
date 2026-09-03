@@ -76,11 +76,15 @@ test('a function assigned to a property is a symbol named as written', () => {
     app.count = 1
     app[name] = function () {}
   `);
+  // A computed name is a symbol too, spelt the way the source spells it: the
+  // alternative to `app[name]` was silence, and silence is what let a box head
+  // itself "18 symbols" with express's four busiest methods missing.
   assert.deepEqual(
     symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine]),
     [
       ['app.init', 'function', 2, 4],
       ['Foo.prototype.bar', 'function', 5, 5],
+      ['app[name]', 'function', 7, 7],
     ],
   );
   assert.deepEqual(byName(symbols, 'app.init').calls, ['configure']);
@@ -656,4 +660,58 @@ test('a class declared in a namespace is the file’s symbol, not a name the nam
     export function build() { class Item {}; return new Item() }
   `);
   assert.deepEqual(byName(scoped.symbols, 'build').calls, []);
+});
+
+test('an exported object literal is drawn as what it is: a name with members', () => {
+  // query's environmentManager headed a box reading "3 symbols" that listed a
+  // module-private helper and dropped the object 257 files import, because an
+  // object bound to a name was no symbol at all. `as` and `satisfies` wrap it
+  // without changing what it is — this module's own `export const typescript`
+  // is written that way.
+  const { symbols } = parse(`
+export type IsServerValue = () => boolean
+
+let isServerFn: IsServerValue = () => defaultIsServer
+
+export const environmentManager = {
+  isServer,
+  version: read(),
+  setIsServer(value: IsServerValue): void {
+    isServerFn = value
+  },
+} satisfies Manager
+
+const internal = { hidden() {} }
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.owner ?? '-']),
+    [
+      ['IsServerValue', 'type', '-'],
+      ['isServerFn', 'function', '-'],
+      ['environmentManager', 'class', '-'],
+      ['isServer', 'field', 'environmentManager'],
+      ['version', 'field', 'environmentManager'],
+      ['setIsServer', 'method', 'environmentManager'],
+    ],
+  );
+  assert.equal(byName(symbols, 'environmentManager').exported, true);
+  assert.deepEqual(byName(symbols, 'version').calls, ['read']);
+});
+
+test('a namespace is read once, so what it declares is not counted twice', () => {
+  // A namespace at statement position is an expression_statement, and a
+  // computed assignment is read through a whole statement — so the body was
+  // read here and again when the packaging branch below descended into it.
+  const { symbols } = parse(`
+namespace Legacy {
+  handlers[name] = function () { run() }
+}
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind]),
+    [
+      ['Legacy', 'type'],
+      ['handlers[name]', 'function'],
+    ],
+  );
 });

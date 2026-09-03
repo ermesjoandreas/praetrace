@@ -7,6 +7,7 @@ import { java } from './java.js';
 import { go } from './go.js';
 import { csharp } from './csharp.js';
 import { rust } from './rust.js';
+import { python } from './python.js';
 
 /**
  * Every language the tool can read, and the one place that decides which file
@@ -23,6 +24,7 @@ export const LANGUAGES: readonly LanguageSupport[] = [
   go,
   csharp,
   rust,
+  python,
 ];
 
 const byExtension = new Map<string, LanguageSupport>();

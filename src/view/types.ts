@@ -5,6 +5,25 @@ import type { LanguageId } from '../lang/types.js';
 import type { ViewFilter } from './filter.js';
 
 /**
+ * How a count of dependents or callers was arrived at — never how complete it is.
+ *
+ * The word this replaces was `full`, and it was printed beside a note saying a
+ * function passed by value is not tracked. TanStack/query's `QueryObserver`
+ * answered `full` and "used by 16" where grep finds 26 non-test sites in 8
+ * packages, because every one of the seven adapters hands the class to another
+ * function rather than calling it. Both words here say how the graph looked
+ * and neither says what there was to find: `tracked`, references by name
+ * followed across every file that imports the declaring one; `partial`, a way
+ * of reaching this that the graph knows it does not follow. Whichever it is,
+ * the count beside it is a floor, and the note says what is missing from it.
+ *
+ * Deliberately not called `Coverage`: in this file that word is the test
+ * report's — `ViewNode.coverage` is lines a run executed — and one name over
+ * two meanings is how a reader leaves with the wrong one.
+ */
+export type Tracking = 'tracked' | 'partial';
+
+/**
  * Which slice of the graph to show. Carried in the page URL, so navigation is
  * links rather than client state: the back button works and a view is shareable.
  */

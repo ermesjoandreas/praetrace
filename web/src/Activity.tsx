@@ -176,8 +176,12 @@ export function Activity({
     return () => window.clearInterval(timer);
   }, []);
 
+  // The cap is a first impression, not a limit: the session holds every row
+  // either way, so the reader who wants the rest can have it.
+  const [showAll, setShowAll] = useState(false);
+
   const all = build(changes, agentCalls);
-  const rows = all.slice(0, MAX_ROWS);
+  const rows = showAll ? all : all.slice(0, MAX_ROWS);
   const live = all.length > 0 && now - (all[0]?.at ?? 0) < 6000;
 
   return (
@@ -278,11 +282,15 @@ export function Activity({
           </table>
 
           {/* A table that quietly stopped at eighty rows would read as a
-              complete record of the session, which it is not. */}
+              complete record of the session, which it is not. Saying so and
+              offering nothing was worse still: the rows were already on the
+              page, and a promise with no gesture reads as a limit that cannot
+              be lifted. */}
           {all.length > rows.length && (
-            <p className="activity-more">
-              {all.length - rows.length} older {all.length - rows.length === 1 ? 'row' : 'rows'} not shown
-            </p>
+            <button type="button" className="activity-more" onClick={() => setShowAll(true)}>
+              {all.length - rows.length} older {all.length - rows.length === 1 ? 'row' : 'rows'} not shown —
+              show {all.length === rows.length + 1 ? 'it' : 'them'}
+            </button>
           )}
         </div>
       )}

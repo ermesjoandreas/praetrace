@@ -35,6 +35,7 @@ const RUNTIME_DEPENDENCIES = [
   'tree-sitter-go',
   'tree-sitter-java',
   'tree-sitter-javascript',
+  'tree-sitter-python',
   'tree-sitter-rust',
   'tree-sitter-typescript',
 ];

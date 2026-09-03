@@ -13,12 +13,12 @@ import type {
   SuggestResponse,
 } from '../../src/server/app.js';
 import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
-import type { ViewGraph } from '../../src/view/types.js';
+import type { Tracking, ViewGraph } from '../../src/view/types.js';
 
 // Types only. `groups.ts` reaches for node:fs and `git.ts` for child_process,
 // so nothing may import a value from either here — the import disappears at
 // compile time, the module never does.
-export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteStatus, ViewGraph };
+export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteStatus, Tracking, ViewGraph };
 export type ViewNode = ViewGraph['nodes'][number];
 export type ViewMember = ViewNode['members'][number];
 
@@ -243,6 +243,21 @@ export type Detail =
       imports: string[];
       importedBy: string[];
       /**
+       * How the graph arrived at that list, never how complete it is — the
+       * count is a floor either way, and `importedByNote` is what says by how
+       * much. Carried because it is the wire shape and an agent reading
+       * `describe_file` branches on it; the page does not, because the mark it
+       * would draw is on every one of these counts already.
+       */
+      importedByCoverage: Tracking;
+      /**
+       * The graph's own sentence about what the count leaves out, printed
+       * beside it in both states — "Used by (5)" reads as a census either way,
+       * and the reader about to change a signature is the one who cannot
+       * afford to read it that way.
+       */
+      importedByNote: string;
+      /**
        * Files this one calls into from a statement belonging to no symbol.
        *
        * Listed apart from `imports` because the two claims differ in strength:
@@ -252,7 +267,16 @@ export type Detail =
        */
       calls: string[];
     }
-  | { kind: 'folder'; path: string; files: string[]; imports: string[]; importedBy: string[] };
+  | {
+      kind: 'folder';
+      path: string;
+      files: string[];
+      imports: string[];
+      importedBy: string[];
+      /** The same qualification a file's count carries, over the pile. */
+      importedByCoverage: Tracking;
+      importedByNote: string;
+    };
 
 /** `at` is the commit on screen, so the answer is about the diagram being looked at. */
 function atParam(at: string | null): string {
@@ -292,16 +316,35 @@ export interface SymbolLinks {
   /**
    * Whether an empty `usedBy` means none, or means the graph cannot tell.
    *
-   * A top-level name is found wherever its file is imported. A method or a
-   * field is reached through a receiver, and a receiver whose type is not
-   * written down is not guessed at — so for those the list is the typed calls
-   * only, and "0 in" is not a count but a silence. The panel must never print
-   * it as one.
+   * Neither word claims completeness, and that is the whole of the change:
+   * `tracked` says every reference *by name* was followed, which is not the
+   * same as every reference — a class re-exported through a barrel or handed
+   * over as a value is used in ways no name in the graph spells out, which is
+   * how QueryObserver read "used by 16" against 26 real sites. `partial` is
+   * the weaker of the two and the one that changes what the page may say, so
+   * every surface below tests for it rather than for its opposite.
    */
-  coverage: 'full' | 'partial';
-  /** The graph's own sentence about that, shown where the count would mislead. */
+  coverage: Tracking;
+  /** The graph's own sentence about that, shown wherever the count is drawn. */
   coverageNote: string;
 }
+
+/**
+ * The mark every count of dependents or callers wears.
+ *
+ * One character, and text rather than an icon, the way the `+` and `−` of a
+ * diff are: a count that is short by ten is not wrong in any way a reader can
+ * see, so the shape of the number itself has to say so. Every surface that
+ * draws such a count uses this, so the three of them cannot drift into three
+ * different hedges.
+ *
+ * Unconditional, and not only where `Tracking` says `partial`. Both states are
+ * floors — a `tracked` count still misses a class handed to a function as a
+ * value — and a number printed bare beside a note ending "the count is a
+ * floor" would contradict the sentence under it. What the two states change is
+ * *what* is missing, which is what the note says.
+ */
+export const FLOOR = '≥';
 
 /** What one symbol reaches and what reaches it. 404 means it left the graph. */
 export async function fetchSymbol(id: string, at: string | null = null): Promise<SymbolLinks | null> {

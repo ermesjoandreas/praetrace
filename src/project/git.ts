@@ -43,7 +43,8 @@ const TRACKED_STATUS: Record<string, GitFileStatus> = {
 /**
  * The working tree against a base commit, as a flat map the view layer can ask
  * about one file at a time. Returns null when there is no git to read: not a
- * work tree, no git on PATH, or any failure at all along the way.
+ * work tree, no git on PATH, a repository that has never heard of this project
+ * — see `worktreePrefix` — or any failure at all along the way.
  *
  * `base` is what the caller asked for — 'HEAD', 'HEAD~1' or 'branch'. What was
  * actually used comes back in `GitStatus.base`, because the two differ whenever
@@ -55,15 +56,10 @@ const TRACKED_STATUS: Record<string, GitFileStatus> = {
  * with what git says, which is worse than reporting a file nobody will render.
  */
 export async function readGitStatus(root: string, base: string): Promise<GitStatus | null> {
-  const toplevel = await git(root, ['rev-parse', '--show-toplevel']);
-  if (toplevel === null) return null;
-  const repoRoot = toplevel.trim();
-  if (repoRoot === '') return null;
-
-  const prefix = await pathPrefix(repoRoot, root);
+  const prefix = await worktreePrefix(root);
   if (prefix === null) return null;
 
-  const branch = await readBranch(root);
+  const branch = await branchOf(root);
   const resolved = await resolveBase(root, base);
 
   const files: Record<string, GitFileStatus> = {};
@@ -127,11 +123,73 @@ export async function readGitStatus(root: string, base: string): Promise<GitStat
 }
 
 export async function readBranch(root: string): Promise<string | null> {
+  if ((await worktreePrefix(root)) === null) return null;
+  return branchOf(root);
+}
+
+async function branchOf(root: string): Promise<string | null> {
   const output = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const name = output?.trim();
   // The literal 'HEAD' is what a detached HEAD answers, not a branch called HEAD.
   if (name === undefined || name === '' || name === 'HEAD') return null;
   return name;
+}
+
+/**
+ * Where the project sits inside the repository that owns it — '' when they are
+ * the same directory — or null when no repository owns it.
+ *
+ * git ascends until it finds a repository, and this is the one place that
+ * decides whether the answer it comes back with is the project's. Ascending is
+ * right for a package opened inside its monorepo, and wrong for a project that
+ * merely sits under a stray `git init` somebody once ran in their home
+ * directory. `keeta-benchmark-sandbox` is not a repository, and the panel
+ * showed the home directory's: "Last fetch 6 months ago" with a live Fetch
+ * button, "Changes 7", and "No commits yet", all at once and none of it about
+ * the project.
+ *
+ * So a repository above the project has to earn it, and the test is whether it
+ * actually holds the project — `ls-files` limited to the project's own subtree.
+ * A `git init` in the project itself is still git, because the toplevel *is*
+ * the root and nothing needs to be tracked yet; a monorepo package is still
+ * git, because the repository has its files. A directory the repository has
+ * never heard of has no git, which is a missing feature and not an error.
+ *
+ * The extra command only runs when the repository was found by ascending, so
+ * the ordinary project — its own repository, opened at its own root — still
+ * costs exactly one.
+ */
+async function worktreePrefix(root: string): Promise<string | null> {
+  const toplevel = await git(root, ['rev-parse', '--show-toplevel']);
+  if (toplevel === null) return null;
+  const repoRoot = toplevel.trim();
+  if (repoRoot === '') return null;
+
+  const prefix = await pathPrefix(repoRoot, root);
+  if (prefix === null || prefix === '') return prefix;
+
+  const tracked = await git(root, ['ls-files', '-z', '--', '.']);
+  if (tracked !== null && tracked !== '') return prefix;
+
+  // Nothing here is tracked yet, and that is two different situations. A
+  // package somebody just created inside its monorepo is still the
+  // repository's, and turning git off for it would take the branch, the log,
+  // the remote and the whole Source Control section with it. A project that
+  // merely sits under a stray `git init` in a home directory is not, and
+  // showing that repository's state — "Last fetch 6 months ago" with a live
+  // Fetch button, "Changes 7", "No commits yet", all at once — is describing
+  // somebody else's work as yours.
+  //
+  // What tells them apart is whether the project is nested inside a directory
+  // the repository already uses. `packages/newpkg` sits under `packages/`,
+  // which holds the packages that came before it; `keeta-benchmark-sandbox`
+  // sits directly under the toplevel with nothing between, so there is nothing
+  // to have earned it. Untracked and directly under the toplevel is the shape
+  // of a project that merely happens to be there.
+  const parent = path.posix.dirname(prefix.replace(/\/$/, ''));
+  if (parent === '.' || parent === '' || parent === '/') return null;
+  const nearby = await git(root, ['ls-files', '-z', '--', path.posix.join('..', '.')]);
+  return nearby !== null && nearby !== '' ? prefix : null;
 }
 
 /**
@@ -352,6 +410,7 @@ const HEAD_ARROW = 'HEAD -> ';
  * because none of these fields can contain a newline.
  */
 export async function readLog(root: string, limit = DEFAULT_LOG_LIMIT): Promise<Commit[]> {
+  if ((await worktreePrefix(root)) === null) return [];
   const output = await git(root, [
     'log',
     `--format=${LOG_FORMAT}`,
@@ -413,7 +472,7 @@ export interface RemoteStatus {
 
 /** Null when there is no git to read; otherwise an answer, however empty. */
 export async function readRemote(root: string): Promise<RemoteStatus | null> {
-  if ((await git(root, ['rev-parse', '--show-toplevel'])) === null) return null;
+  if ((await worktreePrefix(root)) === null) return null;
 
   const url = nonEmpty(await git(root, ['remote', 'get-url', 'origin']));
   const upstream = nonEmpty(await git(root, ['rev-parse', '--abbrev-ref', '@{upstream}']));
@@ -458,7 +517,7 @@ const FETCH_TIMEOUT_MS = 30_000;
  * can fail comes back as a sentence the panel can show.
  */
 export async function fetchRemote(root: string): Promise<{ ok: boolean; detail: string }> {
-  if ((await git(root, ['rev-parse', '--show-toplevel'])) === null) {
+  if ((await worktreePrefix(root)) === null) {
     return { ok: false, detail: 'Not a git repository.' };
   }
   const remote = await fetchTarget(root);
@@ -519,6 +578,7 @@ function describeFetchFailure(error: unknown, remote: string): string {
  * read as one.
  */
 export async function resolveCommit(root: string, ref: string): Promise<string | null> {
+  if ((await worktreePrefix(root)) === null) return null;
   return nonEmpty(await git(root, ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`]));
 }
 

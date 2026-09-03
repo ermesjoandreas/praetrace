@@ -259,6 +259,13 @@ export function Repository({
               </span>
             )}
           </Row>
+          {/* A page built after this field and pointed at a server built
+              before it gets undefined here, and `npm run dev:web` proxies to a
+              separately running serve — so the row is skipped rather than
+              taking the whole app down with it. */}
+          <Row label="Hook calls" title={hookCallsTitle(repo.hookCalls)}>
+            <HookCalls calls={repo.hookCalls} />
+          </Row>
           <Row
             label="MCP"
             title={
@@ -294,6 +301,59 @@ export function Repository({
       </div>
     </Section>
   );
+}
+
+/**
+ * What has actually arrived at the hook endpoint, beside the row above it that
+ * says a hook is installed.
+ *
+ * The two rows answer different questions on purpose. "Hook ✓ installed" reads
+ * a settings file; this reads the requests. A whole review ran with the first
+ * one green over five calls that every one answered `{"accepted":false}`,
+ * because the server had been started on `/tmp` and Claude Code was reporting
+ * `/private/tmp` — and nothing on screen could disagree with the tick.
+ *
+ * A refusal on its own is ordinary: the hook fires on every edit the agent
+ * makes, and one to a file outside the project or of a kind codemap cannot read
+ * is refused exactly as it should be. So the numbers are stated plainly and the
+ * reader judges — except for the one shape that cannot be innocent, calls
+ * arriving and none of them landing, which is marked.
+ */
+function HookCalls({ calls }: { calls: { accepted: number; refused: number } | undefined }) {
+  if (calls === undefined) return <>unknown</>;
+  // Plain, like the MCP row's "never asked" beside it: nothing has gone wrong,
+  // nothing has happened yet.
+  if (calls.accepted + calls.refused === 0) return <>none yet</>;
+  if (calls.accepted === 0) {
+    return (
+      <span className="repo-partial">
+        <i className="codicon codicon-question" aria-hidden="true" />
+        {calls.refused} refused, none answered
+      </span>
+    );
+  }
+  return (
+    <span className="repo-ok">
+      <i className="codicon codicon-check" aria-hidden="true" />
+      {calls.accepted} answered
+      {calls.refused > 0 && ` · ${calls.refused} refused`}
+    </span>
+  );
+}
+
+function hookCallsTitle(calls: { accepted: number; refused: number } | undefined): string {
+  if (calls === undefined) return 'This server is older than the counter.';
+  const { accepted, refused } = calls;
+  const arrived = `${accepted + refused} ${plural(accepted + refused, 'call')} this session`;
+  if (accepted + refused === 0) {
+    return 'No PostToolUse payload has reached this server yet. It is written on the agent’s next edit.';
+  }
+  if (accepted === 0) {
+    return `${arrived}, and not one named a source file inside this project. That is what a hook pointed at the wrong root looks like — and also what a session that has only edited markdown, JSON or a file in another language looks like, so check the paths before believing the first reading.`;
+  }
+  return refused === 0
+    ? `${arrived}, every one of them a source file inside this project.`
+    : `${arrived}. A refused one named nothing this project holds — an edit outside the root, or a file codemap cannot read.`;
 }
 
 /** One label · value row. The title carries what the value had to shorten. */

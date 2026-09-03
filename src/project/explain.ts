@@ -44,7 +44,7 @@ export interface ExplainTarget {
    * model read an empty list as a fact. `describeSymbol` decides which it is;
    * the prompt repeats its note beside the relations so the model cannot miss it.
    */
-  coverage?: 'full' | 'partial';
+  coverage?: 'tracked' | 'partial';
   coverageNote?: string;
 }
 

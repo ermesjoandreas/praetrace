@@ -155,6 +155,22 @@ export interface Session {
   /** What the agent has asked, newest last. */
   agentCalls(): readonly AgentCall[];
   recordAgentCall(call: AgentCall): void;
+  /**
+   * How many hook payloads this session answered, and how many named nothing
+   * it could use.
+   *
+   * Counted because "installed" is a claim about a settings file and not about
+   * anything having arrived. A review ran end to end with the Repository panel
+   * reading "Hook ✓ installed" while all five calls answered
+   * `{"accepted":false}` — the root was one symlink off, so every path landed
+   * outside the project. `changeFromHook` no longer makes that particular
+   * mistake; this is what shows the next one, whatever its cause.
+   *
+   * Session-scoped, like the change feed: a switch opens a new project, and a
+   * count of what the previous root refused says nothing about this one.
+   */
+  hookCalls(): { accepted: number; refused: number };
+  recordHookCall(accepted: boolean): void;
   /** The working tree against the base, or null when this is not a repository. */
   gitStatus(): GitStatus | null;
   /** What was asked for, which is not always what git could resolve. */
@@ -236,6 +252,10 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
 
   const history: ChangeEntry[] = [];
   const agent: AgentCall[] = [];
+
+  // Two numbers rather than a log: nothing on screen asks which payload was
+  // refused, only whether any were. See Session.hookCalls.
+  const hook = { accepted: 0, refused: 0 };
 
   // Read here rather than on the first request: the first view a client is sent
   // should already know what differs from the base. A project that is not a
@@ -448,6 +468,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     recordAgentCall: (call) => {
       agent.push(call);
       if (agent.length > MAX_HISTORY) agent.shift();
+    },
+    hookCalls: () => ({ ...hook }),
+    recordHookCall: (accepted) => {
+      if (accepted) hook.accepted += 1;
+      else hook.refused += 1;
     },
     gitStatus: () => status,
     gitBase: () => requested,

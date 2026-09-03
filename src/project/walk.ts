@@ -4,12 +4,32 @@ import path from 'node:path';
 import { knownExtensions } from '../lang/registry.js';
 
 /**
- * Build output, by the names the tools give it. `target` is cargo's and Maven's:
- * without it the census below counted 2 801 `.d`, `.rmeta` and `.rlib` files
- * under src-tauri/target as things this tool could not read, and the scan drew
- * 22 generated `.rs` files from the same place as if they were the project's.
+ * Build output and installed dependencies, by the names the tools give them.
+ * `target` is cargo's and Maven's: without it the census below counted 2 801
+ * `.d`, `.rmeta` and `.rlib` files under src-tauri/target as things this tool
+ * could not read, and the scan drew 22 generated `.rs` files from the same
+ * place as if they were the project's.
+ *
+ * The second row is `node_modules` under other names, and it was missing. A
+ * virtualenv is where pip puts what the project installed, and DAPE read
+ * "839 files" of which 732 were pip's own vendored `.py` under `venv/` — the
+ * one number the interface leads with, describing somebody else's code.
+ * `vendor` is Go's and composer's, `Pods` is CocoaPods'.
+ *
+ * `env` is the one to be uneasy about: `python -m venv env` is as common as any
+ * other spelling, and a directory of source called `env` is rare but not
+ * impossible — the same trap `coverage` and `build` already carry. A name is
+ * all there is to go on here, because the watcher and the hook decide one path
+ * at a time. **The real answer is honouring the project's `.gitignore`**, which
+ * says exactly which of these the project itself considers installed rather
+ * than written; this list is what stands in until that exists.
  */
-const IGNORED_DIRECTORIES = new Set(['node_modules', 'dist', 'build', 'coverage', 'target']);
+const IGNORED_DIRECTORIES = new Set([
+  'node_modules', 'dist', 'build', 'coverage', 'target',
+  // `.venv` is already caught by the dot rule below; it is named here so the
+  // set reads as the whole family rather than the half of it that needed a rule.
+  'venv', '.venv', 'env', 'site-packages', '__pycache__', 'vendor', 'Pods',
+]);
 
 /** Shared with the watcher, so both see the same project. */
 export function isIgnoredDirectoryName(name: string): boolean {

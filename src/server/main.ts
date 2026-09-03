@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { realpath } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
+import path from 'node:path';
 import { sweepHistoryDirs } from '../project/history.js';
 import { createPortFile } from '../project/port-file.js';
 import { buildApp } from './app.js';
@@ -30,7 +32,7 @@ async function main(): Promise<void> {
 
   // Leftovers from a commit a previous process was drawing when it was killed.
   void sweepHistoryDirs();
-  host = await startSessionHost(args.find((arg) => !arg.startsWith('--')) ?? '.', {
+  host = await startSessionHost(await realRoot(args.find((arg) => !arg.startsWith('--')) ?? '.'), {
     onApplied: (changedFiles) => hub?.publish(changedFiles),
     onError: (message) => console.error(`codemap: ${message}`),
     // A commit or a checkout changed what differs from the base. Published with
@@ -94,6 +96,25 @@ async function main(): Promise<void> {
   console.log(`${session.store.files.size} files · ${session.store.graph.nodes.size} nodes · ${session.store.graph.edges.length} edges`);
   console.log(`\n  ${address}\n`);
   console.log(`watching for changes · hook endpoint at ${address}/api/hook\n`);
+}
+
+/**
+ * The root as the file system spells it, resolved once at boot so that the
+ * watcher, git, the port file, the hook and the line printed below all mean the
+ * same directory by the same name.
+ *
+ * `codemap /tmp/x` and `codemap /private/tmp/x` are the same project on macOS,
+ * where every `/tmp` and `/var` path is a symlink — and Claude Code reports the
+ * resolved spelling. Starting on the other one is what made every hook call
+ * land outside the project; see `changeFromHook`, which resolves both sides
+ * again because a project switch does not come through here.
+ *
+ * A root that does not exist falls through unresolved, so the error naming it
+ * is still the session's own.
+ */
+async function realRoot(root: string): Promise<string> {
+  const absolute = path.resolve(root);
+  return realpath(absolute).catch(() => absolute);
 }
 
 /**

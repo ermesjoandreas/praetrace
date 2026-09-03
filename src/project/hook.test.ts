@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { Graph, GraphEdge, GraphNode, NodeKind } from '../graph/types.js';
-import { couplingNote } from './hook.js';
+import { changeFromHook, couplingNote } from './hook.js';
 
 /** A node named after its id, unless told otherwise: a member's name is bare. */
 function node(id: string, kind: NodeKind, filePath: string, name = id.slice(id.indexOf('#') + 1)): GraphNode {
@@ -224,4 +227,81 @@ test('a path too long even to count against is silence, not half a sentence', ()
     [{ from: 'b.ts', to: absurd, kind: 'imports' }],
   );
   assert.equal(couplingNote(graph, absurd), '');
+});
+
+/**
+ * `PostToolUse` arrives with a path Claude Code has already resolved, and the
+ * server was started on whatever the shell said. On macOS every `/tmp` and
+ * `/var` path is one symlink from its real name, so those are two spellings of
+ * one directory and `path.relative` between them starts with `..` — the edit
+ * reads as being outside the project and is dropped. A whole review ran with
+ * the Repository panel reading "Hook ✓ installed" over five hook calls that
+ * had every one answered `{"accepted":false}`.
+ */
+test('a file reached through a symlinked root is still inside the project', async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), 'codemap-hook-'));
+  try {
+    const real = path.join(base, 'project');
+    await mkdir(path.join(real, 'src'), { recursive: true });
+    await writeFile(path.join(real, 'src', 'index.ts'), 'export const x = 1;\n');
+    const link = path.join(base, 'link');
+    await symlink(real, link);
+
+    const resolved = path.join(await realpath(real), 'src', 'index.ts');
+
+    // The agent's spelling of the file, the server's spelling of the root.
+    assert.deepEqual(
+      await changeFromHook({ tool_input: { file_path: path.join(link, 'src', 'index.ts') } }, real),
+      { filePath: 'src/index.ts', absolutePath: resolved, kind: 'changed' },
+    );
+    // And the other way round, because either side can be the linked one.
+    assert.deepEqual(
+      await changeFromHook({ tool_input: { file_path: path.join(real, 'src', 'index.ts') } }, link),
+      { filePath: 'src/index.ts', absolutePath: resolved, kind: 'changed' },
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a file deleted through a symlinked root is reported removed, not ignored', async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), 'codemap-hook-'));
+  try {
+    const real = path.join(base, 'project');
+    await mkdir(path.join(real, 'src'), { recursive: true });
+    const link = path.join(base, 'link');
+    await symlink(real, link);
+
+    // Nothing was ever written there: the directory carries the link, and the
+    // file that is gone has no path of its own left to resolve.
+    assert.deepEqual(
+      await changeFromHook({ tool_input: { file_path: path.join(link, 'src', 'gone.ts') } }, real),
+      { filePath: 'src/gone.ts', absolutePath: path.join(await realpath(real), 'src', 'gone.ts'), kind: 'removed' },
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('resolving the links does not widen the project past its own root', async () => {
+  const base = await mkdtemp(path.join(os.tmpdir(), 'codemap-hook-'));
+  try {
+    const real = path.join(base, 'project');
+    await mkdir(real, { recursive: true });
+    await mkdir(path.join(base, 'elsewhere'), { recursive: true });
+    await writeFile(path.join(base, 'elsewhere', 'other.ts'), '');
+
+    assert.equal(
+      await changeFromHook({ tool_input: { file_path: path.join(base, 'elsewhere', 'other.ts') } }, real),
+      null,
+    );
+    // A build directory inside the project is still not the project's source.
+    await mkdir(path.join(real, 'node_modules', 'dep'), { recursive: true });
+    assert.equal(
+      await changeFromHook({ tool_input: { file_path: path.join(real, 'node_modules', 'dep', 'index.js') } }, real),
+      null,
+    );
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });

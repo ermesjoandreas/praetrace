@@ -52,9 +52,9 @@ test('a partial target carries the graph’s note beside its relations, and an e
   assert.ok(block.indexOf('PARTIAL') < block.indexOf('(nothing in the graph touches it)'));
 });
 
-test('a full target is presented as what the graph found, with no caveat on its list', () => {
+test('a tracked target is presented as what the graph found, with no caveat on its list', () => {
   const prompt = buildPrompt([
-    target({ id: 'cobra.go#OnInitialize', coverage: 'full', context: ['used by command.go#Command.Execute (calls)'] }),
+    target({ id: 'cobra.go#OnInitialize', coverage: 'tracked', context: ['used by command.go#Command.Execute (calls)'] }),
   ]);
   const block = blockOf(prompt, 'cobra.go#OnInitialize');
 
@@ -73,7 +73,7 @@ test('a partial target that was given no note still gets one, rather than an unq
 test('two targets each keep their own coverage', () => {
   const prompt = buildPrompt([
     target({ id: 'a.ts#T.m', coverage: 'partial', coverageNote: NOTE }),
-    target({ id: 'a.ts#helper', coverage: 'full', context: ['uses a.ts#T.m (calls)'] }),
+    target({ id: 'a.ts#helper', coverage: 'tracked', context: ['uses a.ts#T.m (calls)'] }),
   ]);
 
   assert.match(blockOf(prompt, 'a.ts#T.m'), /PARTIAL/);

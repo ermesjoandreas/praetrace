@@ -1,4 +1,4 @@
-import { access } from 'node:fs/promises';
+import { access, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { REACHES } from '../graph/edges.js';
 import type { Graph } from '../graph/types.js';
@@ -22,6 +22,15 @@ export interface HookPayload {
  *
  * Returns null for anything outside the project or not a source file, which is
  * most of what the hook will report.
+ *
+ * Both sides are resolved before they are compared, and that is not tidiness.
+ * Claude Code reports the path it resolved; the server was started on whatever
+ * the shell said. On macOS every `/tmp` and `/var` path is one symlink from its
+ * real name, so `/private/tmp/x` and `/tmp/x` are two spellings of one
+ * directory and `path.relative` between them starts with `..` — the edit reads
+ * as being outside the project and is silently dropped. A whole review ran with
+ * the Repository panel reading "Hook ✓ installed" over five hook calls that had
+ * every one answered `{"accepted":false}`.
  */
 export async function changeFromHook(
   payload: HookPayload,
@@ -30,8 +39,9 @@ export async function changeFromHook(
   const target = payload.tool_input?.file_path;
   if (typeof target !== 'string' || target === '') return null;
 
-  const absolutePath = path.resolve(root, target);
-  const relative = path.relative(root, absolutePath);
+  const projectRoot = await realpath(root).catch(() => path.resolve(root));
+  const absolutePath = await resolveLinks(path.resolve(projectRoot, target));
+  const relative = path.relative(projectRoot, absolutePath);
   if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return null;
 
   const segments = relative.split(path.sep);
@@ -47,6 +57,26 @@ export async function changeFromHook(
   );
 
   return { filePath: segments.join('/'), absolutePath, kind: exists ? 'changed' : 'removed' };
+}
+
+/**
+ * A path with the symlinks in its *directories* resolved away, so that two
+ * spellings of one file compare equal.
+ *
+ * The last segment is deliberately left alone. The walk keeps a symlinked
+ * source file under the name it is linked at — every package in TanStack/query
+ * links its eslint config to the root one — so resolving it would report the
+ * edit at a path the graph has never heard of, trading one silent drop for
+ * another. Directories are the half that carries `/private`, and the half the
+ * walk does not follow.
+ *
+ * A directory that went with the file resolves to nothing, which is the
+ * ordinary answer for a removal rather than a failure.
+ */
+async function resolveLinks(target: string): Promise<string> {
+  const directory = path.dirname(target);
+  const resolved = await realpath(directory).catch(() => directory);
+  return path.join(resolved, path.basename(target));
 }
 
 /** Names in one clause before it stops reading as a sentence. */

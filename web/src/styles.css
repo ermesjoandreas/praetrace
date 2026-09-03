@@ -621,6 +621,24 @@ main { display: flex; flex: 1; min-height: 0; }
 .box:hover .box-open { opacity: 1; }
 .box-open:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
 
+/* Asking a model what this file is for. The same 16px square as the editor
+   link beside it, hidden until the box is hovered like every other action, and
+   nothing on the surface: this is the only control on a box that spends money,
+   and a mark that sat there permanently would be an advert. */
+.box-explain {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+  opacity: 0;
+}
+.box:hover .box-explain { opacity: 1; }
+.box-explain:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+
 /* Holding a whole file, to be explained later. It wears the square a member row
    wears, because it is the same act on a bigger thing. Sized in fixed pixels
    and never in ems: HEADER_HEIGHT is what dagre places every box from, so a
@@ -1211,6 +1229,10 @@ main { display: flex; flex: 1; min-height: 0; }
 .repo-ok .codicon { color: var(--vsc-git-untracked); }
 .repo-missing .codicon { color: var(--vsc-warning); }
 .repo-missing .codicon-error { color: var(--vsc-error); }
+/* Not the warning colour: a hook call refused may be an ordinary markdown edit,
+   and `--vsc-warning` means the tool's own gap. Muted until it is the whole
+   story, which the title says how to check. */
+.repo-partial .codicon { color: var(--vsc-fg-muted); }
 
 /* --- source control -------------------------------------------------------- */
 
@@ -1525,12 +1547,23 @@ main { display: flex; flex: 1; min-height: 0; }
 .activity-added { color: var(--vsc-git-added); }
 .activity-deleted { color: var(--vsc-git-deleted); margin-left: 4px; }
 
+/* A button now, and it still has to read as the quiet footer it was: the row it
+   sits under is the content, this is the way past the cap. */
 .activity-more {
+  display: block;
+  width: 100%;
   margin: 0;
   padding: 4px 8px;
+  border: none;
+  background: none;
   color: var(--vsc-fg-disabled);
+  font: inherit;
   font-size: var(--vsc-font-size-sm);
+  text-align: left;
+  cursor: pointer;
 }
+
+.activity-more:hover { color: var(--vsc-fg); background: var(--vsc-list-hover); }
 
 /* --- categories ------------------------------------------------------------ */
 
@@ -1689,12 +1722,20 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
 }
 .panel-list ul { margin: 0; padding: 0; list-style: none; }
 
-/* Tree rows: one indent under their heading, full width to the edge. */
-.panel-list button {
+/* A row is the whole 22px line, so an action can sit at its right edge without
+   the name losing its ellipsis — the name button takes what is left. */
+.panel-list li { display: flex; align-items: center; }
+
+/* Tree rows: one indent under their heading, full width to the edge. The child
+   combinator matters — the row's own action is a button inside the same li and
+   wears the shared 22px icon-button rules, which this would otherwise override
+   by sitting later in the file. */
+.panel-list li > button {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   height: var(--vsc-row-h);
   padding: 0 8px 0 16px;
   font-family: var(--vsc-font-mono);
@@ -1704,8 +1745,16 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
   text-overflow: ellipsis;
 }
 .panel-list .path { display: block; line-height: 22px; }
-.panel-list button:hover { background: var(--vsc-list-hover); }
-.panel-list button:focus-visible { outline-offset: -1px; }
+/* The row is what lights, not the name inside it: the action sits outside the
+   name button, so a fill on the button alone stopped short of the right edge
+   and left the row looking half-hovered under the icon it had just revealed. */
+.panel-list li:hover { background: var(--vsc-list-hover); }
+.panel-list li > button:focus-visible { outline-offset: -1px; }
+/* The row action, and the 22px square it sits in, are shared rules; all this
+   adds is that the row is what reveals it. */
+.panel-list li .row-actions { padding-right: 4px; }
+.panel-list li:hover .row-actions,
+.panel-list li:focus-within .row-actions { opacity: 1; }
 
 .sym-class, .sym-interface { color: var(--vsc-sym-class); }
 .sym-type { color: var(--vsc-sym-type); }

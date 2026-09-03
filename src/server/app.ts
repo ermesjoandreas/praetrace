@@ -170,6 +170,13 @@ export interface RepoInfo {
   /** null when the project is not a repository, or has no remote. */
   remote: RemoteStatus | null;
   hook: HookStatus;
+  /**
+   * What has actually arrived at `/api/hook` this session, beside what the
+   * settings file claims. See `Session.hookCalls`: "installed" is a claim about
+   * a file, and a refusal count is the only thing on the panel that can
+   * contradict it.
+   */
+  hookCalls: { accepted: number; refused: number };
   /** Where the hook finds this server; written only while `.claude/` exists. */
   portFile: string;
   agent: { lastAt: number | null; total: number };
@@ -585,6 +592,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       files: session.store.files.size,
       remote,
       hook,
+      hookCalls: session.hookCalls(),
       portFile: portFilePath(root),
       agent: { lastAt: calls[calls.length - 1]?.at ?? null, total: calls.length },
       coverage: coverage === null ? null : { at: coverage.at, source: coverage.source },
@@ -642,6 +650,11 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   app.post('/api/hook', async (request, reply): Promise<HookResponse> => {
     const session = host.current();
     const change = await changeFromHook((request.body ?? {}) as HookPayload, session.root);
+    // Recorded before anything is done with it, so a payload that is refused is
+    // counted exactly as loudly as one that lands. That asymmetry is the bug
+    // this exists for: a refusal is silent everywhere else, because the hook
+    // must never fail the agent's tool call.
+    session.recordHookCall(change !== null);
     if (change) session.queue(change);
 
     // Read from the graph as it stands, which is the file as it was a moment

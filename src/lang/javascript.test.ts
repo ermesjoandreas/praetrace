@@ -50,6 +50,10 @@ test('the API a CommonJS module defines by assignment is its symbols', () => {
       ['module.exports.merge', 'function', 10, 10],
       ['res.send', 'function', 11, 11],
       ['req.protocol', 'function', 13, 15],
+      // Computed both of them, and named as written rather than invented: the
+      // second is express's verb loop, which defines app.get and app.post.
+      ['app[method]', 'function', 18, 18],
+      ['app[method]', 'function', 19, 19],
     ],
   );
   // `this` in a plain function is not a class, so the call names nothing:
@@ -233,4 +237,80 @@ test('a var that rebinds a required name is not that module', () => {
   `);
   assert.deepEqual(byName(parsed.symbols, 'app.render').calls, []);
   assert.deepEqual(byName(parsed.symbols, 'app.plain').calls, ['View']);
+});
+
+test('every target of a chained assignment is a name the file defines', () => {
+  // express writes six of its methods this way — `res.set =` newline
+  // `res.header = function header(…)` — and none of them survived, so res.type
+  // and res.set were missing from a box that gave a count as though it were
+  // complete, while res.send calls both of them.
+  const { symbols } = parse(`
+res.contentType =
+res.type = function contentType(type) {
+  return this.set('Content-Type', type);
+};
+
+exports.a = exports.b = exports.c = () => run();
+
+res.count = res.total = 1;
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine]),
+    [
+      ['res.contentType', 'function', 2, 5],
+      ['res.type', 'function', 2, 5],
+      ['exports.a', 'function', 7, 7],
+      ['exports.b', 'function', 7, 7],
+      ['exports.c', 'function', 7, 7],
+    ],
+  );
+  // Each alias is another way in to one body, so each carries its calls.
+  for (const name of ['exports.a', 'exports.b', 'exports.c']) {
+    assert.deepEqual(byName(symbols, name).calls, ['run']);
+  }
+});
+
+test('a function installed under a computed name is named as the source wrote it', () => {
+  // express lib/application.js: app.get, app.post, app.put and app.delete are
+  // all written here, and the file used to draw none of them.
+  const { symbols, calls } = parse(`
+methods.forEach(function (method) {
+  app[method] = function (path) {
+    return route(path);
+  };
+});
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine]),
+    [['app[method]', 'function', 3, 5]],
+  );
+  assert.deepEqual(byName(symbols, 'app[method]').calls, ['route']);
+  // The forEach still runs at load and is still the file's; only the function
+  // it installs belongs to the symbol.
+  assert.deepEqual(calls, []);
+});
+
+test('an exported object literal is a symbol, and so are its members', () => {
+  const { symbols } = parse(`
+export const environmentManager = {
+  isServer,
+  setIsServer(value) {
+    isServerFn = value;
+  },
+  reset: () => reset(),
+};
+
+const internal = { hidden() {} };
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind, s.owner ?? '-', s.startLine, s.endLine]),
+    [
+      ['environmentManager', 'class', '-', 2, 8],
+      ['isServer', 'field', 'environmentManager', 3, 3],
+      ['setIsServer', 'method', 'environmentManager', 4, 6],
+      ['reset', 'method', 'environmentManager', 7, 7],
+    ],
+  );
+  assert.equal(byName(symbols, 'environmentManager').exported, true);
+  assert.deepEqual(byName(symbols, 'reset').calls, ['reset']);
 });

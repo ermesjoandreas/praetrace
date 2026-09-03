@@ -177,7 +177,7 @@ server.registerTool(
   {
     title: 'Describe a file in the graph',
     description:
-      'What a file declares, what it imports, and — the part grep cannot answer cheaply — which files import it.',
+      'What a file declares, what it imports, and — the part grep cannot answer cheaply — which files import it. That last list is a floor and never a census: a file handed on by something that declares nothing of its own is depended on further away than its own imports say.',
     inputSchema: {
       path: z.string().describe('Path relative to the project root, for example src/graph/store.ts'),
     },
@@ -191,14 +191,22 @@ server.registerTool(
       if (detail.kind === 'folder') {
         return [`${detail.path} — ${detail.files.length} files`, ...detail.files.map((f) => `  ${f}`)].join('\n');
       }
+      // "used by (5)" is the one line here an agent acts on without checking,
+      // and it read as a census: a constructor change went out naming 5 of 26
+      // files because of it. The heading says "at least" whichever way the
+      // graph answers — there is no state in which the number is everything —
+      // and the note under it says what the count is missing.
       return [
         `${detail.path} — ${detail.symbols.length} symbols, ${detail.lineCount} lines`,
         '',
         'declares:',
         ...detail.symbols.map((s) => `  ${s.kind} ${s.name} (line ${s.line})`),
         '',
-        `used by (${detail.importedBy.length}):`,
+        `used by (at least ${detail.importedBy.length}):`,
         ...detail.importedBy.map((f) => `  ${f}`),
+        // A server still running the build it booted with sends no note. The
+        // heading is the half that must not depend on which build answered.
+        ...(detail.importedByNote ? [`  — ${detail.importedByNote}`] : []),
         '',
         `uses (${detail.imports.length}):`,
         ...detail.imports.map((f) => `  ${f}`),

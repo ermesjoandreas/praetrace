@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { REACHES, type ReachingEdgeKind } from '../graph/edges.js';
 import type { Graph, NodeKind } from '../graph/types.js';
+import type { Tracking } from './types.js';
 
 /**
  * Everything about one box that the diagram cannot show.
@@ -24,6 +25,19 @@ export interface FileDetail {
   imports: string[];
   importedBy: string[];
   /**
+   * Whether `importedBy` is every file that leans on this one, or the floor it
+   * usually is. See `Tracking`, and `passThroughs` for what makes it partial.
+   */
+  importedByCoverage: Tracking;
+  /**
+   * The sentence to print beside the count, in the graph's own words.
+   *
+   * Beside the count and not only when it is partial: "used by (5)" reads as a
+   * census in either state, and the reader who is about to change a signature
+   * is the one who cannot afford to read it that way.
+   */
+  importedByNote: string;
+  /**
    * Files this one calls into from a statement that belongs to no symbol.
    *
    * A file is the source of a `calls` edge when the call was written outside
@@ -45,6 +59,9 @@ export interface FolderDetail {
   /** Files outside this directory that it imports, and that import it. */
   imports: string[];
   importedBy: string[];
+  /** The same qualification a file's count carries, over the pile. */
+  importedByCoverage: Tracking;
+  importedByNote: string;
 }
 
 export type Detail = FileDetail | FolderDetail;
@@ -82,6 +99,7 @@ function describeFile(graph: Graph, target: string): FileDetail {
     imports: importsOf(graph, (from) => from === target).sort(),
     importedBy: importedByOf(graph, (to) => to === target).sort(),
     calls: callsOf(graph, target),
+    ...vouchFor(passThroughs(graph, (file) => file === target)),
   };
 }
 
@@ -104,6 +122,10 @@ function describeFolder(graph: Graph, target: string, files: string[]): FolderDe
     files,
     imports: [...imports].sort(),
     importedBy: [...importedBy].sort(),
+    // A pass-through inside the directory hands a file to its neighbour and
+    // says nothing about the directory as a unit, exactly as an import inside
+    // it does — `holds` is what leaves those out.
+    ...vouchFor(passThroughs(graph, (file) => inside.has(file))),
   };
 }
 
@@ -113,6 +135,101 @@ function importsOf(graph: Graph, matches: (from: string) => boolean): string[] {
 
 function importedByOf(graph: Graph, matches: (to: string) => boolean): string[] {
   return graph.edges.filter((edge) => edge.kind === 'imports' && matches(edge.to)).map((e) => e.from);
+}
+
+/** One file standing between what it imported and its own importers. */
+interface PassThrough {
+  filePath: string;
+  /** How many files import it — how many dependents it stands in front of. */
+  importers: number;
+}
+
+/**
+ * Files that import one the caller cares about, declare nothing the graph could
+ * read, and are imported in turn.
+ *
+ * A file with no symbols is not where a dependency stops. Whatever it took in,
+ * its own importers get — a barrel's `export * from './queryObserver'`,
+ * express's `module.exports = require('./lib/express')` — and the graph has an
+ * edge for each hop and none for the pair. So a count of importers taken one
+ * hop out is a floor wherever one of these stands in between, and it is not a
+ * small distance: 258 files import TanStack/query's query-core barrel, 5
+ * import the file it hands on.
+ *
+ * "Declares nothing the graph could read" is the claim, and not "re-exports".
+ * The parser knows a real `export *` and the Graph does not carry it, so
+ * calling this a re-export would be inventing the stronger fact from the weaker
+ * evidence — which is the failure this whole file is about. It is also why a
+ * file whose parse hit a syntax error is counted here rather than excused: we
+ * cannot read what it declares, so we cannot rule out that it hands this on,
+ * and the cautious answer is the one that says the count is a floor.
+ * TanStack/query's react-query barrel is exactly that file — 138 importers,
+ * `export type *` that tree-sitter stumbles on — and excusing it hid them all.
+ *
+ * The one shape left out is a file nobody imports: it hands what it took in to
+ * nobody, so nothing is standing behind it.
+ */
+function passThroughs(graph: Graph, holds: (filePath: string) => boolean): PassThrough[] {
+  // A file that declares nothing of its own is the plain barrel. One that
+  // declares a version constant beside its `export *` hands the name on just
+  // the same, and the earlier rule — "declares nothing" — called that file
+  // tracked while five importers reached the target through it. What makes a
+  // pass-through is having many importers of its own while importing the
+  // target, not being empty.
+  const declares = new Set<string>();
+  for (const node of graph.nodes.values()) {
+    if (node.kind !== 'file') declares.add(node.filePath);
+  }
+
+  const importers = new Map<string, number>();
+  const found = new Set<string>();
+  for (const edge of graph.edges) {
+    if (edge.kind !== 'imports') continue;
+    importers.set(edge.to, (importers.get(edge.to) ?? 0) + 1);
+    // `!holds(edge.from)` is what keeps a file from handing on itself, and a
+    // directory's own members from qualifying it.
+    if (holds(edge.to) && !holds(edge.from)) found.add(edge.from);
+  }
+
+  return [...found]
+    // A file with importers of its own is standing in front of the target for
+    // them. One nobody imports is an ordinary consumer, whatever it declares.
+    .filter((file) => (importers.get(file) ?? 0) > 0)
+    .map((filePath) => ({ filePath, importers: importers.get(filePath) ?? 0 }))
+    // Widest first. Only one is named, and the one worth naming is the one
+    // standing in front of the most: query-core's barrel with its 258
+    // importers, not whichever path sorts first.
+    .sort((a, b) => b.importers - a.importers || a.filePath.localeCompare(b.filePath));
+}
+
+/** The pair a count of dependents carries: how the graph looked, and what it missed. */
+function vouchFor(handedOn: PassThrough[]): Pick<FileDetail, 'importedByCoverage' | 'importedByNote'> {
+  const where = handedOnBy(handedOn);
+  return where === null
+    ? {
+        importedByCoverage: 'tracked',
+        importedByNote:
+          'Every import the scan resolved to this is listed, and no file passes it on to importers of its own; a specifier the scan could not place is counted on the file that wrote it, so the count is a floor.',
+      }
+    : { importedByCoverage: 'partial', importedByNote: `${where} The count is a floor.` };
+}
+
+/**
+ * The widest pass-through named, the rest counted, and the number of files it
+ * stands in front of — or null when nothing hands this on.
+ *
+ * A line in a panel, not a list: query-core's barrel is the one worth reading
+ * and the twenty behind it are noise at the width the note is shown at. The
+ * importer count is what turns the caveat into a scale — "5 listed, and 258
+ * files sit behind one barrel" is a different sentence from "this may be
+ * incomplete".
+ */
+function handedOnBy(handedOn: readonly PassThrough[]): string | null {
+  const [first, ...rest] = handedOn;
+  if (first === undefined) return null;
+  const where = rest.length === 0 ? first.filePath : `${first.filePath} and ${rest.length} more like it`;
+  const files = first.importers === 1 ? '1 file' : `${first.importers} files`;
+  return `Handed on by ${where}, which declares nothing the graph could read and is imported by ${files} — any of them can reach this with no import naming it.`;
 }
 
 /**
@@ -181,25 +298,28 @@ export interface SymbolLinks {
   /** What reaches it. This is the half nothing else in the app can answer. */
   usedBy: SymbolRelation[];
   /**
-   * Whether an empty `usedBy` means none, or means the graph cannot tell.
+   * How the graph looked for `usedBy`, and what that leaves out. Never how
+   * complete the list is — see `Tracking`.
    *
-   * A top-level function or class is resolved by name wherever its file is
-   * imported, so what the graph found is close to what there was to find —
-   * close, because a function handed over as a value, `[1].map(passed)`, is
-   * never a call the parser sees. Everything else is partial, each for its
-   * own reason. A member is reached through a receiver, and a receiver whose
-   * type is not written down is not guessed at — a missing edge is a gap, a
-   * wrong one is a lie — so for a method or a field the list holds the typed
-   * calls only, and nothing in it can say how many untyped ones there were.
-   * cobra's `Command.Execute` answered "0 in" while grep found sixteen
-   * callers; the count was not wrong so much as unqualified. A function
-   * assigned to a property, express's `app.handle`, is called through the
-   * object it hangs off, which the parser does not follow — application.js
-   * calls `compileETag(val)` at line 365 and utils.js's `exports.compileETag`
-   * answered "0 in, full". And an interface or a type is mostly used in type
-   * positions, which are not edges at all.
+   * The word here used to be `full` for a top-level class or function, and it
+   * was the one claim in the API a reader could not check. `QueryObserver`
+   * answered `full` beside sixteen callers while grep finds 26 non-test sites
+   * in 8 packages of TanStack/query: the seven adapters hand the class to
+   * `useBaseQuery` rather than calling it, and a value passed to a function is
+   * not a call the parser sees.
+   *
+   * The rest were already partial, each for its own reason. A member is
+   * reached through a receiver, and a receiver whose type is not written down
+   * is not guessed at — a missing edge is a gap, a wrong one is a lie — so for
+   * a method or a field the list holds the typed calls only. cobra's
+   * `Command.Execute` answered "0 in" while grep found sixteen callers. A
+   * function assigned to a property, express's `app.handle`, is called through
+   * the object it hangs off: application.js calls `compileETag(val)` at line
+   * 365 and utils.js's `exports.compileETag` answered "0 in, full". And an
+   * interface or a type is mostly used in type positions, which are not edges
+   * at all.
    */
-  coverage: 'full' | 'partial';
+  coverage: Tracking;
   /** The sentence the panel shows beside the count, in the graph's own words. */
   coverageNote: string;
 }
@@ -209,33 +329,56 @@ type Coverage = Pick<SymbolLinks, 'coverage' | 'coverageNote'>;
 const UNTYPED_RECEIVER: Coverage = {
   coverage: 'partial',
   coverageNote:
-    'Calls through a receiver whose type is not written down are not tracked, so an empty list means unknown, not none.',
+    'Calls through a receiver whose type is not written down are not tracked, so the count is a floor and an empty list means unknown, not none.',
 };
 
 const ASSIGNED_PROPERTY: Coverage = {
   coverage: 'partial',
   coverageNote:
-    'Called through the object it is assigned to, which is not tracked, so an empty list means unknown, not none.',
+    'Called through the object it is assigned to, which is not tracked, so the count is a floor and an empty list means unknown, not none.',
 };
 
 const TYPE_POSITION: Coverage = {
   coverage: 'partial',
-  coverageNote: 'Uses in type positions are not tracked, so an empty list means unknown, not none.',
+  coverageNote:
+    'Uses in type positions are not tracked, so the count is a floor and an empty list means unknown, not none.',
 };
 
 const BY_NAME: Coverage = {
-  coverage: 'full',
+  coverage: 'tracked',
   coverageNote:
-    'References by name are followed across every file that imports this one; a function passed by value is not tracked.',
+    'References by name are followed across every file that imports this one; one passed to a function as a value, or written only in a type, is not. The count is a floor.',
 };
 
-function coverageOf(name: string, kind: NodeKind): Coverage {
+/**
+ * How much of `usedBy` the graph can vouch for.
+ *
+ * A class and a top-level function are the two that changed. They are values,
+ * and the ways a value travels — handed to another function, put in a table,
+ * carried on by a file that re-exports it — are not calls, so `full` was never
+ * true of them. `tracked` is what is true: the name is followed wherever the
+ * file is imported. When the graph can also see a file being handed on, that
+ * is evidence of a path it does not follow, and the answer drops to `partial`
+ * naming it — which is the QueryObserver case, and the reason this takes a
+ * graph rather than a name and a kind.
+ */
+function coverageOf(graph: Graph, name: string, kind: NodeKind, filePath: string): Coverage {
   if (kind === 'method' || kind === 'field') return UNTYPED_RECEIVER;
   if (kind === 'interface' || kind === 'type') return TYPE_POSITION;
-  // A top-level function or class whose name has a dot in it was assigned to
-  // a property: `app.init = function init` in express.
-  if (name.includes('.')) return ASSIGNED_PROPERTY;
-  return BY_NAME;
+  // A top-level function or class whose name is not a plain identifier was
+  // assigned to a property: `app.init = function init`, or express's
+  // `app[method] = ...` written once for every HTTP verb. Neither can be
+  // reached by name, so neither is tracked — and the subscript form has no dot
+  // to spot it by, which read as "nothing references this" over the four
+  // busiest methods in express.
+  if (/[.[]/.test(name)) return ASSIGNED_PROPERTY;
+
+  const where = handedOnBy(passThroughs(graph, (file) => file === filePath));
+  if (where === null) return BY_NAME;
+  return {
+    coverage: 'partial',
+    coverageNote: `${where} One passed to a function as a value is not tracked either. The count is a floor.`,
+  };
 }
 
 export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
@@ -283,6 +426,6 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
     filePath: symbol.filePath,
     uses: uses.sort(order),
     usedBy: usedBy.sort(order),
-    ...coverageOf(symbol.name, symbol.kind),
+    ...coverageOf(graph, symbol.name, symbol.kind, symbol.filePath),
   };
 }

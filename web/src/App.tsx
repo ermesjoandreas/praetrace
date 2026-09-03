@@ -18,6 +18,7 @@ import {
   type MouseEvent,
 } from 'react';
 import {
+  FLOOR,
   decideCluster,
   fetchChanges,
   fetchClusters,
@@ -70,7 +71,7 @@ import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
-import { Sidebar } from './Sidebar';
+import { Sidebar, symbolKey } from './Sidebar';
 import { Categories, type GroupEditor } from './Categories';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
@@ -1091,10 +1092,16 @@ export function App() {
     const only = found.length === 1 ? found[0] : undefined;
     // A method or a field is reached through a receiver, and a receiver whose
     // type is not written down is not followed — so its "in" count is what is
-    // known, never what there is, and the chip must not say "0 in" as if the
-    // graph had looked everywhere. The graph's own sentence about that rides
-    // along, for the tooltip.
+    // known, never what there is. `partial` is kept apart from the note below
+    // because it is the one thing on the chip that is a *claim*: only where the
+    // graph looked everywhere by name may the grey "nothing links to this"
+    // reading be drawn.
     const partial = found.find((entry) => entry.coverage === 'partial') ?? null;
+    // The sentence the tooltip carries, whatever the state — every one of these
+    // counts is a floor, so the chip's ≥ needs an explanation on every one of
+    // them. A weaker state is preferred when several are followed: it is the
+    // one that says the most about what is missing.
+    const note = (partial ?? found[0])?.coverageNote ?? null;
     return {
       settled,
       uses,
@@ -1102,6 +1109,7 @@ export function App() {
       total: uses + usedBy,
       label: only === undefined ? ids.length + ' symbols' : only.name,
       partial: partial === null ? null : partial.coverageNote,
+      note,
       found,
       gone,
     };
@@ -1118,6 +1126,49 @@ export function App() {
     }
     return found;
   }, [following, links]);
+
+  /** The box the selection names, or null when the diagram is not drawing one. */
+  const selectedBox = useMemo(
+    () => view?.nodes.find((node) => node.id === selected) ?? null,
+    [view, selected],
+  );
+
+  /**
+   * The graph id of every symbol the selected file declares, by name and line.
+   *
+   * The panel's symbol list comes from `/api/detail`, which names a symbol and
+   * never says which id the graph filed it under — and the id is not derivable
+   * from the name: a method is `path#Class.method`, and a second symbol of the
+   * same name in one file wears a `~2`. The view carries the id on every
+   * member, so the two are joined here, where both are in hand, rather than
+   * rebuilt by a rule the panel would have to keep in step with `store.ts`.
+   *
+   * Empty when the selected file has no box of its own — collapsed into a
+   * folder, or reached from a path row — and the panel then shows no Explain
+   * on those rows, which is the honest answer: it has no id to ask about. The
+   * file itself can still be read, from the panel's own header.
+   */
+  const selectedSymbolIds = useMemo(() => {
+    const ids = new Map<string, string>();
+    if (selectedBox === null || selectedBox.kind !== 'file') return ids;
+    for (const member of selectedBox.members) ids.set(symbolKey(member.name, member.line), member.id);
+    return ids;
+  }, [selectedBox]);
+
+  /**
+   * The selection when it is one file, which is what Explain can be handed.
+   *
+   * Written as "not a pile" rather than "is a file box": a path row in the panel
+   * selects a file the diagram may not be drawing at all — an importer outside
+   * the scope — and that file is every bit as explainable as one with a box.
+   * Only a folder and a bundle stand for many paths, and reading a pile one
+   * file at a time is a different act from the one being offered, and a far
+   * more expensive one.
+   */
+  const selectedFile =
+    selected === null || selectedBox?.kind === 'folder' || selectedBox?.kind === 'bundle'
+      ? null
+      : selected;
 
   /** The held files as rows. The path is also the id they are explained under. */
   const readingFiles = useMemo(
@@ -1171,6 +1222,31 @@ export function App() {
   }, [explainIds, revision, data?.root, run?.id, run?.state, takeRun]);
 
   /**
+   * Ask for a run, and put what comes back where the panel reads it.
+   *
+   * Shared by the section's button and by the one-press Explain on a box, a
+   * panel row and the menu. The interesting half is what a failure is: a
+   * refusal arrives as the server's own words inside a 400 body, a broken
+   * request as a rejection, and the two say different things to the reader.
+   * One copy, so the four presses cannot come to disagree about that.
+   */
+  const sendExplain = useCallback(
+    (ids: string[], force = false) => {
+      setExplainError(null);
+      setStreamed('');
+      requestExplanations(ids, force).then(
+        (result) => {
+          if (result.refused !== null) setExplainError({ reason: 'refused', detail: result.refused });
+          takeRun(result.run);
+        },
+        (cause: unknown) =>
+          setExplainError({ reason: 'failed', detail: cause instanceof Error ? cause.message : String(cause) }),
+      );
+    },
+    [takeRun],
+  );
+
+  /**
    * Spend the user's quota, on exactly what the list already holds. Nothing is
    * ever explained automatically; this only ever happens on a press.
    */
@@ -1184,19 +1260,45 @@ export function App() {
         ? explainIds
         : explainIds.filter((id) => explanations.get(id)?.state !== 'current');
       if (ids.length === 0) return;
-      setExplainError(null);
-      setStreamed('');
-      requestExplanations(ids, force).then(
-        (result) => {
-          if (result.refused !== null) setExplainError({ reason: 'refused', detail: result.refused });
-          takeRun(result.run);
-        },
-        (cause: unknown) =>
-          setExplainError({ reason: 'failed', detail: cause instanceof Error ? cause.message : String(cause) }),
-      );
+      sendExplain(ids, force);
     },
-    [explainIds, explanations, takeRun],
+    [explainIds, explanations, sendExplain],
   );
+
+  /**
+   * Explain one thing, from wherever it was found.
+   *
+   * The readings have always rendered inside the Following section, and that
+   * section is null until something is already being followed — so the paid
+   * feature had no way in that anyone could see: three of seven readers walked
+   * every menu, the whole Detail panel and ⌘K without the word Explain ever
+   * appearing on screen. This is the gesture that fixes it, and it is one
+   * gesture on purpose. A control that only put the row on the list would leave
+   * the second half of the act to be discovered as well, in the same section
+   * that was not findable.
+   *
+   * A symbol goes on `following`, which dims the diagram down to what it
+   * touches; a file goes on `reading`, which dims nothing. That is the
+   * existing distinction between the two sets and this does not blur it.
+   */
+  const explainOne = useCallback(
+    (id: string, kind: 'symbol' | 'file') => {
+      // The answer lands in the side bar, so pressing this with the panel shut
+      // would spend money into a room nobody is in.
+      setShowSidebar(true);
+      const add = (was: ReadonlySet<string>): ReadonlySet<string> =>
+        was.has(id) ? was : new Set([...was, id]);
+      if (kind === 'file') setReading(add);
+      else setFollowing(add);
+      sendExplain([id]);
+    },
+    [sendExplain],
+  );
+
+  // Bound once each, because the box data is rebuilt from a memo and a fresh
+  // arrow on every render would rebuild every box with it.
+  const explainFile = useCallback((path: string) => explainOne(path, 'file'), [explainOne]);
+  const explainSymbol = useCallback((id: string) => explainOne(id, 'symbol'), [explainOne]);
 
   const cancelExplain = useCallback(() => {
     cancelExplanations().then(
@@ -1439,9 +1541,16 @@ export function App() {
         // and the path it hands back is files[0] — the one `.box-open` opens.
         followed: node.kind === 'file' && reading.has(node.files[0] ?? ''),
         onFollowFile: toggleReading,
+        onExplain: explainFile,
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
         aside: relatedFiles !== null && !node.files.some((file) => relatedFiles.has(file)),
+        // Why a dimmed box is not proof. Dimming is the diagram's own drawing
+        // of "nothing here takes part in this", and it is built from the same
+        // caller list the panel prints a count of — so where that list is a
+        // floor, so is the dimming, and the box was the one surface saying it
+        // without saying so.
+        asideNote: reach.note,
       },
     }));
 
@@ -1596,6 +1705,8 @@ export function App() {
     toggleFollowing,
     reading,
     toggleReading,
+    explainFile,
+    reach.note,
     relatedIds,
     relatedFiles,
     expanded,
@@ -2077,6 +2188,22 @@ export function App() {
           ...(selected === null ? { disabledBecause: 'Nothing selected' } : { run: () => goTo(selected, 'file') }),
         },
         {
+          // The third way in, and the one the readers who found none went
+          // looking through: three of seven walked every menu here before
+          // concluding the feature did not exist. The cost is in the label
+          // because a menu item carries a tooltip only while it is greyed —
+          // and a press that spends must not be able to happen unannounced.
+          label: 'Explain the selection — spends your Claude quota',
+          ...(selectedFile === null
+            ? {
+                disabledBecause:
+                  selected === null
+                    ? 'Nothing selected'
+                    : 'This box stands for many files; select one of them to explain it',
+              }
+            : { run: () => explainFile(selectedFile) }),
+        },
+        {
           label: 'Create category from selection…',
           separatorBefore: true,
           // The name is asked for in the Categories section, where the files
@@ -2367,19 +2494,28 @@ export function App() {
                 : 'symbol-chip'
             }
             onClick={() => setFollowing(new Set())}
+            // The chip has no room for prose, so the ≥ on its count is the
+            // whole of what it can say on its face and the note has to be one
+            // hover away. It is carried whatever the state: `tracked` is a
+            // floor too, and the tooltip that said only "Click to stop
+            // following" was sitting on the counts most likely to be believed.
             title={
               !reach.settled
                 ? 'Looking up what these are connected to'
-                : reach.partial !== null
-                  ? `${reach.partial} Click to stop following.`
-                  : reach.total === 0
-                    ? 'Nothing in this project references them, and nothing they reference resolved.'
-                    : 'Click to stop following'
+                : `${
+                    reach.total === 0 && reach.partial === null
+                      ? 'Nothing in this project references them by name, and nothing they reference resolved. '
+                      : ''
+                  }${reach.note === null ? '' : `${reach.note} `}Click to stop following.`
             }
           >
+            {/* A ≥ on the count rather than the word "known" after it: the
+                number is the thing that gets read at a glance and quoted
+                afterwards, so the number is what has to say it is a floor.
+                The graph's own sentence about why is in the title. */}
             {!reach.settled
               ? 'following…'
-              : `${reach.label} — ${reach.usedBy}${reach.partial === null ? '' : ' known'} in, ${reach.uses} out`}
+              : `${reach.label} — ${FLOOR}${reach.usedBy} in, ${reach.uses} out`}
             <i className="codicon codicon-close" aria-hidden="true" />
           </button>
         )}
@@ -2649,6 +2785,9 @@ export function App() {
             at={at}
             onSelect={setSelected}
             onFocus={goTo}
+            symbolIds={selectedSymbolIds}
+            onExplainSymbol={explainSymbol}
+            onExplainFile={explainFile}
             following={{
               links: reach.found,
               gone: reach.gone,

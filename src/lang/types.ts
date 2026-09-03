@@ -16,7 +16,7 @@ import type { ImportBinding, ParsedSymbol, Reexport } from '../parser/types.js';
  * against a real repository.
  */
 
-export type LanguageId = 'typescript' | 'javascript' | 'java' | 'go' | 'csharp' | 'rust';
+export type LanguageId = 'typescript' | 'javascript' | 'java' | 'go' | 'csharp' | 'rust' | 'python';
 
 /** A tree-sitter node. Kept structural so this module needs no grammar import. */
 export interface SyntaxNode {

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Section } from './Section';
-import { money, fetchDetail,
+import { FLOOR, money, fetchDetail,
   openInEditor,
   type Detail,
   type ExplainFailure,
@@ -88,7 +88,34 @@ interface SidebarProps {
    * says "258 dependents", and the panel is where those 258 have names.
    */
   bundle?: { label: string; files: string[] } | null;
+  /**
+   * The graph id of each symbol the selected file declares, by name and start
+   * line.
+   *
+   * `/api/detail` names a symbol and never says which id the graph filed it
+   * under, and the id cannot be rebuilt from the name: a method is
+   * `path#Class.method` and a second symbol of the same name in one file wears
+   * a `~2`. The view already carries the id on every member, so the join is
+   * made where both are in hand rather than guessed at here. Empty whenever
+   * the file has no box on screen — collapsed into a folder, or reached from a
+   * path row — and a row with no id shows no Explain, because a press that
+   * asked about nothing would be worse than no press.
+   */
+  symbolIds: ReadonlyMap<string, string>;
+  /** Follow one symbol and ask a model what it is for, in one press. */
+  onExplainSymbol: (id: string) => void;
+  /**
+   * The same for the whole file, which the panel can offer where a box cannot:
+   * a path row selects a file the diagram is not drawing — an importer outside
+   * the current scope — and that file has no box to hover.
+   */
+  onExplainFile: (path: string) => void;
   following: Following;
+}
+
+/** The key both halves of that join agree on. A file has one symbol per line and name. */
+export function symbolKey(name: string, line: number): string {
+  return `${line}\n${name}`;
 }
 
 const clock = new Intl.DateTimeFormat(undefined, {
@@ -105,6 +132,9 @@ export function Sidebar({
   onSelect,
   onFocus,
   bundle = null,
+  symbolIds,
+  onExplainSymbol,
+  onExplainFile,
   following,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -130,8 +160,8 @@ export function Sidebar({
   }, [selected, revision, root, at, bundle]);
 
   // The header's actions are what the panel head used to spell out as words:
-  // go to it on the diagram, open it in the editor. Only a file has anywhere
-  // in an editor to open.
+  // go to it on the diagram, ask what it is for, open it in the editor. Only a
+  // file has anywhere in an editor to open, or a reading to be had of it.
   const actions =
     detail === null ? null : (
       <>
@@ -143,6 +173,21 @@ export function Sidebar({
         >
           <i className="codicon codicon-target" aria-hidden="true" />
         </button>
+        {/* The panel's own way in, for the file a box cannot offer one for:
+            a path row selects an importer the current scope does not draw, and
+            the reader looking at it is exactly the one asking what it is for.
+            The sparkle is VS Code's mark for "a model did this", and the title
+            says what a press costs before it is pressed. */}
+        {detail.kind === 'file' && (
+          <button
+            type="button"
+            title="Ask Claude what this file is for — it spends your Claude quota"
+            aria-label="Explain this file"
+            onClick={() => onExplainFile(detail.path)}
+          >
+            <i className="codicon codicon-sparkle" aria-hidden="true" />
+          </button>
+        )}
         {detail.kind === 'file' && (
           <button
             type="button"
@@ -166,7 +211,13 @@ export function Sidebar({
         ) : detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
         ) : detail.kind === 'file' ? (
-          <FileView detail={detail} root={root} onSelect={onSelect} />
+          <FileView
+            detail={detail}
+            root={root}
+            onSelect={onSelect}
+            symbolIds={symbolIds}
+            onExplainSymbol={onExplainSymbol}
+          />
         ) : (
           <FolderView detail={detail} onSelect={onSelect} />
         )}
@@ -179,10 +230,14 @@ function FileView({
   detail,
   root,
   onSelect,
+  symbolIds,
+  onExplainSymbol,
 }: {
   detail: Extract<Detail, { kind: 'file' }>;
   root: string;
   onSelect: (target: string) => void;
+  symbolIds: ReadonlyMap<string, string>;
+  onExplainSymbol: (id: string) => void;
 }) {
   return (
     <>
@@ -196,23 +251,59 @@ function FileView({
 
       {/* The whole list, not the eight the box has room for. */}
       <PanelList title="Declares">
-        {detail.symbols.map((symbol, index) => (
-          <li key={`${symbol.name}-${index}`}>
-            <button
-              type="button"
-              className={`sym sym-${symbol.kind}`}
-              onClick={() => void openInEditor(root, detail.path, symbol.line)}
-              title={`Open at line ${symbol.line}`}
-            >
-              {symbol.kind === 'function' ? `${symbol.name}()` : symbol.name}
-              <span className="sym-line">{symbol.line}</span>
-            </button>
-          </li>
-        ))}
+        {detail.symbols.map((symbol, index) => {
+          // The ids come from the view and the rows from `/api/detail`, and the
+          // second arrives a moment after the first — so for one frame after a
+          // click the two describe different files. The id names its own file,
+          // so it can say whether it belongs to this one; explaining the wrong
+          // symbol would spend money on it.
+          const found = symbolIds.get(symbolKey(symbol.name, symbol.line));
+          const id = found?.startsWith(`${detail.path}#`) === true ? found : undefined;
+          return (
+            <li key={`${symbol.name}-${index}`}>
+              <button
+                type="button"
+                className={`sym sym-${symbol.kind}`}
+                onClick={() => void openInEditor(root, detail.path, symbol.line)}
+                title={`Open at line ${symbol.line}`}
+              >
+                {symbol.kind === 'function' ? `${symbol.name}()` : symbol.name}
+                <span className="sym-line">{symbol.line}</span>
+              </button>
+              {/* Hidden until the row is hovered, like every other row action.
+                  This is the surface a reader is already on when they want to
+                  know what a symbol is for — the panel that lists it — and
+                  before this the only Explain on the page lived in a section
+                  that does not exist until something is already followed. */}
+              {id !== undefined && (
+                <span className="row-actions">
+                  <button
+                    type="button"
+                    title={`Follow ${symbol.name} and ask Claude what it is for — it spends your Claude quota`}
+                    aria-label={`Explain ${symbol.name}`}
+                    onClick={() => onExplainSymbol(id)}
+                  >
+                    <i className="codicon codicon-sparkle" aria-hidden="true" />
+                  </button>
+                </span>
+              )}
+            </li>
+          );
+        })}
       </PanelList>
 
-      {/* The answer the diagram could never give. */}
-      <PathList title="Used by" paths={detail.importedBy} onSelect={onSelect} />
+      {/* The answer the diagram could never give — and a floor, not a census.
+          A file reached through a barrel, or named by a specifier the resolver
+          could not follow, is missing from this list, and the reader who is
+          about to change a signature is the one who cannot afford to read the
+          number as a total. The graph says what it missed, in its own words. */}
+      <PathList
+        title="Used by"
+        paths={detail.importedBy}
+        floor
+        note={detail.importedByNote}
+        onSelect={onSelect}
+      />
       <PathList title="Uses" paths={detail.imports} onSelect={onSelect} />
       {/* Its own heading, never folded into Uses. An import says this file
           mentions that one; a call says it runs something in it, and the same
@@ -240,7 +331,15 @@ function FolderView({
       </header>
 
       <PathList title="Files" paths={detail.files} onSelect={onSelect} />
-      <PathList title="Used by" paths={detail.importedBy} onSelect={onSelect} />
+      {/* A directory's dependents are a floor for the same reason a file's are,
+          and the graph qualifies the pile in the same words. */}
+      <PathList
+        title="Used by"
+        paths={detail.importedBy}
+        floor
+        note={detail.importedByNote}
+        onSelect={onSelect}
+      />
       <PathList title="Uses" paths={detail.imports} onSelect={onSelect} />
     </>
   );
@@ -280,10 +379,20 @@ function BundleView({
   );
 }
 
-function PanelList({ title, children }: { title: string; children: ReactNode }) {
+function PanelList({
+  title,
+  note = '',
+  children,
+}: {
+  title: string;
+  /** What the count above it leaves out. The same prose the Following section uses. */
+  note?: string;
+  children: ReactNode;
+}) {
   return (
     <div className="panel-list">
       <h3>{title}</h3>
+      {note !== '' && <p className="followed-coverage">{note}</p>}
       <ul>{children}</ul>
     </div>
   );
@@ -292,16 +401,21 @@ function PanelList({ title, children }: { title: string; children: ReactNode }) 
 function PathList({
   title,
   paths,
+  floor = false,
+  note = '',
   onSelect,
 }: {
   title: string;
   paths: string[];
+  /** The list is what was found, not what there is; the count says so. */
+  floor?: boolean;
+  note?: string;
   onSelect: (target: string) => void;
 }) {
   if (paths.length === 0) return null;
 
   return (
-    <PanelList title={`${title} (${paths.length})`}>
+    <PanelList title={`${title} (${floor ? FLOOR : ''}${paths.length})`} note={note}>
       {paths.map((path) => (
         <li key={path}>
           <button type="button" className="path" onClick={() => onSelect(path)} title={path}>
@@ -486,13 +600,15 @@ function Followed({
           />
 
           {/* The graph's own word on how much of the lists below it can vouch
-              for. A method's callers are the typed ones only, so for one an
-              empty list is a silence, not a count — cobra's Command.Execute
-              read "0 in" with sixteen callers in grep — and this sentence is
-              what keeps the silence from being read as none. */}
-          {symbol.coverage === 'partial' && (
-            <p className="followed-coverage">{symbol.coverageNote}</p>
-          )}
+              for, and it is said whatever the state. A method's callers are
+              the typed ones only, so for one an empty list is a silence rather
+              than a count — cobra's Command.Execute read "0 in" with sixteen
+              callers in grep. But `tracked` is not the opposite of that: a
+              class handed to a function as a value is not a call either, which
+              is how QueryObserver read sixteen against 26 real sites. Drawn
+              only for the weaker state, this line was absent from exactly the
+              counts that looked trustworthy. */}
+          <p className="followed-coverage">{symbol.coverageNote}</p>
 
           {symbol.usedBy.length === 0 && symbol.uses.length === 0 ? (
             // A type or an interface is never *called*, so an empty relation
@@ -500,7 +616,7 @@ function Followed({
             // the reader to stop reading the line. It is only worth a sentence
             // where callers were expected and the graph looked everywhere it
             // can — a method's sentence is the coverage note above.
-            symbol.coverage === 'full' &&
+            symbol.coverage !== 'partial' &&
             CALLABLE.has(symbol.kind) && (
               <p className="followed-none">
                 Nothing in the graph references this by name, and it references nothing that
@@ -509,8 +625,15 @@ function Followed({
             )
           ) : (
             <>
+              {/* The count wears a ≥ rather than the heading wearing the word
+                  "known": the number is what gets read and quoted, so the
+                  number is what has to say it is a floor. Only on the incoming
+                  half — what a symbol reaches is written down in its own body,
+                  and it is the callers that arrive through receivers and
+                  barrels nobody typed. */}
               <Relations
-                title={symbol.coverage === 'partial' ? 'known used by' : 'used by'}
+                title="used by"
+                floor
                 rows={symbol.usedBy}
                 onSelect={onSelect}
                 onFocus={onFocus}
@@ -713,11 +836,14 @@ function Reading({
 function Relations({
   title,
   rows,
+  floor = false,
   onSelect,
   onFocus,
 }: {
   title: string;
   rows: SymbolRelation[];
+  /** The list is what was found, not what there is. See the note above it. */
+  floor?: boolean;
   onSelect: (target: string) => void;
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
@@ -725,7 +851,11 @@ function Relations({
   return (
     <>
       <h3 className="followed-kind">
-        {title} <span>{rows.length}</span>
+        {title}{' '}
+        <span>
+          {floor ? FLOOR : ''}
+          {rows.length}
+        </span>
       </h3>
       <ul className="followed-rows">
         {rows.map((row) => (

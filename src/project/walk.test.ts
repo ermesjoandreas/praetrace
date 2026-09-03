@@ -14,7 +14,7 @@ test('program text no language reads is counted under its extension', () => {
     ['git-svn.perl', '.perl'],
     ['Git.pm', '.pm'],
     ['fmt.pl', '.pl'],
-    ['setup.py', '.py'],
+    ['Rakefile.rb', '.rb'],
     ['App.vue', '.vue'],
     ['builtin.c', '.c'],
     ['cache.h', '.h'],
@@ -102,4 +102,56 @@ test('every module this project has is a module the scan can reach', async () =>
   await visit('src');
 
   assert.deepEqual(onDisk.filter((file) => !scanned.has(file)), []);
+});
+
+/**
+ * A virtualenv is `node_modules` with a different name, and it was not on the
+ * list. DAPE read "839 files" where 732 of them were pip's own vendored `.py`
+ * sitting under `venv/`, so the one number the interface leads with described
+ * the packages the project installed rather than the project.
+ */
+test("a virtualenv is somebody else's code, and is not counted as the project's", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codemap-venv-'));
+  try {
+    for (const dir of [
+      'app',
+      'venv/lib/python3.11/site-packages/pip/_vendor',
+      '.venv/lib/python3.12/site-packages',
+      'env/lib/python3.11/site-packages',
+      '__pycache__',
+      'vendor/github.com/spf13/pflag',
+      'Pods/Alamofire',
+    ]) {
+      await mkdir(path.join(root, dir), { recursive: true });
+    }
+    for (const file of [
+      'app/main.py',
+      'app/tool.ts',
+      'venv/pyvenv.cfg',
+      'venv/lib/python3.11/site-packages/pip/_vendor/rich.py',
+      '.venv/lib/python3.12/site-packages/six.py',
+      'env/lib/python3.11/site-packages/attrs.py',
+      '__pycache__/main.cpython-311.pyc',
+      'vendor/github.com/spf13/pflag/flag.go',
+      'Pods/Alamofire/Session.swift',
+    ]) {
+      await writeFile(path.join(root, file), '');
+    }
+
+    // Python is read now, so the census — what NO language reads — is the one
+    // Swift file under Pods and nothing else. The vendored `.py`, the Go under
+    // `vendor/` and the `.pyc` are not counted, because they are not walked.
+    assert.deepEqual(await countUnreadable(root), []);
+
+    // And the same rule on the scanning side: the project's own two files, and
+    // nothing from the four directories that hold somebody else's code.
+    // `vendor/` holds real Go the tool can read, which is exactly why it has to
+    // be named rather than left to the census.
+    assert.deepEqual(
+      (await findSourceFiles(root)).map((file) => file.filePath).sort(),
+      ['app/main.py', 'app/tool.ts'],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
