@@ -508,3 +508,42 @@ test('the module name is the path, once the caller says what it is', () => {
   assert.equal(parse('x = 1\n', 'src/flask/app.py').moduleName, 'flask.app');
   assert.equal(parse('x = 1\n', 'main.py').moduleName, 'main');
 });
+
+test('an absolute import inside a package never looks in the package itself', () => {
+  // Python 3 resolves an absolute import against sys.path, and a module inside
+  // a package is not on it. Trying the own directory landed eleven of flask's
+  // `import typing as t` on src/flask/typing.py.
+  const files = new Set(['app/__init__.py', 'app/typing.py', 'app/json/__init__.py', 'app/core.py']);
+  const resolve = (specifier: string) =>
+    python.resolve({
+      from: 'app/core.py',
+      specifier,
+      files,
+      modules: new Map(),
+      declarations: new Map(),
+      imports: new Map(),
+      facts: { tsPaths: new Map(), packages: new Map(), goModule: null, crates: new Map() },
+    });
+  assert.equal(resolve('typing'), null);
+  assert.equal(resolve('json'), null);
+  // The package's own modules are still reachable by their full path.
+  assert.equal(resolve('app.typing'), 'app/typing.py');
+});
+
+test("a script's own directory is tried before a foreign root, not after", () => {
+  // Two exercise directories that each hold a `utils.py`, the shape of a course
+  // repository: the sibling must win over whatever root a package elsewhere made.
+  const files = new Set(['week1/ex/__init__.py', 'week1/utils.py', 'week3/utils.py', 'week3/a.py']);
+  assert.equal(
+    python.resolve({
+      from: 'week3/a.py',
+      specifier: 'utils',
+      files,
+      modules: new Map(),
+      declarations: new Map(),
+      imports: new Map(),
+      facts: { tsPaths: new Map(), packages: new Map(), goModule: null, crates: new Map() },
+    }),
+    'week3/utils.py',
+  );
+});

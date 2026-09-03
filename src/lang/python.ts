@@ -674,7 +674,20 @@ function declareField(fields: Map<string, Field>, name: string, field: Field): v
  */
 function initFields(init: SyntaxNode, instance: string, out: Map<string, Field>): void {
   const parameters = new Map(parametersOf(init.childForFieldName('parameters')));
+  // The same rule `collectCalls` follows: a class or a function written inside
+  // `__init__` that takes the instance's name as a parameter of its own has its
+  // own `self`, and its attributes are its, not ours. Without this a nested
+  // `class Inner: def __init__(self): self.leak: Logger = ...` gave Widget a
+  // field named leak and an association to Logger it never has.
+  const rebound = init
+    .descendantsOfType(['function_definition', 'lambda'])
+    .filter(
+      (definition) =>
+        definition.startIndex !== init.startIndex &&
+        parametersOf(definition.childForFieldName('parameters')).some(([name]) => name === instance),
+    );
   for (const assignment of init.descendantsOfType('assignment')) {
+    if (within(assignment, rebound)) continue;
     const left = assignment.childForFieldName('left');
     const targets = left?.type === 'attribute' ? [left] : (left?.namedChildren ?? []);
     for (const target of targets) {
@@ -770,9 +783,14 @@ function collectClass(node: SyntaxNode, scope: Scope, out: Collected): void {
     const typed = new Map(scope.variables);
     const locals = new Set<string>();
     for (const [parameter] of parametersOf(def.childForFieldName('parameters'))) locals.add(parameter);
-    const before = new Set(typed.keys());
-    bodyBindings(def, typed, []);
-    for (const bound of typed.keys()) if (!before.has(bound)) locals.add(bound);
+    // Bound into a table of their own first. Reading them out of `typed` missed
+    // every name the module already held — `Foo = make()` under
+    // `from lib import Foo` was not seen as a local at all, so a bare `Foo()`
+    // was drawn on the import.
+    const own = new Map<string, string | null>();
+    bodyBindings(def, own, []);
+    for (const bound of own.keys()) locals.add(bound);
+    for (const [bound, type] of own) typed.set(bound, type);
 
     const calls = collectCalls(def, classScope, typed, locals, instance);
     const symbol: ParsedSymbol = {
@@ -796,9 +814,12 @@ function collectFunction(node: SyntaxNode, scope: Scope, out: Collected): void {
   const typed = new Map(scope.variables);
   const locals = new Set<string>();
   for (const [parameter] of parametersOf(definition.childForFieldName('parameters'))) locals.add(parameter);
-  const before = new Set(typed.keys());
-  bodyBindings(definition, typed, []);
-  for (const bound of typed.keys()) if (!before.has(bound)) locals.add(bound);
+  // See collectMethods: a local that reuses a name the module bound is still
+  // the local, and reading the bindings out of `typed` could not see that.
+  const own = new Map<string, string | null>();
+  bodyBindings(definition, own, []);
+  for (const bound of own.keys()) locals.add(bound);
+  for (const [bound, type] of own) typed.set(bound, type);
 
   const decorators = decoratorsOf(decorated);
   const symbol: ParsedSymbol = {
@@ -997,9 +1018,19 @@ export const python = {
       return at(path.posix.join(directory, ...rest.split('.')), false);
     }
 
+    // Python 3 resolves an absolute import against sys.path, and sys.path[0]
+    // is the SCRIPT's directory — never the directory of a module inside a
+    // package. Trying the own directory for a packaged file drew twelve false
+    // edges in flask alone: `import typing as t` in eleven files landed on
+    // src/flask/typing.py, and `import json` in config.py on
+    // src/flask/json/__init__.py. And for a script, the own directory comes
+    // FIRST, not last: two exercise directories that each hold a `utils.py`
+    // resolved to whichever one a foreign root happened to reach.
     const segments = module.split('.');
-    const own = path.posix.dirname(from);
-    for (const root of [...rootsOf(files), own === '.' ? '' : own]) {
+    const own = path.posix.dirname(from) === '.' ? '' : path.posix.dirname(from);
+    const insidePackage = files.has(own === '' ? '__init__.py' : `${own}/__init__.py`);
+    const roots = insidePackage ? rootsOf(files) : [own, ...rootsOf(files)];
+    for (const root of roots) {
       const hit = at(path.posix.join(root, ...segments), false);
       if (hit !== null) return hit;
     }
