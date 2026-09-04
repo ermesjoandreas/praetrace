@@ -1082,7 +1082,9 @@ main { display: flex; flex: 1; min-height: 0; }
 /* One shape for every section, left and right: a 22px header with a chevron,
    an uppercase title and, at the right edge, actions that stay out of sight
    until the section is under the cursor or holds the focus. */
-.sidebar-section { display: flex; flex-direction: column; flex: none; min-height: 0; }
+/* Positioned, because the sash on a section's top edge is drawn inside it —
+   see the sash block at the end of this file for why it lives there. */
+.sidebar-section { display: flex; flex-direction: column; flex: none; min-height: 0; position: relative; }
 .sidebar-section + .sidebar-section > .section-head { border-top: 1px solid var(--vsc-border); }
 
 .section-head {
@@ -1130,10 +1132,14 @@ main { display: flex; flex: 1; min-height: 0; }
    what the repository is, what source control says about it, what its parts
    are called, and what the agent has done to it — in that order, because it
    is the order the questions come in. 300px is VS Code's own side bar width. */
+/* The width is the arrangement's, not the stylesheet's — `panes.ts` owns it and
+   App writes it here. The fallback is what the bar was before there were
+   sashes, so a browser that refuses storage, or a frame before the layout is
+   applied, is today's window rather than a collapsed one. */
 .leftbar {
   display: flex;
   flex-direction: column;
-  width: 300px;
+  width: var(--pane-leftbar, 300px);
   flex: none;
   border-right: 1px solid var(--vsc-border);
   background: var(--vsc-chrome-bg);
@@ -1164,12 +1170,50 @@ main { display: flex; flex: 1; min-height: 0; }
    of theirs to Activity. Folded, a section is its header and nothing else,
    so it may not stay flexible — Source Control kept its share while folded
    and split the column with the pane it was meant to be giving it to, a
-   header over a hundred pixels of nothing. Last, so it wins the tie. */
-.source-control:has(> .section-head > [aria-expanded='false']) ~ .categories { flex: 1; max-height: none; }
-.source-control:has(> .section-head > [aria-expanded='false'])
+   header over a hundred pixels of nothing. Last, so it wins the tie.
+
+   Only while the shares are still in charge. Once a sash has been dragged the
+   stack is `stackOf`'s, in pixels, and `fitStack` hands a folded section's
+   room out itself — to every open section in proportion, not to the next one
+   down. Two answers to the same question would fight, and the share is the
+   one that has to give way, because it is the one nobody asked for. */
+main:not(.stacked-leftbar) > .leftbar > .source-control:has(> .section-head > [aria-expanded='false']) ~ .categories { flex: 1; max-height: none; }
+main:not(.stacked-leftbar) > .leftbar > .source-control:has(> .section-head > [aria-expanded='false'])
   ~ .categories:has(> .section-head > [aria-expanded='false'])
   ~ .activity { flex: 1; max-height: none; }
-.leftbar > .sidebar-section:has(> .section-head > [aria-expanded='false']) { flex: none; }
+main:not(.stacked-leftbar) > .leftbar > .sidebar-section:has(> .section-head > [aria-expanded='false']) { flex: none; }
+
+/* A bar whose sashes have been touched. Every section is exactly as tall as
+   the model says and the heights sum to the bar, so nothing here may grow,
+   shrink or be capped: the shares above describe a window nobody has
+   arranged, and this one has been.
+
+   The class sits on `main` because the side bar builds its own element and App
+   cannot put a class on it — the same reason a section's sash is drawn inside
+   the section rather than between two of them. */
+main.stacked-leftbar > .leftbar > .sidebar-section,
+main.stacked-sidebar > .sidebar > .sidebar-section { flex: none; min-height: 0; max-height: none; }
+main.stacked-leftbar > .leftbar > .repository { height: var(--pane-repository); }
+main.stacked-leftbar > .leftbar > .source-control { height: var(--pane-sourceControl); }
+main.stacked-leftbar > .leftbar > .categories { height: var(--pane-categories); }
+main.stacked-leftbar > .leftbar > .activity { height: var(--pane-activity); }
+main.stacked-sidebar > .sidebar > .followed { height: var(--pane-followed); }
+main.stacked-sidebar > .sidebar > .panel { height: var(--pane-detail); }
+
+/* The bottom section takes up any slack. Following is drawn only while
+   something is being followed, so the side bar is a stack of two that is
+   usually one on screen, and a Detail pinned to its share would leave the
+   other share empty. When every section in the stack is there the heights
+   already sum to the bar, so there is no slack and this changes nothing. */
+main.stacked-leftbar > .leftbar > .activity,
+main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
+
+/* Nothing above it to resize. The section a sash belongs to owns it, so the
+   first one in a bar carries a sash with no neighbour — and which section is
+   first is a question only the browser can answer, since Following comes and
+   goes. `display: none` also takes it out of the tab order, which is the
+   point: a separator that separates nothing must not be reachable either. */
+.sidebar-section:first-child > .sash { display: none; }
 .source-control > .section-body { display: flex; flex-direction: column; }
 .scm-section-changes { max-height: 50%; }
 .scm-section-graph { flex: 1; }
@@ -1721,7 +1765,7 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
 .sidebar {
   display: flex;
   flex-direction: column;
-  width: 330px;
+  width: var(--pane-sidebar, 330px);
   flex: none;
   border-left: 1px solid var(--vsc-border);
   background: var(--vsc-chrome-bg);
@@ -2387,3 +2431,63 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 /* --- the side panel toggle -------------------------------------------------- */
 
 .panel-toggle { flex: none; }
+
+/* --- sashes ---------------------------------------------------------------- */
+
+/* A window somebody keeps open all day is a window they have to be able to
+   arrange, and until today the edges were the one thing that would not move.
+   Every border between two regions now carries VS Code's sash.
+
+   It has no size in the flow. A sash between two columns is a zero-width flex
+   item standing where the border already is; a sash between two sections is
+   absolutely positioned on the lower section's own top edge, because the side
+   bar builds its own two sections and nothing outside can put an element
+   between them. Either way the 4px grab area is a pseudo-element straddling
+   the boundary, so DESIGN.md rule 2's 1px line stays exactly where it was and
+   a window nobody is resizing has nothing new drawn on it.
+
+   Above the canvas: React Flow's pane is positioned and comes after the left
+   bar's sash in the document, so without a z-index it would take the strip. */
+.sash {
+  flex: none;
+  z-index: 6;
+  /* A drag here is a resize, not a scroll — a touch that starts on the strip
+     must not be handed to the page. */
+  touch-action: none;
+}
+
+.sash[data-orientation='vertical'] { position: relative; width: 0; cursor: col-resize; }
+.sash[data-orientation='horizontal'] { position: absolute; top: 0; left: 0; right: 0; height: 0; cursor: row-resize; }
+
+/* The grab area: 4px of it, centred on the line. */
+.sash::before { content: ''; position: absolute; }
+.sash[data-orientation='vertical']::before { top: 0; bottom: 0; left: -2px; width: 4px; }
+.sash[data-orientation='horizontal']::before { left: 0; right: 0; top: -2px; height: 4px; }
+
+/* Under the cursor and while being dragged, and only then — rule 5. Nothing
+   appears and nothing thickens: the 1px line that was already there turns the
+   accent, which is why this is positioned on the border rather than on the
+   sash. The left bar's border is the last pixel of the left bar, so it sits
+   one pixel back; the side bar's is the first pixel of the side bar, so it
+   sits on the line itself. A section's is the top pixel of its own header. */
+.sash::after { content: ''; position: absolute; background: var(--vsc-accent); opacity: 0; }
+.sash[data-orientation='vertical']::after { top: 0; bottom: 0; left: -1px; width: 1px; }
+.sash[data-governs='after'][data-orientation='vertical']::after { left: 0; }
+.sash[data-orientation='horizontal']::after { left: 0; right: 0; top: 0; height: 1px; }
+.sash:hover::after, .sash-dragging::after { opacity: 1; }
+
+/* The ring goes on the grab area, because the element itself has no size and
+   an outline round a zero-width box is a line in the wrong place. One more
+   1px accent among the dozen 1px lines on this page is not findable without a
+   cursor to say where you are, so a focused sash shows the whole 4px it
+   occupies, ringed. */
+.sash:focus-visible { outline: none; }
+.sash:focus-visible::before { outline: 1px solid var(--vsc-accent); }
+.sash:focus-visible::after { opacity: 1; }
+
+/* While a drag is on, the pointer is over the canvas, a list row or a button,
+   and every one of those has a cursor and a text selection of its own. The
+   whole document wears the resize cursor until the gesture ends. */
+.sashing-col, .sashing-col * { cursor: col-resize !important; }
+.sashing-row, .sashing-row * { cursor: row-resize !important; }
+.sashing-col, .sashing-row { user-select: none; }

@@ -11,6 +11,7 @@ import '@xyflow/react/dist/style.css';
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -80,11 +81,131 @@ import { Repository } from './Repository';
 import { findCommit, relativeTime } from './GitGraph';
 import { SourceControl } from './SourceControl';
 import { ContextMenu } from './ContextMenu';
+import { Sash } from './Sash';
+import { SectionPanes, type SectionPane } from './Section';
+import {
+  MIN_CANVAS,
+  SECTIONS,
+  SECTION_HEADER,
+  adoptStack,
+  barOf,
+  clampLayout,
+  defaultLayout,
+  defaultStack,
+  isDefaultLayout,
+  isFolded,
+  loadLayout,
+  resetPane,
+  resizeBar,
+  resizeSection,
+  saveLayout,
+  stackOf,
+  type BarId,
+  type Layout,
+  type SectionId,
+  type Viewport,
+} from './panes';
 import { frameClusters, keepLayout, NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds, type Rect } from './layout';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
 
 type FlowNode = BoxNodeType | GroupNodeType;
+
+const BARS: readonly BarId[] = ['leftbar', 'sidebar'];
+
+/**
+ * The class a resizable section is placed with, and the model's name for it.
+ * A section that is not here — the two inside Source Control — keeps the fold
+ * it has always had and gets no sash: they divide a section, not a bar.
+ */
+const SECTION_OF_CLASS: Record<string, SectionId> = {
+  repository: 'repository',
+  'source-control': 'sourceControl',
+  categories: 'categories',
+  activity: 'activity',
+  followed: 'followed',
+  // The one name that does not read across: Detail is placed as `.panel`.
+  panel: 'detail',
+};
+
+const CLASS_OF_SECTION: Record<SectionId, string> = {
+  repository: 'repository',
+  sourceControl: 'source-control',
+  categories: 'categories',
+  activity: 'activity',
+  followed: 'followed',
+  detail: 'panel',
+};
+
+/** What a sash says it is moving, for someone who cannot see which edge it is on. */
+const SECTION_TITLE: Record<SectionId, string> = {
+  repository: 'Repository',
+  sourceControl: 'Source Control',
+  categories: 'Categories',
+  activity: 'Activity',
+  followed: 'Following',
+  detail: 'Detail',
+};
+
+/**
+ * The window the layout has to fit into. `main` is exactly it — the row
+ * between the breadcrumb and the status bar — so both numbers come off the one
+ * element rather than off `window` minus a list of bar heights that would go
+ * stale the first time one of them changed.
+ *
+ * Before it is mounted there is still a layout to load, and the estimate is
+ * the three chrome bars DESIGN.md fixes: 35px title, 22px breadcrumb, 22px
+ * status. It is only ever a seed — the measured pass clamps again before the
+ * first paint — and it errs high, which clamps nothing that should have stood.
+ */
+function viewportOf(main: HTMLElement | null): Viewport {
+  if (main === null) {
+    return { width: window.innerWidth, barHeight: Math.max(0, window.innerHeight - 35 - 22 - 22) };
+  }
+  return { width: main.clientWidth, barHeight: main.clientHeight };
+}
+
+/**
+ * Where a bar's section borders actually are, in the window as drawn.
+ *
+ * While the stylesheet still owns a stack the model has only its shares to
+ * offer, and they differ from what is on screen wherever a cap or a content
+ * height decided the size instead: Source Control is the slack in the column
+ * and Activity is as tall as its own words, so their shares are 130px each
+ * where the page draws 194 and 66. A gesture anchored on the share would move
+ * the border to it on the first pixel, which is the one thing a drag must not
+ * do — so the sash asks the page and not the model until the model is the one
+ * deciding.
+ *
+ * A section that is not on screen — Following, until something is being
+ * followed — leaves nothing to take over, and then there is no measurement
+ * here to trust at all.
+ */
+function sameSizes(a: readonly number[], b: readonly number[]): boolean {
+  return a.length === b.length && a.every((size, index) => size === b[index]);
+}
+
+function measureStack(main: HTMLElement | null, bar: BarId): number[] {
+  const root = main?.querySelector(`.${bar}`);
+  if (!(root instanceof HTMLElement)) return [];
+  const sizes = SECTIONS[bar].map((id) => {
+    const section = root.querySelector(`:scope > .${CLASS_OF_SECTION[id]}`);
+    return section instanceof HTMLElement ? section.offsetHeight : 0;
+  });
+  return sizes.some((height) => height <= 0) ? [] : sizes;
+}
+
+/**
+ * One section to an exact height, through whichever sash can express it. The
+ * last section in a stack has no sash under it, so it is moved by the one
+ * above — the same reach `resetPane` makes for the same reason.
+ */
+function setSectionHeight(layout: Layout, bar: BarId, index: number, want: number, viewport: Viewport): Layout {
+  if (index < SECTIONS[bar].length - 1) return resizeSection(layout, bar, index, want, viewport);
+  const sizes = stackOf(layout, bar, viewport);
+  const pair = (sizes[index - 1] ?? 0) + (sizes[index] ?? 0);
+  return resizeSection(layout, bar, index - 1, pair - want, viewport);
+}
 
 /**
  * Hand React Flow the size the layout already decided, rather than waiting for
@@ -1512,6 +1633,8 @@ export function App() {
    * to move the boxes — the layout that comes after it is.
    */
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  /** The row the bars and the canvas share, which is the window the sashes divide. */
+  const mainRef = useRef<HTMLElement | null>(null);
 
   // Positions survive live updates: a box must not jump because the agent saved.
   const layoutRef = useRef<{
@@ -2084,6 +2207,267 @@ export function App() {
   const relayout = useCallback(() => setRelayoutToken((n) => n + 1), []);
   relayoutRef.current = relayout;
 
+  // --- the sashes ------------------------------------------------------------
+
+  /**
+   * How wide the bars are and how the sections divide them. `panes.ts` does the
+   * arithmetic; this holds the answer and puts it on the page.
+   *
+   * The seed is whatever was stored, clamped against an estimated window; the
+   * effect below measures the real one and clamps again before the first
+   * paint, so a layout arranged on a wider screen arrives fitted rather than
+   * off it.
+   */
+  const [viewport, setViewport] = useState<Viewport>(() => viewportOf(null));
+  const [layout, setLayout] = useState<Layout>(() => loadLayout(viewportOf(null)));
+
+  useLayoutEffect(() => {
+    const main = mainRef.current;
+    if (main === null) return;
+    const measure = () =>
+      setViewport((was) => {
+        const now = viewportOf(main);
+        return was.width === now.width && was.barHeight === now.barHeight ? was : now;
+      });
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(main);
+    return () => observer.disconnect();
+  }, []);
+
+  /**
+   * What is drawn: the stored arrangement, fitted to the window it is being
+   * drawn in. Derived and never written back — `layout` stays what the person
+   * arranged, and this is what fits on the screen they have right now.
+   *
+   * It used to be an effect that clamped into state, and `fitWidths` only ever
+   * shrinks: one moment in a 640px split view took both bars to their minimum
+   * and widening the window never brought them back, because the clamped value
+   * had become the arrangement. A window narrower than 300 + 330 + 320 is an
+   * ordinary macOS split view, so that was not a corner.
+   */
+  const shown = useMemo(() => clampLayout(layout, viewport), [layout, viewport]);
+
+  /**
+   * The sizes on the page, as custom properties the stylesheet reads. A bar
+   * nobody has touched has no properties at all: `stack === null` means the
+   * shares in `styles.css` are still in charge, and writing pixels over them
+   * would make a first run subtly not the run it has always been.
+   */
+  const applyPanes = useCallback((next: Layout, port: Viewport) => {
+    const root = document.documentElement.style;
+    root.setProperty('--pane-leftbar', `${next.width.leftbar}px`);
+    root.setProperty('--pane-sidebar', `${next.width.sidebar}px`);
+    for (const bar of BARS) {
+      const ids = SECTIONS[bar];
+      if (next.stack[bar] === null) {
+        for (const id of ids) root.removeProperty(`--pane-${id}`);
+        continue;
+      }
+      const sizes = stackOf(next, bar, port);
+      ids.forEach((id, index) => root.setProperty(`--pane-${id}`, `${sizes[index]}px`));
+    }
+  }, []);
+
+  useLayoutEffect(() => applyPanes(shown, viewport), [applyPanes, shown, viewport]);
+
+  /**
+   * The layout a drag is building, held in a ref and not in state on purpose.
+   *
+   * What runs on every pointer move is two `setProperty` calls. What runs at
+   * the end of the gesture is one React render and one write to storage. The
+   * reason is *mark, do not move*: a render here rebuilds the node and edge
+   * arrays and re-enters the layout memo, and a person dragging a border has
+   * asked for one region to be bigger, not for the diagram to be reshuffled
+   * under it. So dagre never runs — every box keeps the position it was placed
+   * at, and Re-layout (⇧⌘L) stays the only thing that moves them.
+   *
+   * What the canvas does instead is camera work, which is what it should be.
+   * React Flow's own observer sees its container change size and re-culls for
+   * `onlyRenderVisibleElements`; that is a question about where the viewport
+   * is, not about where the boxes are. And the one input `layoutNodes` takes
+   * from the window is its *height*, for folding a rank taller than the
+   * screen — which no sash on this page changes: the bar sashes move a
+   * vertical border, and the section sashes are inside a bar the canvas does
+   * not share a row with.
+   */
+  const dragging = useRef<Layout | null>(null);
+
+  const drag = useCallback(
+    (next: Layout) => {
+      dragging.current = next;
+      applyPanes(next, viewport);
+    },
+    [applyPanes, viewport],
+  );
+
+  const commit = useCallback((next: Layout) => {
+    dragging.current = null;
+    setLayout(next);
+    saveLayout(next);
+  }, []);
+
+  /**
+   * The section heights as the page last drew them, refreshed after every
+   * commit and read from a ref rather than measured during a render: this page
+   * re-renders whenever the agent saves, and a forced reflow per section per
+   * render is a real cost for a number that only changes when the window or
+   * the content does. Once a bar's stack has been taken over the model is the
+   * one deciding, and nothing here is measured for it again.
+   */
+  const [drawn, setDrawn] = useState<Record<BarId, number[]>>({ leftbar: [], sidebar: [] });
+  useLayoutEffect(() => {
+    const main = mainRef.current;
+    if (main === null) return;
+    const measure = () =>
+      setDrawn((was) => {
+        const next: Record<BarId, number[]> = {
+          leftbar: shown.stack.leftbar === null ? measureStack(main, 'leftbar') : [],
+          sidebar: shown.stack.sidebar === null ? measureStack(main, 'sidebar') : [],
+        };
+        // Only when it actually moved. Measuring settles — a sash takes no room
+        // in the stack it measures — so this stops after one extra pass rather
+        // than turning every change into two.
+        return BARS.every((bar) => sameSizes(was[bar], next[bar])) ? was : next;
+      });
+    measure();
+    // Watched rather than measured on App's own render, because folding a
+    // section with its chevron re-renders that Section and nothing else: the
+    // sashes went on reporting the heights from before the fold, and the next
+    // drag adopted them and silently re-opened what had just been folded.
+    //
+    // Two observers, because a fold is two different events. The size one sees
+    // a section grow or shrink; the mutation one sees `.section-body` leave the
+    // tree, which is how a fold is actually spelled — React removes the body
+    // rather than sizing it to nothing, and a size observer on a node whose
+    // child was removed does not always report before the next paint.
+    const sizes = new ResizeObserver(measure);
+    for (const bar of BARS) {
+      const element = main.querySelector(`.${bar}`);
+      if (!(element instanceof HTMLElement)) continue;
+      sizes.observe(element);
+      for (const section of element.children) sizes.observe(section);
+    }
+    const changes = new MutationObserver(measure);
+    changes.observe(main, { childList: true, subtree: true });
+    return () => {
+      sizes.disconnect();
+      changes.disconnect();
+    };
+  }, [shown.stack.leftbar, shown.stack.sidebar, showSidebar, data?.root]);
+
+  /** What the sashes in a bar are dividing: the model's stack, or the drawn one. */
+  const stackNow = useCallback(
+    (bar: BarId): number[] => {
+      const sizes = drawn[bar];
+      if (shown.stack[bar] === null && sizes.length === SECTIONS[bar].length) return sizes;
+      return stackOf(shown, bar, viewport);
+    },
+    [drawn, shown, viewport],
+  );
+
+  /**
+   * Take a bar's stack over from the stylesheet, at the heights it is drawn
+   * with. The first gesture on a sash in that bar does this, so the border
+   * begins moving from under the cursor. With nothing measured there is
+   * nothing to take over and the shares stand for one more gesture.
+   */
+  const adopt = useCallback(
+    (bar: BarId): Layout => {
+      const sizes = drawn[bar];
+      if (shown.stack[bar] !== null || sizes.length !== SECTIONS[bar].length) return shown;
+      return adoptStack(shown, bar, sizes, viewport);
+    },
+    [drawn, shown, viewport],
+  );
+
+  /** The sash between a bar and the canvas. */
+  const barSash = (bar: BarId, governs: 'before' | 'after') => {
+    // A bar the page is not drawing reserves nothing: hiding the panel with ⌘B
+    // used to leave its width in the canvas's budget.
+    const other = bar === 'leftbar' && !showSidebar ? 0 : shown.width[bar === 'leftbar' ? 'sidebar' : 'leftbar'];
+    const port = showSidebar ? viewport : { ...viewport, hidden: 'sidebar' as const };
+    const move = (requested: number) => resizeBar(dragging.current ?? shown, bar, requested, port);
+    return (
+      <Sash
+        orientation="vertical"
+        governs={governs}
+        label={bar === 'leftbar' ? 'Left bar width' : 'Side bar width'}
+        value={shown.width[bar]}
+        // Zero, because that is a size this sash can actually reach: past its
+        // minimum the bar closes rather than sticking, and the sash stays put
+        // to drag it back out.
+        min={0}
+        max={Math.max(0, viewport.width - other - MIN_CANVAS)}
+        onDrag={(requested) => drag(move(requested))}
+        onCommit={(requested) => commit(move(requested))}
+        onReset={() => commit(resetPane(shown, bar, port))}
+      />
+    );
+  };
+
+  /**
+   * What a section needs to know about the sashes around it: whether it is
+   * folded, how to fold it, and the sash on its own top edge. Handed down
+   * through a context because the side bar builds its own two sections and
+   * nothing outside can place an element between them.
+   */
+  const paneOf = useCallback(
+    (className: string): SectionPane | null => {
+      const id = SECTION_OF_CLASS[className];
+      if (id === undefined) return null;
+      const bar = barOf(id);
+      const ids = SECTIONS[bar];
+      const index = ids.indexOf(id);
+      const stacked = shown.stack[bar] !== null;
+      const sizes = stackNow(bar);
+      const here = sizes[index];
+      if (here === undefined) return null;
+
+      const above = index - 1;
+      const before = sizes[above];
+      const previous = ids[above];
+      const move = (requested: number) =>
+        resizeSection(dragging.current ?? adopt(bar), bar, above, requested, viewport);
+      return {
+        // Until a sash in this bar has been touched the fold is still the
+        // section's own, and the stylesheet's shares are what draw it.
+        folded: stacked ? isFolded(here) : null,
+        setFolded: (folded) => {
+          if (!stacked) return;
+          const want = folded ? SECTION_HEADER : (defaultStack(bar, viewport.barHeight)[index] ?? here);
+          commit(setSectionHeight(shown, bar, index, want, viewport));
+        },
+        sash:
+          before === undefined || previous === undefined ? null : (
+            <Sash
+              orientation="horizontal"
+              // The sash names the section above it, which is the one whose
+              // size it reports and the one it is felt to be moving.
+              label={`${SECTION_TITLE[previous]} height`}
+              value={before}
+              min={SECTION_HEADER}
+              max={before + here - SECTION_HEADER}
+              // The stylesheet has to hand the stack over before a pointer move
+              // can move anything: the sizes a drag writes are read by rules
+              // that only apply once `main` says this bar is stacked, and that
+              // class is React's. Without this the first drag in a bar wrote
+              // pixels nothing was reading and moved nothing until release.
+              onStart={() => {
+                const taken = adopt(bar);
+                dragging.current = taken;
+                setLayout(taken);
+              }}
+              onDrag={(requested) => drag(move(requested))}
+              onCommit={(requested) => commit(move(requested))}
+              onReset={() => commit(resetPane(adopt(bar), previous, viewport))}
+            />
+          ),
+      };
+    },
+    [adopt, commit, drag, shown, stackNow, viewport],
+  );
+
   const setFilter = useCallback(
     (key: string, value: string | null) => {
       const params = new URLSearchParams(window.location.search);
@@ -2367,7 +2751,16 @@ export function App() {
       title: 'View',
       items: [
         { label: 'Panel', shortcut: '⌘B', checked: showSidebar, run: () => setShowSidebar((was) => !was) },
-        { label: 'Call edges', checked: showCalls, run: toggleCalls },
+        {
+          // Every pane at once. Double-clicking a sash does the one it is on;
+          // this is the way back when several have been moved and the window
+          // is no longer the window anybody meant to arrange.
+          label: 'Reset layout',
+          ...(isDefaultLayout(layout)
+            ? { disabledBecause: 'Every panel is already at its default size' }
+            : { run: () => commit(defaultLayout()) }),
+        },
+        { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
         // A field's declared type is the has-a UML exists to show, and an import
         // edge cannot say it: an import means this file mentions that one.
         { label: 'Association edges (has-a)', checked: showAssoc, run: toggleAssoc },
@@ -2765,7 +3158,19 @@ export function App() {
       )}
 
 
-      <main>
+      <main
+        ref={mainRef}
+        // Which bars have had a sash dragged. While a bar is absent from this
+        // list the shares in styles.css still draw its sections; once it is
+        // here the stack is the model's, in pixels.
+        className={[
+          shown.stack.leftbar === null ? '' : 'stacked-leftbar',
+          shown.stack.sidebar === null ? '' : 'stacked-sidebar',
+        ]
+          .filter((name) => name !== '')
+          .join(' ')}
+      >
+        <SectionPanes.Provider value={paneOf}>
         {/* Left is time, right is structure: what the repository is and what
             the agent is doing to it, beside what you are looking at. They were
             one panel, which meant watching the agent cost you the detail of
@@ -2832,6 +3237,10 @@ export function App() {
             />
           </aside>
         )}
+        {/* The border between the left bar and the canvas, and the one on the
+            other side. Both stand where they always did; what is new is that
+            they can be taken hold of. */}
+        {data !== null && barSash('leftbar', 'before')}
 
         <div className="canvas" ref={canvasRef}>
         {(showWelcome || emptyProject) && (
@@ -2948,6 +3357,7 @@ export function App() {
         )}
         </div>
 
+        {showSidebar && data !== null && barSash('sidebar', 'after')}
         {showSidebar && data !== null && (
           <Sidebar
             root={data.root}
@@ -2996,6 +3406,7 @@ export function App() {
             }}
           />
         )}
+        </SectionPanes.Provider>
       </main>
 
       <StatusBar
