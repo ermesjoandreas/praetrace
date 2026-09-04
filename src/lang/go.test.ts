@@ -167,6 +167,89 @@ test('a call on a receiver whose type was written down is that type\'s method', 
   ]);
 });
 
+test('a name aliased from a typed one, and an element of a collection, are typed too', () => {
+  // This is cobra's `Command.execute`, reduced. Every persistent hook a
+  // command has is reached through `p`, which is written twice — once as an
+  // alias of the receiver and once as an element of a slice — and while
+  // neither was typed, `PersistentPreRun` was refused, so the list a reader
+  // consulted about the run order named `PreRun`, `Run` and `PostRun` and left
+  // the four persistent ones out with nothing said.
+  const { symbols } = parse(`
+    package cobra
+
+    type Command struct{}
+
+    func (c *Command) execute(a []string) {
+      parents := make([]*Command, 0, 5)
+      for p := c; p != nil; p = p.Parent() {
+        parents = append(parents, p)
+      }
+      for _, p := range parents {
+        p.PersistentPreRun(c, a)
+      }
+      var subs []*Command
+      for _, sub := range subs {
+        sub.Help()
+      }
+      byName := map[string]*Command{}
+      for _, m := range byName {
+        m.Usage()
+      }
+      for i := range parents {
+        i.Ignored()
+      }
+      for _, line := range a {
+        line.Ignored()
+      }
+      for _, found := range c.commands {
+        found.Ignored()
+      }
+    }
+  `);
+
+  // `i` is an index and `line` a string, so neither is a Command; `c.commands`
+  // is a field, whose elements are not written down anywhere this file reads.
+  assert.deepEqual(sorted(byName(symbols, 'execute').calls), [
+    'Command',
+    'Command.Help',
+    'Command.Parent',
+    'Command.PersistentPreRun',
+    'Command.Usage',
+  ]);
+});
+
+test('a variadic parameter names no receiver and every element it holds', () => {
+  const { symbols } = parse(`
+    package cobra
+
+    type Command struct{}
+
+    func (c *Command) AddCommand(cmds ...*Command) {
+      cmds.Ignored()
+      for _, cmd := range cmds {
+        cmd.Reset()
+      }
+    }
+  `);
+  assert.deepEqual(sorted(byName(symbols, 'AddCommand').calls), ['Command.Reset']);
+});
+
+test('an alias of a name the file never typed stays untyped', () => {
+  const { symbols } = parse(`
+    package cobra
+
+    func f() {
+      c := whatever()
+      p := c
+      p.Execute()
+      q := &Command{}
+      r := q
+      r.Help()
+    }
+  `);
+  assert.deepEqual(sorted(byName(symbols, 'f').calls), ['Command', 'Command.Help', 'whatever']);
+});
+
 test('a name declared twice with different types, or once without one, is refused', () => {
   const { symbols } = parse(`
     package cobra

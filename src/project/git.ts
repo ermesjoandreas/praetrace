@@ -127,12 +127,41 @@ export async function readBranch(root: string): Promise<string | null> {
   return branchOf(root);
 }
 
+/**
+ * What HEAD is on, in words a bar can print — never null just because it is not
+ * a branch.
+ *
+ * A detached HEAD is not an absence, and reporting it as one was read as "this
+ * tool cannot see the repository": it is the state every reviewed pull request
+ * is checked out in, and `branch: null` beside a full commit log is the answer
+ * that looks broken. So the one string says which of the two it is, and names
+ * the commit when there is no name.
+ *
+ * The value is a label and never a ref: nothing looks a branch up by it, and
+ * `GitGraph`'s badge matching compares it against ref names, where "detached
+ * at 7fe7f88" matches nothing — which is the right answer, and the one a null
+ * gave for a different reason.
+ */
 async function branchOf(root: string): Promise<string | null> {
   const output = await git(root, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const name = output?.trim();
+  // No answer at all is a repository with no commits, where HEAD points at a
+  // branch that does not exist yet. There is nothing to name, so nothing is said.
+  if (name === undefined || name === '') return null;
   // The literal 'HEAD' is what a detached HEAD answers, not a branch called HEAD.
-  if (name === undefined || name === '' || name === 'HEAD') return null;
-  return name;
+  if (name !== 'HEAD') return name;
+  return detachedLabel((await git(root, ['rev-parse', '--short=7', 'HEAD']))?.trim());
+}
+
+/**
+ * The words for a detached HEAD, given the abbreviated sha or nothing.
+ *
+ * Pure, and separate, because the sentence is the part worth pinning: the shape
+ * of it is what a status bar and a log response both print, and a second reader
+ * of `rev-parse` is not what decides whether it reads right.
+ */
+export function detachedLabel(shortSha: string | undefined): string {
+  return shortSha === undefined || shortSha === '' ? 'detached HEAD' : `detached at ${shortSha}`;
 }
 
 /**

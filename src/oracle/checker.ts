@@ -391,10 +391,16 @@ export function readWithChecker(root: string, files: readonly string[]): OracleR
       return ts.isIdentifier(node.name) ? node.name.text : node.name.text;
     }
     // A variable is a symbol when what it holds is one — an arrow, a function
-    // expression or a class — or when the file exports a name bound to a call.
+    // expression or a class — or when the file exports the name at all.
     // `const rows = load()` is a value and the calls in it belong to the file;
     // `export const parse = _parse(...)` is zod's public API, a name another
     // file can write down, and the extractors give it a node.
+    //
+    // Any initializer, not only a call, since the extractors stopped asking:
+    // `export const isServer = typeof window === 'undefined'` is the name
+    // TanStack/query's utils.ts is opened for, and a list of 41 without it read
+    // as complete. What the value is decides the *kind*, not whether there is a
+    // node — see valueKindOf in lang/typescript.ts.
     //
     // Exported and not merely written `export const`, because that is the
     // extractors' own test: they read the export table, so a name declared bare
@@ -405,17 +411,25 @@ export function readWithChecker(root: string, files: readonly string[]): OracleR
       if (ts.isArrowFunction(value) || ts.isFunctionExpression(value) || ts.isClassExpression(value)) {
         return node.name.text;
       }
-      return ts.isCallExpression(value) && isExportedName(node, node.name.text) ? node.name.text : null;
+      return isExportedName(node, node.name.text) ? node.name.text : null;
     }
     // `app.init = function () {}` — how a CommonJS module defines its API, and
     // how express writes all 632 lines of application.js. The name is the
     // property exactly as written, which is the only name the file gives it.
+    //
+    // A value that is not a function counts on the exports object and nowhere
+    // else, which is the line the extractors draw: `exports.static =
+    // require('serve-static')` is a name another file writes down, `app.count =
+    // 1` is a property of an object local to the module.
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
       const isFunction =
         ts.isArrowFunction(node.right) ||
         ts.isFunctionExpression(node.right) ||
         ts.isClassExpression(node.right);
-      if (isFunction && ts.isPropertyAccessExpression(node.left)) return node.left.getText().replace(/\s+/g, '');
+      if (ts.isPropertyAccessExpression(node.left)) {
+        const name = node.left.getText().replace(/\s+/g, '');
+        if (isFunction || /^(module\.)?exports\./.test(name)) return name;
+      }
     }
     // A reference to one of those arrives naming the left-hand side, because
     // that is where TypeScript puts the declaration of an expando property.

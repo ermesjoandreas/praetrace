@@ -57,7 +57,9 @@ export function describeUnresolved(counts: Unresolved): string {
  * other. The mark on a box is still that box's own.
  */
 export function totalUnresolved(view: ViewGraph): Unresolved | null {
-  const { imports, calls } = view.unresolved;
+  // The slice's, not the project's: it stands beside the syntax-error count in
+  // the status bar, and two numbers side by side must be over the same files.
+  const { imports, calls } = view.scoped.unresolved;
   return imports === 0 && calls === 0 ? null : { imports, calls };
 }
 
@@ -106,6 +108,58 @@ export async function fetchView(search: string): Promise<ViewResponse> {
     throw new Error(body.error ?? `view request failed: HTTP ${response.status}`);
   }
   return (await response.json()) as ViewResponse;
+}
+
+/**
+ * How many directories one hunt for broken files may open before it gives up.
+ *
+ * A bound rather than a guess at the shape of the tree: the walk below only
+ * descends where the mark is, so a project with five broken files opens about
+ * five directories, and one whose every directory holds one would otherwise
+ * open all of them a request at a time.
+ */
+const PARSE_WALK_LIMIT = 40;
+
+/**
+ * Which files would not fully parse, and whether that list is all of them.
+ *
+ * The count rides on every view; the list does not, and no route answers for
+ * it — so it is walked the way a reader would walk it. `/api/view` is the only
+ * thing that says which box carries the warning, and a folder box carries it
+ * when any file under it does, so descending only into the marked folders
+ * visits about one directory per broken file rather than the whole tree.
+ *
+ * `complete` is false when the walk ran out of its budget with directories
+ * still queued. It is carried rather than dropped because a short list nobody
+ * is told is short is the exact failure the warning itself exists to prevent.
+ */
+export async function fetchParseErrors(
+  at: string | null = null,
+): Promise<{ files: string[]; complete: boolean }> {
+  const found = new Set<string>();
+  const seen = new Set<string>();
+  const queue: string[] = [''];
+
+  while (queue.length > 0 && seen.size < PARSE_WALK_LIMIT) {
+    const scope = queue.shift() ?? '';
+    if (seen.has(scope)) continue;
+    seen.add(scope);
+
+    const { view } = await fetchView(
+      `?scope=${encodeURIComponent(scope)}${at === null ? '' : `&at=${encodeURIComponent(at)}`}`,
+    );
+    for (const node of view.nodes) {
+      if (!node.parseError) continue;
+      // A folder is a place to look inside — including the dimmed ones, which
+      // is how a scope that auto-descended into `src` is left with any way at
+      // all to reach a broken file under `web`. A bundle belongs to a focus
+      // view and cannot appear here.
+      if (node.kind === 'file') found.add(node.id);
+      else if (node.kind === 'folder') queue.push(node.id);
+    }
+  }
+
+  return { files: [...found].sort(), complete: queue.length === 0 };
 }
 
 /** The websocket has to reach the same server the view came from. */
@@ -232,6 +286,12 @@ export interface SymbolDetail {
   kind: 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
   line: number;
   endLine: number;
+  /**
+   * The sibling this row is another name for, when one body was bound to
+   * several names. Absent on the body itself, and on everything a language
+   * cannot spell that way. What counts symbols counts the rows without it.
+   */
+  aliasOf?: string;
 }
 
 export type Detail =
@@ -327,6 +387,8 @@ export interface SymbolLinks {
   coverage: Tracking;
   /** The graph's own sentence about that, shown wherever the count is drawn. */
   coverageNote: string;
+  /** Why the `uses` list is in no order the source would recognise. */
+  usesNote: string;
 }
 
 /**
@@ -630,6 +692,15 @@ export interface ExplainResult {
    * sentence instead of a spinner. Null whenever a run started or was going.
    */
   refused: string | null;
+  /**
+   * Where the reading would be written, when the server refused because the
+   * project has no `.codemap/` yet and nobody has said it may make one.
+   *
+   * Its own field and not a `refused` sentence, because this is the one
+   * refusal a press can answer: the caller asks, and sends the press again
+   * with consent. Null on every other outcome.
+   */
+  needsConsent: string | null;
 }
 
 /**
@@ -674,22 +745,50 @@ export async function forgetExplanation(id: string): Promise<void> {
  * `force` re-reads ids whose reading is current. Without it the server skips
  * them and names them back: "Explain these" used to buy a second reading of a
  * symbol whose panel already said current, at the same price as the first.
+ *
+ * `createStore` answers the server's one question — may it make a `.codemap/`
+ * in a project that has none. Sent only when a person has said so.
  */
-export async function requestExplanations(ids: string[], force = false): Promise<ExplainResult> {
+export async function requestExplanations(
+  ids: string[],
+  force = false,
+  createStore = false,
+): Promise<ExplainResult> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/explain`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ action: 'run', ids, ...(force ? { force: true } : {}) }),
+    body: JSON.stringify({
+      action: 'run',
+      ids,
+      ...(force ? { force: true } : {}),
+      ...(createStore ? { createStore: true } : {}),
+    }),
   });
-  const body = (await response.json()) as { run?: ExplainRun; skipped?: string[]; error?: string };
+  const body = (await response.json()) as {
+    run?: ExplainRun;
+    skipped?: string[];
+    error?: string;
+    needsConsent?: boolean;
+    store?: { path?: string };
+  };
   const skipped = body.skipped ?? [];
-  if (response.status === 409) return { run: body.run ?? null, skipped, refused: null };
+  if (response.status === 409) {
+    // Two different 409s share the code. One means a run is already spending
+    // the quota, which is not a failure and is followed rather than reported;
+    // the other means the server is asking permission to create a file. Told
+    // apart by `needsConsent`, because reading both as the first made the
+    // press a silent no-op — nothing ran, and nothing said why.
+    if (body.needsConsent === true) {
+      return { run: null, skipped, refused: null, needsConsent: body.store?.path ?? '.codemap/explain.json' };
+    }
+    return { run: body.run ?? null, skipped, refused: null, needsConsent: null };
+  }
   if (response.status === 400) {
-    return { run: null, skipped, refused: body.error ?? 'nothing was asked' };
+    return { run: null, skipped, refused: body.error ?? 'nothing was asked', needsConsent: null };
   }
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
-  return { run: body.run ?? null, skipped, refused: null };
+  return { run: body.run ?? null, skipped, refused: null, needsConsent: null };
 }
 
 /**

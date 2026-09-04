@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildPrompt, type ExplainTarget } from './explain.js';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { buildPrompt, explainStore, type ExplainTarget } from './explain.js';
 
 /**
  * The reading of cobra's `Command.Execute` said "nothing depends on it", which
@@ -78,4 +81,26 @@ test('two targets each keep their own coverage', () => {
 
   assert.match(blockOf(prompt, 'a.ts#T.m'), /PARTIAL/);
   assert.doesNotMatch(blockOf(prompt, 'a.ts#helper'), /PARTIAL/);
+});
+
+/**
+ * The write is the part that outlives the visit. `explainStore` is what the run
+ * route asks before spending anything, so what it answers decides whether a
+ * repository somebody opened to look at gets a directory it did not have.
+ */
+test('a project with no .codemap/ is one this feature has to ask about', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codemap-store-'));
+  try {
+    const before = await explainStore(root);
+    assert.equal(before.exists, false);
+    assert.equal(before.path, path.join(root, '.codemap', 'explain.json'));
+
+    // Asking is not writing: nothing about the question puts the directory there.
+    assert.deepEqual(await readdir(root), []);
+
+    await mkdir(path.join(root, '.codemap'));
+    assert.equal((await explainStore(root)).exists, true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

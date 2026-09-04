@@ -246,6 +246,32 @@ main { display: flex; flex: 1; min-height: 0; }
    one region that sits on the editor colour; everything around it is chrome. */
 .canvas { position: relative; flex: 1; min-width: 0; background: var(--vsc-editor-bg); }
 
+/* How much of the project is on the diagram, said on the diagram.
+
+   Chrome on the canvas rather than a floating card: a 1px line and the side
+   bars' own background, edge to edge with the top-left corner, so it reads as
+   part of the frame the canvas sits in and not as a thing hovering over it.
+   No shadow — it does not float, it is pinned to the corner. It keeps its
+   pointer events, because the whole of the reasoning is in its tooltip; it is
+   one 21px line in a corner React Flow leaves empty. */
+.canvas-slice {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  height: 21px;
+  padding: 0 8px;
+  border-right: 1px solid var(--vsc-border);
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  line-height: 21px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  user-select: none;
+}
+
 /* --- menu bar -------------------------------------------------------------- */
 
 .menubar {
@@ -1710,6 +1736,27 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
 }
 .panel-meta { margin: 0; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); line-height: 18px; }
 
+/* The way out of the symbol view, and where the symbol lives, in one line.
+   Drawn rather than hidden until hover: a section action is the right place
+   for something you do TO what is shown, and the wrong place for the only way
+   back to what it replaced. */
+.symbol-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.symbol-back:hover { color: var(--vsc-fg); }
+.symbol-back .codicon { flex: none; font-size: 14px; }
+.symbol-where { display: block; }
+
 .panel-list { margin-top: 4px; }
 .panel-list h3 {
   margin: 0;
@@ -1761,6 +1808,10 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
 .sym-function, .sym-method { color: var(--vsc-sym-function); }
 .sym-field { color: var(--vsc-sym-field); }
 .sym-line { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+/* Muted and next to the name, not out at the line number: it belongs to the
+   name it qualifies. Says the row is a second name for the body above rather
+   than a second function that happens to start on the same line. */
+.sym-alias { flex: none; margin-left: 6px; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
 
 /* --- what is being followed ------------------------------------------------ */
 
@@ -1940,6 +1991,33 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
   word-break: break-word;
 }
 
+/* A question, so it is not the error colour: nothing failed and nothing was
+   spent. Ordinary panel text with the file named in mono, and the answer on
+   its own line under it, the way a confirm reads. */
+.explain-consent {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+}
+.explain-consent code {
+  font-family: var(--vsc-font-mono);
+  color: var(--vsc-fg);
+  word-break: break-all;
+}
+.explain-consent-yes {
+  display: block;
+  margin-top: 6px;
+  padding: 2px 10px;
+  background: var(--vsc-accent);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--vsc-fg-strong);
+  font-size: var(--vsc-font-size-sm);
+}
+.explain-consent-yes:hover { background: var(--vsc-accent-hover); }
+
 /* --- status bar ------------------------------------------------------------ */
 
 /* The project's state in one line. Left is what the working tree is; right is
@@ -2039,6 +2117,19 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 /* Source the tool cannot read, or could not fully parse: a gap rather than a
    fact, and still not an error. */
 .unread, .parse-errors { color: var(--vsc-warning); }
+
+/* The broken files open out of the bar, the way the git base does. Relative,
+   because the list is placed against this and not against the footer. */
+.parse-errors-at { position: relative; display: inline-flex; }
+/* Wider than the base picker: these are whole paths, and a path cut in the
+   middle is the one thing this list must not do. */
+.parse-drop { min-width: 260px; max-width: 460px; }
+.parse-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+}
 
 /* The same fact, one step further in: source that was read and parsed, whose
    references went nowhere. Muted rather than warning for the reason the box

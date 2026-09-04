@@ -15,6 +15,13 @@ export interface SymbolDetail {
   kind: NodeKind;
   line: number;
   endLine: number;
+  /**
+   * The sibling this is another name for, when one body was bound to several.
+   * Present so the panel can count bodies rather than names — see
+   * `GraphNode.aliasOf` — and so a row can say which body it names instead of
+   * looking like a second function at the same line.
+   */
+  aliasOf?: string;
 }
 
 export interface FileDetail {
@@ -50,6 +57,10 @@ export interface FileDetail {
    * honest headings is better than picking one and losing the other.
    */
   calls: string[];
+  /** Whether `calls` is every call, or the floor it is. See `CALLS`. */
+  callsCoverage: Tracking;
+  /** The sentence to print beside the list, and beside its order. */
+  callsNote: string;
 }
 
 export interface FolderDetail {
@@ -88,6 +99,7 @@ function describeFile(graph: Graph, target: string): FileDetail {
       kind: node.kind,
       line: node.range.startLine,
       endLine: node.range.endLine,
+      ...(node.aliasOf === undefined ? {} : { aliasOf: node.aliasOf }),
     });
   }
 
@@ -99,6 +111,8 @@ function describeFile(graph: Graph, target: string): FileDetail {
     imports: importsOf(graph, (from) => from === target).sort(),
     importedBy: importedByOf(graph, (to) => to === target).sort(),
     calls: callsOf(graph, target),
+    callsCoverage: CALLS.coverage,
+    callsNote: CALLS.note,
     ...vouchFor(passThroughs(graph, (file) => file === target)),
   };
 }
@@ -239,6 +253,42 @@ function handedOnBy(handedOn: readonly PassThrough[]): string | null {
 }
 
 /**
+ * What every list of calls in this module leaves out, and what its order is not.
+ *
+ * Both halves are one failure, and both were read wrong on the same question.
+ * A reader asked whether flag parsing runs before `PersistentPreRun` and
+ * consulted cobra's `Command.execute`: the four persistent hooks were not in
+ * the list, because each is reached through a name whose type the parser could
+ * not follow, and the rest came back in alphabetical order with nothing saying
+ * that is what it was. An omission nobody is told about and an order nobody is
+ * told about answer a question about sequence wrong in the same confident
+ * voice a true answer would use.
+ *
+ * The omission has a shape worth naming rather than a hedge, because naming it
+ * tells a reader where to look instead: what is dropped is a call through a
+ * receiver this file does not type — the result of another call
+ * (`c.Root().Traverse(…)`), a struct field, an element of a collection nothing
+ * declared. Those are exactly the five that made `getCompletions`'s list of
+ * fifteen read as complete.
+ *
+ * The order is the half that cannot be fixed here at all, and saying so is the
+ * whole of what can be done: `ParsedSymbol.calls` is a set of names by the time
+ * it leaves the parser, so the line a call is written on never reaches the
+ * graph, and there is no source order to sort by. See the note in CLAUDE.md
+ * about sequence diagrams — it is the same missing fact.
+ */
+const CALLS = {
+  // Never 'tracked', and a constant rather than a computation, because nothing
+  // in the graph could raise it: a list of calls has no equivalent of
+  // `passThroughs`, no evidence of its own incompleteness to weigh. It is a
+  // pair anyway so that a consumer reads a call list the way it reads the three
+  // counts beside it, rather than having to know this one is qualified in prose.
+  coverage: 'partial',
+  note:
+    'Calls through a receiver this file does not type — the result of another call, a struct field, an element of an untyped collection — are not tracked, so this is a floor and not a census. The order is not the source\'s: it is by file and then by name, because the graph keeps which names are called and never the lines they are called on.',
+} as const satisfies { coverage: Tracking; note: string };
+
+/**
  * The distinct files `target` calls into with its own top-level statements.
  *
  * Lifted to files because that is the currency the rest of a FileDetail is in,
@@ -299,8 +349,17 @@ export interface SymbolLinks {
   name: string;
   kind: NodeKind;
   filePath: string;
-  /** What this symbol reaches out to. */
+  /**
+   * What this symbol reaches out to, by file and then by name — see `CALLS`,
+   * which is also why that is not the order the calls are written in.
+   */
   uses: SymbolRelation[];
+  /**
+   * How the graph looked for `uses`, and what its order is. The pair `usedBy`
+   * carries, asked of the other direction; see `CALLS` for why it is fixed.
+   */
+  usesCoverage: Tracking;
+  usesNote: string;
   /** What reaches it. This is the half nothing else in the app can answer. */
   usedBy: SymbolRelation[];
   /**
@@ -432,6 +491,8 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
     filePath: symbol.filePath,
     uses: uses.sort(order),
     usedBy: usedBy.sort(order),
+    usesCoverage: CALLS.coverage,
+    usesNote: CALLS.note,
     ...coverageOf(graph, symbol.name, symbol.kind, symbol.filePath),
   };
 }

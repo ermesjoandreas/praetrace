@@ -100,6 +100,30 @@ export interface ParsedSymbol {
    * answer to.
    */
   exported?: boolean;
+  /**
+   * The name this symbol is a second way in to, when one statement defines one
+   * body under several names: `res.set =` newline `res.header = function
+   * header(…)` is one function and two symbols.
+   *
+   * Both names have to be emitted — a reader looking up `res.type` must find it
+   * — but a box that counted both said express's response.js held 24 functions
+   * where it holds 22, and a count that is wrong in the safe-looking direction
+   * is exactly what this project refuses. So the alias is emitted and marked,
+   * and whatever counts leaves the marked ones out.
+   *
+   * A name rather than a flag, because the panel wants the other half of the
+   * answer too: `res.type` is not merely "a duplicate", it is another name for
+   * `res.contentType`, and that sentence is only writable if the name is here.
+   * It costs nothing the file does not already carry — the target is a sibling
+   * symbol of the same parse.
+   *
+   * The primary is the first target the statement writes, which is the one the
+   * source leads with. Not the function expression's own name: express writes
+   * `res.contentType = res.type = function contentType` and `res.set =
+   * res.header = function header`, so the two disagree about which half the
+   * inner name matches, and only the written order is consistent.
+   */
+  aliasOf?: string;
 }
 
 export interface ParsedFile {

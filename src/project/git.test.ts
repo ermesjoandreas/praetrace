@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
+  detachedLabel,
   fetchRemote,
   parseNameStatus,
   parseNumstat,
@@ -184,4 +185,34 @@ test('a fresh init at the project root is git, with everything in it untracked',
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+/**
+ * The state a reviewed pull request is always checked out in, and the one where
+ * this used to answer nothing at all. `branch: null` beside three hundred
+ * commits reads as "no git here", which is the opposite of what it means.
+ */
+test('a detached HEAD is named, not reported as no branch', async () => {
+  const repo = await mkdtemp(path.join(os.tmpdir(), 'codemap-detached-'));
+  try {
+    await run('git', ['init', '-q', '-b', 'main'], { cwd: repo });
+    await write(path.join(repo, 'src', 'a.ts'));
+    await run('git', ['add', '.'], { cwd: repo });
+    await run('git', ['commit', '-q', '-m', 'first'], { cwd: repo });
+
+    const { stdout } = await run('git', ['rev-parse', '--short=7', 'HEAD'], { cwd: repo });
+    const sha = stdout.trim();
+    await run('git', ['checkout', '-q', '--detach', 'HEAD'], { cwd: repo });
+
+    assert.equal(await readBranch(repo), `detached at ${sha}`);
+    assert.equal((await readGitStatus(repo, 'HEAD'))?.branch, `detached at ${sha}`);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test('with no sha to name, a detached HEAD still says what it is', () => {
+  assert.equal(detachedLabel('7fe7f88'), 'detached at 7fe7f88');
+  assert.equal(detachedLabel(''), 'detached HEAD');
+  assert.equal(detachedLabel(undefined), 'detached HEAD');
 });

@@ -432,9 +432,14 @@ function receiverType(node: SyntaxNode | null): Written | null {
 }
 
 /**
- * The type an expression names while building it — `&T{}`, `T{}`, `new(T)` —
- * or null. A call's result type is written at the callee, not here, and is
- * not guessed at.
+ * The type an expression names while building it — `&T{}`, `T{}`, `new(T)`,
+ * `make([]T, 0, 5)` — or null. A call's result type is written at the callee,
+ * not here, and is not guessed at.
+ *
+ * `make` and `new` are the universe's two constructors and both name what they
+ * build in their first argument. What `make` builds is a slice, a map or a
+ * channel, which `receiverType` refuses — a slice has no method of T's — so
+ * admitting it changes no receiver; it is `elementType` that reads it.
  */
 function builtType(value: SyntaxNode | null): SyntaxNode | null {
   if (!value) return null;
@@ -442,18 +447,59 @@ function builtType(value: SyntaxNode | null): SyntaxNode | null {
     return builtType(value.childForFieldName('operand'));
   }
   if (value.type === 'composite_literal') return value.childForFieldName('type');
-  if (value.type === 'call_expression' && value.childForFieldName('function')?.text === 'new') {
+  const callee = value.type === 'call_expression' ? value.childForFieldName('function')?.text : undefined;
+  if (callee === 'new' || callee === 'make') {
     return value.childForFieldName('arguments')?.namedChildren[0] ?? null;
   }
   return null;
 }
 
 /**
+ * What one element of a collection type is: the T of `[]T`, `[3]T` and
+ * `map[K]T`, or null when the type holds nothing a range would hand over.
+ *
+ * The mirror of `receiverType`, which stops at a slice on purpose. Both are
+ * needed because a range binds a name to an element of what it ranges over,
+ * and that is the only place in Go where a variable's type is written down
+ * somewhere other than beside its name. `parents := make([]*Command, 0, 5)`
+ * and then `for _, p := range parents` is how cobra reaches every persistent
+ * hook a command has, and with no element type `p` was untyped, so
+ * `PersistentPreRun` — the call the bug report was about — was refused.
+ *
+ * A channel is left out although it plainly holds a T. It is ranged over one
+ * name at a time, where every other collection gives the element to the
+ * *second* — and the table this fills keeps element types, not which kind of
+ * collection they came from, so a single-name range cannot be told from an
+ * index over a slice. Reading a channel's element would mean guessing.
+ */
+function elementType(node: SyntaxNode | null): SyntaxNode | null {
+  if (!node) return null;
+  switch (node.type) {
+    case 'slice_type':
+    case 'array_type':
+      return node.childForFieldName('element');
+    // A map is ranged over key first, value second, and it is the value a
+    // range's second name is bound to.
+    case 'map_type':
+      return node.childForFieldName('value');
+    case 'pointer_type':
+    case 'parenthesized_type':
+      return elementType(node.namedChildren[0] ?? null);
+    default:
+      return null;
+  }
+}
+
+/**
  * One declaration of a name, recorded into a table of receiver types.
  *
  * A name declared twice is kept only if every declaration agrees, and one
- * declaration without a type — `c := f()`, `for _, c := range` — refuses the
- * name outright, since nothing here knows which block a later `c.X()` is in.
+ * declaration without a type — `c := f()`, a range over something nothing
+ * declared — refuses the name outright, since nothing here knows which block a
+ * later `c.X()` is in. Agreement is why the two readings added for cobra's
+ * `execute` had to land together: `p` is written there both as an alias of the
+ * receiver and as an element of a slice, so either one alone would have been
+ * demoted by the other.
  */
 function bindType(typed: Map<string, Written | null>, name: string, written: Written | null): void {
   if (name === '_') return;
@@ -469,21 +515,24 @@ function bindType(typed: Map<string, Written | null>, name: string, written: Wri
 }
 
 /**
- * What a parameter or a `var` spec declares, name by name, with the type each
- * was given. `a, b *Command` repeats the name, so the names are read as
- * children; `var c = &Command{}` is typed by what it builds, one value per name.
+ * What a parameter or a `var` spec declares, name by name, with the *node* of
+ * the type each was given. `a, b *Command` repeats the name, so the names are
+ * read as children; `var c = &Command{}` is typed by what it builds, one value
+ * per name.
+ *
+ * The node rather than a `Written` because two tables are read off the same
+ * declaration and they project it differently: what a name is, and what one
+ * element of it is. `cmds []*Command` says nothing about `cmds` — a slice has
+ * no method of Command's — and everything about what ranging over it yields.
  */
-function declaredTypes(spec: SyntaxNode): [string, Written | null][] {
+function declaredTypes(spec: SyntaxNode): [string, SyntaxNode | null][] {
   const names = spec.namedChildren.filter((child) => child.type === 'identifier');
   const type = spec.childForFieldName('type');
-  if (type) {
-    const written = receiverType(type);
-    return names.map((name) => [name.text, written]);
-  }
+  if (type) return names.map((name) => [name.text, type]);
   const values = spec.childForFieldName('value')?.namedChildren ?? [];
   return names.map((name, index) => [
     name.text,
-    values.length === names.length ? receiverType(builtType(values[index] ?? null)) : null,
+    values.length === names.length ? builtType(values[index] ?? null) : null,
   ]);
 }
 
@@ -505,7 +554,7 @@ function packageVariables(root: SyntaxNode): Map<string, Written | null> {
     if (declaration.type !== 'var_declaration') continue;
     // `var ( a *Command; b = &Command{} )` is one declaration of several specs.
     for (const spec of declaration.descendantsOfType('var_spec')) {
-      for (const [name, written] of declaredTypes(spec)) bindType(typed, name, written);
+      for (const [name, node] of declaredTypes(spec)) bindType(typed, name, receiverType(node));
     }
   }
   return typed;
@@ -522,37 +571,70 @@ function packageVariables(root: SyntaxNode): Map<string, Written | null> {
  *
  * One table for the whole body, as `boundNames` is one set for the file,
  * starting from the package's variables and held to `bindType`'s rule.
+ *
+ * A second table travels beside it, holding what one element of a name is
+ * rather than what the name is, and it exists for exactly one statement: a
+ * range binds its value variable to an element of what it ranges over, which
+ * is the only place in Go a variable's type is written somewhere other than
+ * beside its name. It is local because nothing outside asks — a collection is
+ * never a receiver — and the sweeps are ordered so that everything it can
+ * answer from is in it before the ranges are read.
  */
 function receiverTypes(declaration: SyntaxNode, scope: FileScope): Map<string, Written | null> {
   const typed = new Map(scope.variables);
+  const holds = new Map<string, Written | null>();
 
   // Declared with a type: the receiver, parameters, results, `var c *Command`.
-  for (const node of declaration.descendantsOfType(['parameter_declaration', 'var_spec'])) {
-    for (const [name, written] of declaredTypes(node)) bindType(typed, name, written);
+  // `cmds ...*Command` is a slice of them, so it names no receiver and every
+  // element it holds — cobra's `AddCommand(cmds ...*Command)`.
+  for (const node of declaration.descendantsOfType([
+    'parameter_declaration',
+    'variadic_parameter_declaration',
+    'var_spec',
+  ])) {
+    const variadic = node.type === 'variadic_parameter_declaration';
+    const declared: [string, SyntaxNode | null][] = variadic
+      ? [[node.childForFieldName('name')?.text ?? '_', node.childForFieldName('type')]]
+      : declaredTypes(node);
+    for (const [name, type] of declared) {
+      bindType(typed, name, variadic ? null : receiverType(type));
+      bindType(holds, name, receiverType(variadic ? type : elementType(type)));
+    }
   }
   for (const node of declaration.descendantsOfType('short_var_declaration')) {
     const names = node.childForFieldName('left')?.namedChildren ?? [];
     const values = node.childForFieldName('right')?.namedChildren ?? [];
     names.forEach((name, index) => {
       if (name.type !== 'identifier') return;
-      bindType(typed, name.text, values.length === names.length ? receiverType(builtType(values[index] ?? null)) : null);
+      const value = values.length === names.length ? values[index] ?? null : null;
+      // `p := c` is an alias, not a construction: it gives `p` whatever `c`
+      // was declared, which the table already holds. Reading it from the table
+      // is why `p := c` beside `for _, p := range parents` agrees rather than
+      // refusing the name — cobra writes both, for the same `*Command`.
+      const alias = value?.type === 'identifier';
+      bindType(typed, name.text, alias ? typed.get(value.text) ?? null : receiverType(builtType(value)));
+      bindType(holds, name.text, alias ? holds.get(value.text) ?? null : receiverType(elementType(builtType(value))));
     });
   }
-  // Bound with no type written: `cmds ...*Command` is a slice of them,
-  // `for _, c := range`, `case v := <-ch`, `switch v := x.(type)`.
-  for (const node of declaration.descendantsOfType([
-    'variadic_parameter_declaration',
-    'range_clause',
-    'receive_statement',
-    'type_switch_statement',
-  ])) {
-    const holder =
-      node.type === 'variadic_parameter_declaration'
-        ? node
-        : node.childForFieldName(node.type === 'type_switch_statement' ? 'alias' : 'left');
+  // Bound with no type written: `case v := <-ch`, `switch v := x.(type)`.
+  for (const node of declaration.descendantsOfType(['receive_statement', 'type_switch_statement'])) {
+    const holder = node.childForFieldName(node.type === 'type_switch_statement' ? 'alias' : 'left');
     for (const child of holder?.namedChildren ?? []) {
       if (child.type === 'identifier') bindType(typed, child.text, null);
     }
+  }
+  // `for i, c := range cmds`: the second name is an element of what is ranged
+  // over, the first an index or a key and never one. Ranging over anything but
+  // a name whose elements were written down — a call's result, a field — types
+  // neither, exactly as before.
+  for (const node of declaration.descendantsOfType('range_clause')) {
+    const names = node.childForFieldName('left')?.namedChildren ?? [];
+    const over = node.childForFieldName('right');
+    const element = over?.type === 'identifier' ? holds.get(over.text) ?? null : null;
+    names.forEach((name, index) => {
+      if (name.type !== 'identifier') return;
+      bindType(typed, name.text, names.length === 2 && index === 1 ? element : null);
+    });
   }
 
   return typed;

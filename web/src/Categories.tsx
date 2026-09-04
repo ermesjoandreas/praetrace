@@ -266,7 +266,13 @@ export function Categories({
                     title={
                       manual
                         ? 'Drawn by a person; the import graph was not asked'
-                        : `${Math.round(group.cohesion * 100)}% of these files' edges stay inside the category`
+                        : // A share, not a score. It rises with the group —
+                          // 100% for one holding the whole project — so the
+                          // size it is measured over belongs in the same
+                          // breath. express: this reads 91% over 38 of the 51
+                          // files clustering looked at, while lib/ + index.js,
+                          // the actual core, reads 18%.
+                          `${Math.round(group.cohesion * 100)}% of these ${group.files.length} files' edges stay inside the category — a share, not a score: it rises with the group, and a group holding everything reads 100%`
                     }
                   >
                     {manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`}

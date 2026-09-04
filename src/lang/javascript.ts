@@ -237,9 +237,11 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
 
       // `export const client = makeClient()` — the same rule TypeScript's
       // extractor applies, and for the same reason: the name is the whole
-      // claim, so only a name the file exports is worth a node.
-      if (value.type === 'call_expression' && out.exports.names.has(name)) {
-        out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+      // claim, so only a name the file exports is worth a node. 'field' for the
+      // same reason too — the branches above already took every value the
+      // source wrote as a function, so what reaches here is a value.
+      if (out.exports.names.has(name)) {
+        out.symbols.push(makeSymbol(declarator, name, 'field', [], scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
       }
     }

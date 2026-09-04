@@ -1,12 +1,46 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react';
 import {
   describeUnresolved,
+  fetchParseErrors,
   type AgentCall,
   type RemoteStatus,
   type Unresolved,
   type ViewGraph,
 } from './api';
 import { AgentStatus } from './AgentStatus';
+
+/**
+ * Close a popover on a click outside it or on Escape.
+ *
+ * Two of them open out of this bar now, and the second one written by hand
+ * would have been a second chance to forget the `preventDefault` — without it
+ * the same Escape that shuts the menu also leaves a frozen diagram, which
+ * reads as the app losing the commit you were reading.
+ */
+function useDismiss(
+  open: boolean,
+  menu: RefObject<HTMLDivElement | null>,
+  setOpen: Dispatch<SetStateAction<boolean>>,
+): void {
+  useEffect(() => {
+    if (!open) return;
+    const away = (event: globalThis.MouseEvent) => {
+      if (!menu.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const escape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      // Taken: the page's own Escape must not also leave a frozen view.
+      event.preventDefault();
+      setOpen(false);
+    };
+    document.addEventListener('mousedown', away);
+    document.addEventListener('keydown', escape);
+    return () => {
+      document.removeEventListener('mousedown', away);
+      document.removeEventListener('keydown', escape);
+    };
+  }, [open, menu, setOpen]);
+}
 
 /**
  * The three bases the server accepts, and the words each one gets. One list
@@ -72,6 +106,13 @@ interface StatusBarProps {
   /** Files the parser could not fully read. Their boxes carry the badge; this is the total. */
   parseErrors: number;
   /**
+   * The commit on screen, so the hunt for those files answers about the
+   * diagram being looked at rather than about the working tree behind it.
+   */
+  at: string | null;
+  /** Put one of them on the diagram. A count nobody can open is just a number. */
+  onOpenFile: (path: string) => void;
+  /**
    * Every reference in the whole project that landed nowhere —
    * `totalUnresolved`, which reads `ViewGraph.unresolved` and not the boxes.
    * null when every one of them resolved, which is what a healthy project says.
@@ -109,31 +150,50 @@ export function StatusBar({
   hiddenTests,
   onShowTests,
   parseErrors,
+  at,
+  onOpenFile,
   unresolved = null,
   agentLast,
   agentTotal,
 }: StatusBarProps) {
   const [baseOpen, setBaseOpen] = useState(false);
   const baseMenu = useRef<HTMLDivElement>(null);
+  const [errorsOpen, setErrorsOpen] = useState(false);
+  const errorsMenu = useRef<HTMLDivElement>(null);
+  /** The walk's answer, or the fact that it is still walking. Null until asked. */
+  const [broken, setBroken] = useState<{ files: string[]; complete: boolean } | 'looking' | null>(
+    null,
+  );
 
+  useDismiss(baseOpen, baseMenu, setBaseOpen);
+  useDismiss(errorsOpen, errorsMenu, setErrorsOpen);
+
+  /**
+   * Look for the broken files on every press rather than once.
+   *
+   * The count beside the button is recomputed on every view, and the whole
+   * point of the list is that it is what the count is made of — a list cached
+   * from before the agent fixed two of them would disagree with the number it
+   * hangs under.
+   */
   useEffect(() => {
-    if (!baseOpen) return;
-    const away = (event: globalThis.MouseEvent) => {
-      if (!baseMenu.current?.contains(event.target as Node)) setBaseOpen(false);
-    };
-    const escape = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      // Taken: the page's own Escape must not also leave a frozen view.
-      event.preventDefault();
-      setBaseOpen(false);
-    };
-    document.addEventListener('mousedown', away);
-    document.addEventListener('keydown', escape);
+    if (!errorsOpen) return;
+    let cancelled = false;
+    setBroken('looking');
+    fetchParseErrors(at).then(
+      (result) => {
+        if (!cancelled) setBroken(result);
+      },
+      () => {
+        // Nothing found and nothing claimed: `complete` false is what makes the
+        // panel say the list is short rather than say there is nothing to find.
+        if (!cancelled) setBroken({ files: [], complete: false });
+      },
+    );
     return () => {
-      document.removeEventListener('mousedown', away);
-      document.removeEventListener('keydown', escape);
+      cancelled = true;
     };
-  }, [baseOpen]);
+  }, [errorsOpen, at, parseErrors]);
 
   return (
     <footer className="statusbar">
@@ -272,16 +332,60 @@ export function StatusBar({
             graph holds less of than the box count suggests. A file with a
             syntax error keeps its box and loses its symbols, silently, until
             this said so. */}
+        {/* A control, not a label. This is the most actionable thing on the
+            bar — a file that would not parse has lost symbols the diagram will
+            never draw — and until it opened, the only way from the number to
+            the files was to hunt the canvas for warning badges. */}
         {parseErrors > 0 && (
-          <span
-            className="status-item parse-errors"
-            title={`${
-              parseErrors === 1 ? '1 file' : `${parseErrors} files`
-            } in this project would not fully parse, so symbols may be missing — each box carries a warning badge`}
-          >
-            <i className="codicon codicon-warning" aria-hidden="true" />
-            {parseErrors === 1 ? '1 file with a syntax error' : `${parseErrors} files with syntax errors`}
-          </span>
+          <div className="parse-errors-at" ref={errorsMenu}>
+            <button
+              type="button"
+              className="status-item parse-errors"
+              aria-expanded={errorsOpen}
+              onClick={() => setErrorsOpen((was) => !was)}
+              title={`${
+                parseErrors === 1 ? '1 file' : `${parseErrors} files`
+              } in this project would not fully parse, so symbols may be missing — click to list them`}
+            >
+              <i className="codicon codicon-warning" aria-hidden="true" />
+              {parseErrors === 1
+                ? '1 file with a syntax error'
+                : `${parseErrors} files with syntax errors`}
+            </button>
+
+            {errorsOpen && (
+              <div className="menu-drop menu-drop-up parse-drop">
+                <div className="git-drop-head">
+                  {broken === 'looking' || broken === null
+                    ? 'Looking for them…'
+                    : // Said whenever the two numbers disagree, and in the same
+                      // breath as the list: the walk that finds these opens one
+                      // directory at a time and gives up before it opens the
+                      // whole project, so a list shorter than the count is an
+                      // ordinary outcome and has to read as one.
+                      broken.files.length < parseErrors
+                      ? `${broken.files.length} of ${parseErrors} found`
+                      : 'Symbols may be missing from these'}
+                </div>
+                {broken !== 'looking' &&
+                  broken !== null &&
+                  broken.files.map((file) => (
+                    <button
+                      key={file}
+                      type="button"
+                      className="menu-item"
+                      title={`${file} — click to put it on the diagram`}
+                      onClick={() => {
+                        setErrorsOpen(false);
+                        onOpenFile(file);
+                      }}
+                    >
+                      <span className="menu-label parse-path">{file}</span>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Muted, not the warning colour: this is the tool reaching its limit

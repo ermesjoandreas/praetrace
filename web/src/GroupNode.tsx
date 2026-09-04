@@ -130,8 +130,23 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
 
         {/* A hand-drawn group carries a cohesion of 0, and printing that as 0%
             would read as a terrible group rather than as one the import graph
-            was never asked to find. */}
-        <span className="group-meta">
+            was never asked to find.
+
+            The percentage is not a score, and the title has to say so. It is
+            the share of these files' edges that stay inside, which rises with
+            the group and is 100% for a group holding the whole project — so a
+            big group scores high for being big. Measured on express: the group
+            below covers 38 of the 51 files the clustering looked at and reads
+            91%, while lib/ + index.js, which is what anyone means by the core,
+            reads 18%. */}
+        <span
+          className="group-meta"
+          title={
+            manual
+              ? 'Drawn by a person; the import graph was not asked'
+              : `${Math.round(data.cohesion * 100)}% of these ${data.fileCount} files' edges stay inside the group — a share, not a score: it rises with the group, and a group holding everything reads 100%`
+          }
+        >
           {manual ? 'by hand' : `${Math.round(data.cohesion * 100)}%`}
         </span>
 

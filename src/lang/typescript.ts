@@ -881,6 +881,14 @@ export function exportsOf(root: SyntaxNode): Exports {
 }
 
 /**
+ * A property of the module's exports object — `exports.static`,
+ * `module.exports.merge`. The bare `module.exports` is deliberately not one: it
+ * names no property, and what it assigns is the default export, which
+ * `ParsedFile.defaultExport` already carries under the name it really has.
+ */
+const EXPORTS_PROPERTY = /^(module\.)?exports\./;
+
+/**
  * Stamp `exported` on every top-level symbol. Members are left alone: they
  * are reached through their owner, never by name. `exports.f =` and
  * `module.exports.f =` are exports by construction — the name says so.
@@ -889,7 +897,7 @@ export function markExports(symbols: readonly ParsedSymbol[], exports: Exports):
   return symbols.map((symbol) =>
     symbol.owner !== undefined
       ? symbol
-      : { ...symbol, exported: exports.names.has(symbol.name) || /^(module\.)?exports\./.test(symbol.name) },
+      : { ...symbol, exported: exports.names.has(symbol.name) || EXPORTS_PROPERTY.test(symbol.name) },
   );
 }
 
@@ -952,12 +960,24 @@ export function collectFileCalls(root: SyntaxNode, claimed: readonly SyntaxNode[
 export const FUNCTION_VALUES: ReadonlySet<string> = new Set(['arrow_function', 'function_expression', 'function']);
 
 /**
- * A function defined by assigning it to a property: `app.init = function`,
- * `exports.merge = () =>`, `res.send = function send`, and express's
- * `defineGetter(req, 'protocol', function)`. This is how a CommonJS module
- * defines its API, and before it was read application.js — 632 lines, all of
- * them this — drew two symbols. The name is the property exactly as written,
- * which is the only name the file gives it.
+ * A value defined by assigning it to a property: `app.init = function`,
+ * `exports.merge = () =>`, `res.send = function send`, `exports.static =
+ * require('serve-static')`, and express's `defineGetter(req, 'protocol',
+ * function)`. This is how a CommonJS module defines its API, and before it was
+ * read application.js — 632 lines, all of them this — drew two symbols. The
+ * name is the property exactly as written, which is the only name the file
+ * gives it.
+ *
+ * A value that is not literally a function counts on the exports object and
+ * nowhere else. express's lib/express.js is eleven statements of it and headed
+ * itself "1 symbol", hiding `express.static`, `express.Router`, `express.json`
+ * and seven more — ten of the eleven things anyone opens express to find, and
+ * searching for "static" returned nothing. But `app.count = 1` is a property of
+ * an object local to the module, which no other file can name and no reference
+ * can land on, so listing the module's scratch state would cost a box its
+ * legibility and buy nothing. That is the same line the exported `const` is
+ * drawn on, for the same reason: the name is the whole claim, and only a name
+ * another file can write down is a claim worth a node.
  *
  * One assignment can write several names, and none of them used to survive.
  * `res.set =` newline `res.header = function header(…)` is a single expression
@@ -968,7 +988,7 @@ export const FUNCTION_VALUES: ReadonlySet<string> = new Set(['arrow_function', '
  * symbols" as though the list were complete — while res.send, which calls two
  * of them, named callees its own file said it did not declare.
  */
-function assignedFunctionOf(statement: SyntaxNode): { names: string[]; value: SyntaxNode } | null {
+function assignedValueOf(statement: SyntaxNode): { names: string[]; value: SyntaxNode } | null {
   const expression = statement.namedChildren[0] ?? null;
   if (!expression) return null;
 
@@ -988,8 +1008,13 @@ function assignedFunctionOf(statement: SyntaxNode): { names: string[]; value: Sy
       }
       node = node.childForFieldName('right');
     }
-    if (names.length === 0 || !node || !FUNCTION_VALUES.has(node.type)) return null;
-    return { names, value: node };
+    if (names.length === 0 || !node) return null;
+    // Every target keeps a function; only the exported ones keep a plain value.
+    const value = node;
+    const named = FUNCTION_VALUES.has(value.type)
+      ? names
+      : names.filter((name) => EXPORTS_PROPERTY.test(name));
+    return named.length === 0 ? null : { names: named, value };
   }
 
   if (expression.type === 'call_expression' && nameOf(expression.childForFieldName('function')) === 'defineGetter') {
@@ -1005,28 +1030,52 @@ function assignedFunctionOf(statement: SyntaxNode): { names: string[]; value: Sy
 }
 
 /**
- * The symbols for a property-assigned function — one per name the assignment
+ * What a bound value says it is.
+ *
+ * A function expression says `function`. Every other expression says nothing
+ * about being callable, and `field` — UML's attribute, a named value the module
+ * holds — is what was actually written. A call is deliberately in the second
+ * group: `export const parse = _parse(errors)` and `export const dataTagSymbol
+ * = Symbol()` are the same syntax and only one of them is a function, so
+ * calling either a function is a claim rather than a reading, and TanStack has
+ * four boxes that made it.
+ *
+ * Nothing about the graph turns on this. The store refuses only `interface` and
+ * `type` as the end of a call, so `new ZodError()` still lands on the const that
+ * a `$constructor(…)` produced; what changes is that the box stops saying the
+ * source declared a function where it declared a value.
+ */
+function valueKindOf(value: SyntaxNode): SymbolKind {
+  return FUNCTION_VALUES.has(value.type) ? 'function' : 'field';
+}
+
+/**
+ * The symbols for a property-assigned value — one per name the assignment
  * writes — or none when the statement is not one. Each range is the whole
  * statement, which is where a reader would look for it; the calls are the
- * function's own, because the `defineGetter` that installs a getter is the
+ * value's own, because the `defineGetter` that installs a getter is the
  * module's doing at load and not the getter's.
  *
  * An alias carries the calls too. `res.type` and `res.contentType` are two
  * ways in to one body, and a box for either that showed nothing called would
- * describe neither.
+ * describe neither. It carries `aliasOf` as well, so that what counts them can
+ * count the body once: see ParsedSymbol.aliasOf.
  */
 export function assignedSymbolsOf(statement: SyntaxNode, scope: Scope): ParsedSymbol[] {
-  const assigned = assignedFunctionOf(statement);
+  const assigned = assignedValueOf(statement);
   if (!assigned) return [];
   const calls = collectCalls(assigned.value, [], scopeOf(assigned.value, scope));
-  return assigned.names.map((name) => ({
+  const kind = valueKindOf(assigned.value);
+  const primary = assigned.names[0];
+  return assigned.names.map((name, index) => ({
     name,
-    kind: 'function',
+    kind,
     startLine: statement.startPosition.row + 1,
     endLine: statement.endPosition.row + 1,
     extends: [],
     implements: [],
     calls: [...calls],
+    ...(index === 0 || primary === undefined ? {} : { aliasOf: primary }),
   }));
 }
 
@@ -1590,22 +1639,24 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
       }
 
       // `export const parse: $Parse = _parse(errors.$ZodRealError)` — a name
-      // bound to whatever a call returned. zod's whole public API is written
-      // this way, 330 declarations of it, and none of them was drawn: the file
-      // held the calls the factory made and no node anyone could import.
+      // bound to whatever an expression produced. zod's whole public API is
+      // written this way, 330 declarations of it, and none of them was drawn:
+      // the file held the calls the factory made and no node anyone could
+      // import. Nor is it only calls. `export const isServer = typeof window
+      // === 'undefined'` is the name TanStack/query's utils.ts is opened for,
+      // and a box listing 41 symbols without it read as a complete list.
       //
-      // Only the exported ones. The call says nothing about what it produced,
-      // so the name is the entire claim, and a name the file exports is one
-      // another file can write down — which is what a graph edge needs at both
-      // ends. The 645 unexported ones in zod are locals, and stay locals.
+      // Only the exported ones. The expression says nothing about what it
+      // produced, so the name is the entire claim, and a name the file exports
+      // is one another file can write down — which is what a graph edge needs
+      // at both ends. The 645 unexported ones in zod are locals, and stay
+      // locals.
       //
-      // 'function' because that is the kind that means "a top-level value that
-      // is called", which is why these are wanted at all; 'type' belongs to the
-      // type system and would put a call edge on something uncallable. What the
-      // source did not say — whether the value is really callable — the graph
-      // shows the ordinary way, as a box with nothing calling it.
-      if (value.type === 'call_expression' && out.exports.names.has(name)) {
-        out.symbols.push(makeSymbol(declarator, name, 'function', [], scopeOf(declarator, out.scope)));
+      // 'field' rather than 'function': the two branches above are where the
+      // source wrote a function down, so what is left is a value, and saying
+      // which is valueKindOf's job and not a guess made here.
+      if (out.exports.names.has(name)) {
+        out.symbols.push(makeSymbol(declarator, name, 'field', [], scopeOf(declarator, out.scope)));
         out.claimed.push(declarator);
       }
     }

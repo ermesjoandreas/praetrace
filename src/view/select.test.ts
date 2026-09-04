@@ -538,3 +538,39 @@ test('a row is marked by an arrow on this slice, not by any relation anywhere', 
     ['src/c.ts#Gamma', true],
   ]);
 });
+
+test('a row that is another name for a body beside it says so, and the body does not', () => {
+  // express lib/response.js: `res.contentType = res.type = function contentType`.
+  // Both rows are drawn — a reader looking for res.type must find it — but the
+  // box would otherwise show two functions at one range with nothing to tell
+  // them apart, and anything counting the rows would count the body twice.
+  const filePath = 'lib/response.js';
+  const range = { startLine: 510, endLine: 517 };
+  const nodes = new Map<string, GraphNode>([
+    [filePath, { id: filePath, kind: 'file', name: 'response.js', filePath, range: { startLine: 1, endLine: 1 } }],
+    [
+      `${filePath}#res.contentType`,
+      { id: `${filePath}#res.contentType`, kind: 'function', name: 'res.contentType', filePath, range },
+    ],
+    [
+      `${filePath}#res.type`,
+      {
+        id: `${filePath}#res.type`,
+        kind: 'function',
+        name: 'res.type',
+        filePath,
+        range,
+        aliasOf: 'res.contentType',
+      },
+    ],
+  ]);
+  const view = selectView({ nodes, edges: [] }, root, 0);
+
+  assert.deepEqual(
+    view.nodes.flatMap((node) => node.members.map((member) => [member.name, member.aliasOf])),
+    [
+      ['res.contentType', undefined],
+      ['res.type', 'res.contentType'],
+    ],
+  );
+});

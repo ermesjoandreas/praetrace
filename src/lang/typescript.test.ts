@@ -473,11 +473,16 @@ test('a type parameter is not a written class type', () => {
   assert.equal(symbols.find((s) => s.owner === 'Shape' && s.name === 'item')?.typeName, undefined);
 });
 
-test('an exported const bound to a call is a symbol, and an unexported one is not', () => {
+test('an exported const bound to a value is a symbol, and an unexported one is not', () => {
   // zod's public API is written this way and none of it was drawn: `export
   // const parse: $Parse = _parse(errors.$ZodRealError)` left the file holding a
   // call to `_parse` and no node an importer could land on. 330 declarations of
   // it in zod, against 645 unexported ones that are locals and stay locals.
+  //
+  // A call is not the only expression that binds a name. TanStack/query's
+  // utils.ts headed a box "41 symbols" without `isServer`, which is written
+  // `typeof window === 'undefined'` — a complete-looking list missing the name
+  // the file is opened for.
   const parsed = parse(`
     export const parse: $Parse = _parse(realError)
     export const answer = 6 * 7
@@ -489,8 +494,9 @@ test('an exported const bound to a call is a symbol, and an unexported one is no
   assert.deepEqual(
     parsed.symbols.map((s) => [s.name, s.kind, s.exported]),
     [
-      ['parse', 'function', true],
-      ['late', 'function', true],
+      ['parse', 'field', true],
+      ['answer', 'field', true],
+      ['late', 'field', true],
     ],
   );
   // What the factory was called on belongs to the name it produced, not to the
@@ -498,6 +504,29 @@ test('an exported const bound to a call is a symbol, and an unexported one is no
   assert.deepEqual(byName(parsed.symbols, 'parse').calls, ['_parse']);
   assert.deepEqual(byName(parsed.symbols, 'late').calls, ['makeLate']);
   assert.deepEqual(parsed.calls, ['makeHelper', 'makeQuiet']);
+});
+
+test('a const bound to a call is not called a function, because the call did not say', () => {
+  // `export const dataTagSymbol = Symbol()` was reported kind 'function', which
+  // is a claim and not a gap — four of them in TanStack/query. It is the same
+  // syntax as zod's `$constructor(…)` factories and the source tells them
+  // apart nowhere, so the honest reading is the one that says "a value the
+  // module holds" for both and lets the graph draw what calls it.
+  const { symbols } = parse(`
+    export const dataTagSymbol = Symbol()
+    export const ZodError = $constructor('ZodError', init)
+    export const run = () => go()
+    export const build = function () { return go() }
+  `);
+  assert.deepEqual(
+    symbols.map((s) => [s.name, s.kind]),
+    [
+      ['dataTagSymbol', 'field'],
+      ['ZodError', 'field'],
+      ['run', 'function'],
+      ['build', 'function'],
+    ],
+  );
 });
 
 test('a name merged as an interface and an exported const yields both symbols', () => {
@@ -511,11 +540,14 @@ test('a name merged as an interface and an exported const yields both symbols', 
     export interface ZodError { issues: Issue[] }
     export const ZodError = $constructor('ZodError', init)
   `);
+  // The const half is a field — the source bound a name to what a call
+  // returned and said nothing more — and that is still something a call can
+  // land on: the store refuses only `interface` and `type` as the end of one.
   assert.deepEqual(
     symbols.filter((s) => s.owner === undefined).map((s) => [s.name, s.kind]),
     [
       ['ZodError', 'interface'],
-      ['ZodError', 'function'],
+      ['ZodError', 'field'],
     ],
   );
 });

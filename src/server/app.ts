@@ -9,6 +9,7 @@ import type { Graph, GraphNode } from '../graph/types.js';
 import type { Session } from './session.js';
 import { LANGUAGES } from '../lang/registry.js';
 import {
+  explainStore,
   fingerprintOf,
   relationsFingerprint,
   type ExplainTarget,
@@ -147,10 +148,12 @@ export interface LogResponse {
    */
   head: string;
   /**
-   * The branch checked out, or null when HEAD is detached. From git, not from
-   * the decorations: `%D` spells a detached HEAD sitting on a branch tip the
-   * same way it spells the branch once the arrow is split, so the refs alone
-   * cannot say which one the row's target badge belongs to.
+   * What HEAD is on, in words: a branch name, or `detached at 7fe7f88`. Null
+   * only for a repository with nothing committed yet, which has no name to
+   * give — see `branchOf`. From git, not from the decorations: `%D` spells a
+   * detached HEAD sitting on a branch tip the same way it spells the branch
+   * once the arrow is split, so the refs alone cannot say which one the row's
+   * target badge belongs to.
    */
   branch: string | null;
 }
@@ -255,7 +258,19 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 
   app.get('/api/view', async (request, reply) => {
     const session = host.current();
-    const spec = toSpec(request.query as Record<string, unknown>);
+    const query = request.query as Record<string, unknown>;
+
+    // A misspelled edge kind is refused rather than dropped. Falling back to
+    // the defaults answered a different question under the caller's URL, which
+    // is the same silence `?calls=1` used to get.
+    const unknown = unknownEdges(query['edges']);
+    if (unknown.length > 0) {
+      return reply.code(400).send({
+        error: `edges= takes ${EDGE_KINDS.join(', ')} — not ${unknown.join(', ')}`,
+      });
+    }
+
+    const spec = toSpec(query);
 
     // A commit that cannot be drawn is a 404 and never the live graph: a page
     // showing now under a banner naming a commit is exactly the wrong picture
@@ -313,14 +328,21 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     unreadable: await countUnreadable(host.current().root),
   }));
 
+  // A box: one file, or a directory. The answer echoes the subject in its own
+  // `path`, so a caller never has to trust that the route read the key it meant.
   app.get('/api/detail', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
-    const target = typeof query['path'] === 'string' ? query['path'] : '';
+    const asked = readSubject(query);
+    if (asked === '') {
+      return reply.code(400).send({ error: 'ask for one: ?path= or ?id=, a file or a directory' });
+    }
     const at = readAt(query['at']);
     const graph = await graphFor(host.current(), at);
     if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
-    const detail = describe(graph, target);
-    if (!detail) return reply.code(404).send({ error: `nothing known about ${target}` });
+    const detail = describe(graph, asked);
+    if (!detail) {
+      return reply.code(404).send({ asked, error: notFound(graph, asked, 'file') });
+    }
     return detail;
   });
 
@@ -329,12 +351,17 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   // of the two.
   app.get('/api/symbol', async (request, reply) => {
     const query = request.query as Record<string, unknown>;
-    const id = typeof query['id'] === 'string' ? query['id'] : '';
+    const asked = readSubject(query);
+    if (asked === '') {
+      return reply.code(400).send({ error: 'ask for one: ?id= or ?path=, as path#Name' });
+    }
     const at = readAt(query['at']);
     const graph = await graphFor(host.current(), at);
     if (graph === null) return reply.code(404).send({ error: `unknown commit ${at}` });
-    const links = describeSymbol(graph, id);
-    if (!links) return reply.code(404).send({ error: `no symbol ${id}` });
+    const links = describeSymbol(graph, asked);
+    if (!links) {
+      return reply.code(404).send({ asked, error: notFound(graph, asked, 'symbol') });
+    }
     return links;
   });
 
@@ -360,6 +387,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       ),
       total: stored.length,
       run: session.explainRun(),
+      // What a run would write, and whether writing it would put a directory
+      // into this project that is not there. See `explainStore`: the panel can
+      // say so before the press, and the press itself is asked either way.
+      store: await explainStore(session.root),
     };
   });
 
@@ -373,7 +404,13 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
    */
   app.post('/api/explain', async (request, reply) => {
     const session = host.current();
-    const body = (request.body ?? {}) as { action?: unknown; ids?: unknown; id?: unknown; force?: unknown };
+    const body = (request.body ?? {}) as {
+      action?: unknown;
+      ids?: unknown;
+      id?: unknown;
+      force?: unknown;
+      createStore?: unknown;
+    };
 
     if (body.action === 'cancel') {
       return { cancelled: session.cancelExplain(), run: session.explainRun() };
@@ -389,6 +426,19 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 
     if (body.action !== 'run') {
       return reply.code(400).send({ error: "action must be 'run', 'cancel' or 'forget'" });
+    }
+
+    // Asked before a byte is spent, because the answer is a file in somebody
+    // else's repository — see `explainStore` for the decision and why it is a
+    // question rather than a sentence in the panel. Once the directory exists
+    // the question is settled and never asked again.
+    const store = await explainStore(session.root);
+    if (!store.exists && body.createStore !== true) {
+      return reply.code(409).send({
+        error: `explaining writes ${store.path}, and this project has no .codemap/ yet — send createStore: true to allow it`,
+        needsConsent: true,
+        store,
+      });
     }
 
     const force = body.force === true;
@@ -487,6 +537,18 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 
   app.post('/api/groups', async (request, reply) => {
     const root = host.current().root;
+
+    // The same question explain asks, about the same directory. Naming a group
+    // writes .codemap/groups.json, and a project opened to be looked at should
+    // not gain a directory for it — see the reason above `explainStore`.
+    const body = (request.body ?? {}) as { createStore?: unknown };
+    const store = await explainStore(root);
+    if (!store.exists && body.createStore !== true) {
+      return reply.code(409).send({
+        error: `naming a group writes into ${path.dirname(store.path)}, and this project has no .codemap/ yet — send createStore: true to allow it`,
+        needsConsent: true,
+      });
+    }
 
     let next: NamedGroup[];
     try {
@@ -881,6 +943,41 @@ function fileContext(detail: FileDetail): string[] {
 }
 
 /** A comma-separated query parameter. No id in the graph contains a comma. */
+/**
+ * What a request is about, under either name.
+ *
+ * `/api/detail` took `path` and `/api/symbol` took `id`, and four of five
+ * reviewers lost time to that difference. The reward for guessing wrong was
+ * `nothing known about `, with the subject empty — which reads as "the graph
+ * has never heard of anything" rather than "that is the other route's key".
+ * Both names work on both routes now: what separates the two is what they
+ * answer, not what they are asked.
+ */
+function readSubject(query: Record<string, unknown>): string {
+  for (const key of ['path', 'id']) {
+    const value = query[key];
+    if (typeof value === 'string' && value !== '') return value;
+  }
+  return '';
+}
+
+/**
+ * Why a subject the graph holds no answer for came back empty — and, when the
+ * graph does hold it, which of the two routes was wanted.
+ *
+ * The subject is quoted, so a name with a trailing space or an unexpanded
+ * `$PWD` in it is visible rather than being read as nothing at all.
+ */
+function notFound(graph: Graph, asked: string, wanted: 'file' | 'symbol'): string {
+  const node = graph.nodes.get(asked);
+  if (node !== undefined && (node.kind === 'file') !== (wanted === 'file')) {
+    return node.kind === 'file'
+      ? `"${asked}" is a file — ask /api/detail?path=${asked}`
+      : `"${asked}" is a ${node.kind} — ask /api/symbol?id=${asked}`;
+  }
+  return `nothing known about "${asked}"`;
+}
+
 function readCsv(raw: unknown): string[] {
   if (typeof raw !== 'string' || raw === '') return [];
   return raw.split(',').filter((value) => value !== '');
@@ -1016,15 +1113,40 @@ function readMembers<T extends string>(raw: unknown, allowed: readonly T[]): T[]
 const NODE_KINDS = ['class', 'function', 'interface', 'type', 'method', 'field'] as const;
 const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'associates'] as const;
 
+/**
+ * The two opt-in edge kinds, each also spellable as a flag of its own.
+ *
+ * `?calls=1` is what CLAUDE.md documents and what everyone typed; only
+ * `?edges=imports,calls` worked, and the URL that did not was not refused —
+ * it came back as the default filter, a diagram with no call edges under a
+ * link that asked for them. A silently ignored request is the failure this
+ * project cares about most, so the short form is read rather than dropped.
+ * A flag adds to what `edges=` asked for; it never takes anything away.
+ */
+const EDGE_FLAGS = ['calls', 'associates'] as const;
+
+/**
+ * Names in `edges=` that are not edge kinds. A typo there used to fall back to
+ * the default kinds, which is the same silence `calls=1` had: the caller asked
+ * for something and got a diagram that answered a different question. The
+ * route refuses instead, and names the keys that work.
+ */
+function unknownEdges(raw: unknown): string[] {
+  if (typeof raw !== 'string' || raw === '') return [];
+  return raw.split(',').filter((name) => name !== '' && !(EDGE_KINDS as readonly string[]).includes(name));
+}
+
 /** Every field is user input, from a query string or a socket frame. */
 function toFilter(raw: Record<string, unknown>): ViewFilter {
-  const edges = readList(raw['edges'], EDGE_KINDS);
+  const listed = readList(raw['edges'], EDGE_KINDS);
+  const wanted = new Set<string>(listed.length > 0 ? listed : DEFAULT_EDGE_KINDS);
+  for (const kind of EDGE_FLAGS) if (raw[kind] === '1') wanted.add(kind);
 
   return {
     hidePath: typeof raw['hide'] === 'string' ? raw['hide'] : '',
     onlyPath: typeof raw['only'] === 'string' ? raw['only'] : '',
     kinds: readList(raw['kinds'], NODE_KINDS),
-    edgeKinds: edges.length > 0 ? edges : DEFAULT_EDGE_KINDS,
+    edgeKinds: EDGE_KINDS.filter((kind) => wanted.has(kind)),
     sinceMs: typeof raw['since'] === 'string' ? parseDuration(raw['since']) : 0,
     // A flag and nothing more: which base it compares against belongs to the
     // session, so a URL cannot narrow the view to a base nobody is looking at.

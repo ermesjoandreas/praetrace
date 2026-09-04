@@ -196,11 +196,19 @@ server.registerTool(
       // files because of it. The heading says "at least" whichever way the
       // graph answers — there is no state in which the number is everything —
       // and the note under it says what the count is missing.
+      // An alias is a second name for a body already listed — express writes
+      // `res.set = res.header = function`. Both names are printed, because an
+      // agent looking for `res.header` must find it, and only the bodies are
+      // counted, because "24 symbols" over 22 functions is the inflated number
+      // this round set out to remove.
+      const bodies = detail.symbols.filter((s) => s.aliasOf === undefined).length;
       return [
-        `${detail.path} — ${detail.symbols.length} symbols, ${detail.lineCount} lines`,
+        `${detail.path} — ${bodies} symbols, ${detail.lineCount} lines`,
         '',
         'declares:',
-        ...detail.symbols.map((s) => `  ${s.kind} ${s.name} (line ${s.line})`),
+        ...detail.symbols.map(
+          (s) => `  ${s.kind} ${s.name} (line ${s.line})${s.aliasOf === undefined ? '' : ` = ${s.aliasOf}`}`,
+        ),
         '',
         `used by (at least ${detail.importedBy.length}):`,
         ...detail.importedBy.map((f) => `  ${f}`),

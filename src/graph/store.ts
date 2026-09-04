@@ -283,6 +283,7 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         ...(symbol.isStatic === undefined ? {} : { isStatic: symbol.isStatic }),
         ...(symbol.isAbstract === undefined ? {} : { isAbstract: symbol.isAbstract }),
         ...(symbol.many === undefined ? {} : { many: symbol.many }),
+        ...(symbol.aliasOf === undefined ? {} : { aliasOf: symbol.aliasOf }),
       });
       ids.push(id);
       if (symbol.kind === 'class') owners.set(symbol.name, id);

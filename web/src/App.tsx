@@ -116,6 +116,22 @@ const RUN_POLL_MS = 3000;
 const MANY_BOXES = 150;
 
 /**
+ * Which way a bundle's arrow runs, read off the id the view gave it —
+ * `bundle:dependents:1`.
+ *
+ * Read from the id rather than from the label, because the label is exactly
+ * the string that has to stop being the only thing said: "260 dependents"
+ * beside a symbol someone is following reads as that symbol's fan-in, and it
+ * is the file's. Both surfaces that draw a bundle ask this, so they cannot
+ * disagree about which way it points.
+ */
+function bundleDirection(id: string): 'dependents' | 'dependencies' | null {
+  if (id.startsWith('bundle:dependents')) return 'dependents';
+  if (id.startsWith('bundle:dependencies')) return 'dependencies';
+  return null;
+}
+
+/**
  * What one followed symbol reaches, when that is known. A symbol the graph has
  * lost reaches nothing, and neither does one nobody has asked about yet — the
  * difference between those two is a row in the panel, never a lit edge.
@@ -330,6 +346,12 @@ export function App() {
    * no money moved, so it is not worded as a failure. `failed` is no server.
    */
   const [explainError, setExplainError] = useState<{ reason: ExplainFailure | 'refused'; detail: string } | null>(null);
+  /**
+   * The server's standing question, and the press that raised it: explaining
+   * writes a file into a project that has none, and a project opened to be read
+   * must not be left with one uninvited. Null whenever there is nothing to ask.
+   */
+  const [consent, setConsent] = useState<{ path: string; ids: string[]; force: boolean } | null>(null);
 
   const takeRun = useCallback((next: ExplainRun | null) => {
     setRun(next);
@@ -1231,11 +1253,16 @@ export function App() {
    * One copy, so the four presses cannot come to disagree about that.
    */
   const sendExplain = useCallback(
-    (ids: string[], force = false) => {
+    (ids: string[], force = false, createStore = false) => {
       setExplainError(null);
+      setConsent(null);
       setStreamed('');
-      requestExplanations(ids, force).then(
+      requestExplanations(ids, force, createStore).then(
         (result) => {
+          // The one refusal a press can answer, so it is held rather than
+          // printed: what was asked for is kept beside the question, and
+          // saying yes sends the same press again with consent.
+          if (result.needsConsent !== null) setConsent({ path: result.needsConsent, ids, force });
           if (result.refused !== null) setExplainError({ reason: 'refused', detail: result.refused });
           takeRun(result.run);
         },
@@ -1245,6 +1272,12 @@ export function App() {
     },
     [takeRun],
   );
+
+  /** Say yes to the question above, and run the press that raised it. */
+  const acceptStore = useCallback(() => {
+    if (consent === null) return;
+    sendExplain(consent.ids, consent.force, true);
+  }, [consent, sendExplain]);
 
   /**
    * Spend the user's quota, on exactly what the list already holds. Nothing is
@@ -1510,6 +1543,7 @@ export function App() {
       data: {
         label: node.label,
         kind: node.kind,
+        bundleOf: bundleDirection(node.id),
         members: node.members,
         files: node.files,
         external: node.external,
@@ -1809,6 +1843,26 @@ export function App() {
     [goTo],
   );
 
+  /**
+   * Put one named file on the diagram and open it in the panel.
+   *
+   * Every filter is dropped on the way. This is what the status bar's count of
+   * unparseable files leads to, and such a file can perfectly well be a test,
+   * or be unchanged since the git base — so a jump that kept the filters would
+   * answer "Nothing to show here", which is a worse dead end than the count it
+   * was meant to open.
+   */
+  const openFile = useCallback(
+    (path: string) => {
+      const params = new URLSearchParams();
+      params.set('focus', path);
+      if (at !== null) params.set('at', at);
+      navigate(params);
+      setSelected(path);
+    },
+    [navigate, at],
+  );
+
   const goToScope = useCallback(
     (scope: string) => {
       const params = new URLSearchParams();
@@ -2054,6 +2108,37 @@ export function App() {
     view !== undefined && focus !== null && depth > 1 && view.nodes.length > MANY_BOXES
       ? view.nodes.length
       : null;
+
+  /**
+   * What the diagram is a slice of, for saying so on the diagram.
+   *
+   * The page has always known this and only ever said it in the status bar and
+   * three scrolls down the panel: focus on one of TanStack/query's files draws
+   * 14 boxes out of 289 files, and every reader took the 14 for the answer.
+   * The count of *files* rather than of boxes, because a box may stand for a
+   * directory or for a pile of neighbours, and it is files the reader is
+   * comparing against.
+   *
+   * Boxes standing for what the scope does not hold are left out: at a scope
+   * they collapse the whole rest of the project into a handful of dimmed
+   * folders, which would make the two numbers meet and the line disappear
+   * exactly where it is most needed.
+   */
+  const slice = useMemo(() => {
+    if (view === undefined) return null;
+    const drawn = new Set<string>();
+    for (const node of view.nodes) {
+      if (node.external) continue;
+      for (const file of node.files) drawn.add(file);
+    }
+    // The denominator is what this part of the project holds, and a file a
+    // filter took off is still in it — so `tests=0` at the root read "82 of
+    // 107" and blamed the scope for what the chip did. Hidden tests come back
+    // out of the total, and the filter chips already say they are gone.
+    const total = view.fileCount - view.hiddenTests;
+    if (drawn.size === 0 || drawn.size >= total) return null;
+    return { drawn: drawn.size, total };
+  }, [view]);
 
   const isFiltered = activeFilters.length > 0;
 
@@ -2763,6 +2848,37 @@ export function App() {
             nodeColor={(node) => (node.type === 'frame' ? 'transparent' : 'var(--vsc-border-input)')}
           />
         </ReactFlow>
+
+        {/* The bottom line, on the canvas.
+
+            It said the same thing in the status bar and in the panel, and in
+            both places it was read after the diagram had already been believed.
+            A reader who focuses one file and counts fourteen boxes concludes
+            that fourteen things touch it; the honest sentence — fourteen of two
+            hundred and eighty-nine files, and a floor at that — was three
+            scrolls away under a list of fifty-one symbols.
+
+            Information, not a control: it is the diagram's caption, and it sits
+            on the canvas the way a box's own badges do. Everything that acts on
+            the slice is a chip in the breadcrumb row above it. */}
+        {slice !== null && !showWelcome && !emptyProject && (
+          <div
+            className="canvas-slice"
+            title={
+              focus === null
+                ? `The diagram draws the ${slice.drawn} files in this part of the project. It has ${slice.total}; the rest are not on it.`
+                : `The diagram draws the ${slice.drawn} of this project's ${slice.total} files that the graph could follow within ${
+                    depth === 1 ? '1 hop' : `${depth} hops`
+                  } of ${focus}. It is a floor, not a census: a reference the graph could not follow is not drawn, and there is no line to nothing.`
+            }
+          >
+            {/* The ≥ only where the number is a claim about what relates to
+                something. A scope draws the files a directory holds, and that
+                is a complete answer to the question it was asked. */}
+            {focus === null ? '' : FLOOR}
+            {slice.drawn} of {slice.total} files
+          </div>
+        )}
         </div>
 
         {showSidebar && data !== null && (
@@ -2778,7 +2894,7 @@ export function App() {
                     const box = view?.nodes.find((node) => node.id === selected);
                     return box === undefined || box.kind !== 'bundle'
                       ? null
-                      : { label: box.label, files: box.files };
+                      : { label: box.label, files: box.files, of: bundleDirection(box.id) };
                   })()
             }
             revision={revision}
@@ -2803,6 +2919,8 @@ export function App() {
               runningIds: new Set(run?.state === 'running' ? run.ids : []),
               lastRun,
               failure: explainFailure,
+              consent: consent === null ? null : consent.path,
+              onAcceptStore: acceptStore,
               onExplain: explainFollowed,
               onDrop: dropFollowed,
               streamed,
@@ -2831,8 +2949,13 @@ export function App() {
         unreadable={unreadableReport}
         hiddenTests={hideTests ? (view?.hiddenTests ?? 0) : 0}
         onShowTests={() => setFilter('tests', null)}
-        parseErrors={view?.parseErrors ?? 0}
+        parseErrors={view?.scoped.parseErrors ?? 0}
+        at={at}
+        onOpenFile={openFile}
         unresolved={view ? totalUnresolved(view) : null}
+        // Both counts are the slice's, so two numbers standing side by side
+        // are measured over the same files. A clean directory used to show
+        // the project's broken ones.
         agentLast={agentCalls[0] ?? null}
         agentTotal={agentCalls.length}
       />

@@ -98,6 +98,13 @@ export interface ViewMember {
    * diagram is too big to read, which is when this matters.
    */
   linked?: true;
+  /**
+   * The row beside this one whose body it is another name for. See
+   * `GraphNode.aliasOf`: the box draws both, because both are names a reader
+   * looks up, and this is what keeps a second row from reading as a second
+   * function at the same line.
+   */
+  aliasOf?: string;
 }
 
 export interface ViewNode {
@@ -242,6 +249,23 @@ export interface ViewGraph {
    * be measured over the same files or one of them is quietly about a slice.
    */
   unresolved: { imports: number; calls: number };
+  /**
+   * The same two warnings, counted over the files this view actually draws.
+   *
+   * They exist because the project-wide pair above was read as being about
+   * what was on screen: a reader who had navigated into a clean directory was
+   * told "5 files with syntax errors", looked through the boxes in front of
+   * them, and found none. Both counts are honest and they answer different
+   * questions, so the page has to have both before it can say which it means —
+   * "none here, 5 in the project" is the sentence neither number can carry
+   * alone. The denominator for these is `totalFiles`; for the pair above it is
+   * `fileCount`.
+   *
+   * External boxes are out. They are drawn to show what the scope connects to,
+   * not as part of it, and counting their files would make the scoped number
+   * move when something outside the scope was edited.
+   */
+  scoped: { parseErrors: number; unresolved: { imports: number; calls: number } };
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
   /**

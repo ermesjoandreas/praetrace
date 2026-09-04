@@ -90,13 +90,21 @@ export function selectView(
     hiddenTests: countHiddenTests(graph, spec.filter, now, changed),
     parseErrors: countParseErrors(graph),
     unresolved: countUnresolved(graph),
+    // The same warnings over what got drawn. Computed from the slice rather
+    // than threaded through it for the same reason as the rest of this block:
+    // one place decides, so the two counts cannot be measured over different
+    // populations and disagree.
+    scoped: scopedWarnings(slice.nodes, files),
     languages: projectLanguages(graph),
     at: spec.at,
   };
 }
 
 /** Everything a slice decides for itself; the project-wide facts land after. */
-type Slice = Omit<ViewGraph, 'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors' | 'unresolved'>;
+type Slice = Omit<
+  ViewGraph,
+  'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors' | 'unresolved' | 'scoped'
+>;
 
 /** What a file box is drawn from: its symbols, and whether the parse was clean. */
 interface FileFacts {
@@ -163,6 +171,31 @@ function countUnresolved(graph: Graph): { imports: number; calls: number } {
     calls += node.unresolved.calls;
   }
   return { imports, calls };
+}
+
+/**
+ * The warnings over the files the slice drew, so the page can say "none here"
+ * without contradicting the project-wide pair beside it — see `ViewGraph.scoped`.
+ *
+ * Over the files rather than the boxes: a folder box carries `parseError` for
+ * a pile of them, and counting boxes would say "1 file with a syntax error"
+ * where there are nine. A file reached by two boxes is counted once.
+ */
+function scopedWarnings(
+  nodes: readonly ViewNode[],
+  files: ReadonlyMap<string, FileFacts>,
+): ViewGraph['scoped'] {
+  const drawn = new Set<string>();
+  for (const node of nodes) {
+    if (node.external) continue;
+    for (const filePath of node.files) drawn.add(filePath);
+  }
+
+  let parseErrors = 0;
+  for (const filePath of drawn) if (files.get(filePath)?.parseError === true) parseErrors += 1;
+
+  const { unresolved } = unresolvedOf([...drawn], files);
+  return { parseErrors, unresolved: unresolved ?? { imports: 0, calls: 0 } };
 }
 
 function countParseErrors(graph: Graph): number {
@@ -299,6 +332,7 @@ function collectFiles(
       // 'unknown' is 3107 of zod's 4201 symbols, so it is the answer the row
       // is drawn without rather than one it carries.
       ...(measured === 'covered' || measured === 'never' ? { coverage: measured } : {}),
+      ...(node.aliasOf === undefined ? {} : { aliasOf: node.aliasOf }),
     });
   }
 

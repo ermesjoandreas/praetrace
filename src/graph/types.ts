@@ -54,6 +54,18 @@ export interface GraphNode {
   /** Fields only: `Logger[]` rather than `Logger`, for the association's 1..*. */
   many?: boolean;
   /**
+   * The sibling symbol whose body this is another name for, when the source
+   * bound one function to several names — express writes `res.contentType =
+   * res.type = function`, and both are real names a reader looks up.
+   *
+   * Carried through from `ParsedSymbol.aliasOf` rather than recomputed from
+   * matching ranges, because two symbols can share a range without being one
+   * body and only the parser saw the assignment that made these one. Whatever
+   * counts symbols leaves the marked ones out: counting both said response.js
+   * held 24 where it holds 22.
+   */
+  aliasOf?: string;
+  /**
    * File nodes only: how many references this file made that resolved to
    * nothing — an import naming a module the scan never saw, a call naming
    * something no declaration or binding in reach answers to. Absent when both

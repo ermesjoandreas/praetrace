@@ -20,6 +20,16 @@ export type BoxData = {
    * it.
    */
   kind: 'file' | 'folder' | 'bundle';
+  /**
+   * Which way a bundle's arrow runs, or null on every other box.
+   *
+   * What the count under the label is a count *of*. "260 dependents" is a
+   * count of files that import the focused one, and it was read as the fan-in
+   * of a symbol inside it — four files import that symbol and three use it. A
+   * number wearing the wrong subject is worse than no number, so the box says
+   * the subject out loud.
+   */
+  bundleOf: 'dependents' | 'dependencies' | null;
   members: ViewMember[];
   files: string[];
   external: boolean;
@@ -207,7 +217,9 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
     data.kind !== 'bundle'
       ? undefined
       : [
-          `${data.label}, bundled — click the box to list them`,
+          `${data.files.length} files ${
+            data.bundleOf === 'dependencies' ? 'the file in focus imports' : 'import the file in focus'
+          } — a count of files, not of uses of anything inside it. Click the box to list them.`,
           ...data.files.slice(0, 8),
           ...(data.files.length > 8 ? [`…and ${data.files.length - 8} more`] : []),
         ].join('\n');
@@ -380,8 +392,16 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
           the one thing left that a reader wants from it. */}
       {data.kind !== 'file' ? (
         <div className="box-meta" title={bundled}>
-          {data.files.length} {data.files.length === 1 ? 'file' : 'files'}
-          {data.kind === 'bundle' && ', bundled'}
+          {/* A bundle's label is "260 dependents", and the reader who arrived
+              here by following a symbol read those 260 as the symbol's. They
+              are files, and they import the file in focus — which is a much
+              weaker claim than using anything in it. One line, because the box
+              is measured for one: the rest of the sentence is in the title. */}
+          {data.kind === 'bundle'
+            ? data.bundleOf === 'dependencies'
+              ? 'files it imports'
+              : 'files that import it'
+            : `${data.files.length} ${data.files.length === 1 ? 'file' : 'files'}`}
         </div>
       ) : (
         <ul className="box-members">
@@ -415,7 +435,14 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 type="button"
                 className="member-name"
                 onClick={open(member.line)}
-                title={`${member.owner === null ? '' : `${member.owner}.`}${member.name} — open at line ${member.line}`}
+                title={
+                  // An alias says so here rather than taking a column: the box
+                  // is measured for a dozen names, and two rows at one line
+                  // otherwise read as two functions. See `ViewMember.aliasOf`.
+                  member.aliasOf === undefined
+                    ? `${member.owner === null ? '' : `${member.owner}.`}${member.name} — open at line ${member.line}`
+                    : `${member.name} is another name for ${member.aliasOf}, one body — open at line ${member.line}`
+                }
               >
                 {member.kind === 'function' || member.kind === 'method'
                   ? `${member.name}()`

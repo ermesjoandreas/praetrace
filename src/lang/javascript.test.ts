@@ -202,20 +202,60 @@ test('what a CommonJS module runs at load is the file’s own call list', () => 
   assert.deepEqual(byName(parsed.symbols, 'unused').calls, ['never']);
 });
 
-test('an exported const bound to a call is a symbol in JavaScript too', () => {
-  // The same line TypeScript draws, and the same reason: the call says nothing
-  // about what it made, so the name is the whole claim and only an exported one
-  // is a name another file can write down.
+test('an exported const bound to a value is a symbol in JavaScript too', () => {
+  // The same line TypeScript draws, and the same reason: the expression says
+  // nothing about what it made, so the name is the whole claim and only an
+  // exported one is a name another file can write down.
   const parsed = parse(`
     export const client = makeClient();
     const internal = makeInternal();
   `);
   assert.deepEqual(
     parsed.symbols.map((s) => [s.name, s.kind, s.exported]),
-    [['client', 'function', true]],
+    [['client', 'field', true]],
   );
   assert.deepEqual(byName(parsed.symbols, 'client').calls, ['makeClient']);
   assert.deepEqual(parsed.calls, ['makeInternal']);
+});
+
+test('a value assigned to exports is a symbol; one assigned to a local object is not', () => {
+  // express lib/express.js, whole. It headed itself "1 symbol" and hid ten of
+  // the eleven things anyone opens express to find — searching "static"
+  // returned nothing — because only a literal function counted. `app.count`
+  // stays out for the reason it always did: it is a property of an object
+  // local to the module, and no other file can write that name down.
+  const parsed = parse(`
+    var bodyParser = require('body-parser')
+    var proto = require('./application');
+    var Router = require('router');
+
+    exports = module.exports = createApplication;
+
+    function createApplication() {}
+
+    exports.application = proto;
+    exports.Route = Router.Route;
+    exports.Router = Router;
+    exports.json = bodyParser.json
+    exports.static = require('serve-static');
+
+    app.count = 1;
+  `);
+  assert.deepEqual(
+    parsed.symbols.map((s) => [s.name, s.kind, s.exported]),
+    [
+      ['createApplication', 'function', false],
+      ['exports.application', 'field', true],
+      ['exports.Route', 'field', true],
+      ['exports.Router', 'field', true],
+      ['exports.json', 'field', true],
+      ['exports.static', 'field', true],
+    ],
+  );
+  // `module.exports = createApplication` names no property. What it assigns is
+  // the default export, under the name the function really has, and a second
+  // node called `module.exports` would be the same function counted twice.
+  assert.equal(parsed.defaultExport, 'createApplication');
 });
 
 test('a var that rebinds a required name is not that module', () => {
@@ -254,14 +294,21 @@ exports.a = exports.b = exports.c = () => run();
 
 res.count = res.total = 1;
   `);
+  // Each later target is marked as another name for the first, so that what
+  // counts them counts the body once: express's response.js has 24 of these
+  // and 22 functions, and a header reading 24 was wrong in the direction that
+  // looks complete. The first name is the primary because it is the one the
+  // source leads with — `function contentType` matches the first here and
+  // `function header` matches the second in `res.set = res.header =`, so the
+  // inner name settles nothing.
   assert.deepEqual(
-    symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine]),
+    symbols.map((s) => [s.name, s.kind, s.startLine, s.endLine, s.aliasOf ?? '-']),
     [
-      ['res.contentType', 'function', 2, 5],
-      ['res.type', 'function', 2, 5],
-      ['exports.a', 'function', 7, 7],
-      ['exports.b', 'function', 7, 7],
-      ['exports.c', 'function', 7, 7],
+      ['res.contentType', 'function', 2, 5, '-'],
+      ['res.type', 'function', 2, 5, 'res.contentType'],
+      ['exports.a', 'function', 7, 7, '-'],
+      ['exports.b', 'function', 7, 7, 'exports.a'],
+      ['exports.c', 'function', 7, 7, 'exports.a'],
     ],
   );
   // Each alias is another way in to one body, so each carries its calls.

@@ -9,7 +9,7 @@ import { Store } from './store.js';
 
 log('booting');
 
-/** A constant bound to something that is not a function is not a symbol either. */
+/** An exported name bound to something that is not a call earns a node too. */
 export const store = new Store();
 
 const first = store.size();

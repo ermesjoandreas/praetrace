@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Section } from './Section';
 import { FLOOR, money, fetchDetail,
+  fetchSymbol,
   openInEditor,
   type Detail,
+  type SymbolDetail,
   type ExplainFailure,
   type ExplainState,
   type StoredExplanation,
@@ -56,6 +58,14 @@ export interface Following {
    * is not a failed run and must not be worded as one.
    */
   failure: { reason: ExplainFailure | 'refused'; detail: string } | null;
+  /**
+   * The file explaining would create, when the server is waiting to be told it
+   * may. Null when there is nothing to ask — which is every project that
+   * already has a `.codemap/`, so the question is asked once and never again.
+   */
+  consent: string | null;
+  /** Say yes, and run the press that raised the question. */
+  onAcceptStore: () => void;
   /** The answer as it is being written, before it is parsed into entries. */
   streamed: string;
   /**
@@ -87,7 +97,7 @@ interface SidebarProps {
    * which files went into it. This is what makes the box openable: the diagram
    * says "258 dependents", and the panel is where those 258 have names.
    */
-  bundle?: { label: string; files: string[] } | null;
+  bundle?: { label: string; files: string[]; of: 'dependents' | 'dependencies' | null } | null;
   /**
    * The graph id of each symbol the selected file declares, by name and start
    * line.
@@ -138,6 +148,42 @@ export function Sidebar({
   following,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
+  /**
+   * The row of the Declares list that is open, with everything the header can
+   * draw before the graph has answered: a fetch takes a moment, and a panel
+   * that goes blank in it reads as the click having done nothing — which is
+   * what this whole view exists to stop.
+   */
+  const [openSymbol, setOpenSymbol] = useState<(SymbolDetail & { id: string }) | null>(null);
+  /** What that symbol reaches and what reaches it. 'gone' is the graph's 404. */
+  const [symbolLinks, setSymbolLinks] = useState<SymbolLinks | 'gone' | null>(null);
+
+  // A different box, or a different commit, is a different question. Not
+  // `bundle`: App builds that object inline, so it is a new one every render
+  // and would close the symbol the moment it was opened.
+  useEffect(() => {
+    setOpenSymbol(null);
+  }, [selected, at]);
+
+  useEffect(() => {
+    if (openSymbol === null) {
+      setSymbolLinks(null);
+      return;
+    }
+    let cancelled = false;
+    setSymbolLinks(null);
+    fetchSymbol(openSymbol.id, at).then(
+      (found) => {
+        if (!cancelled) setSymbolLinks(found ?? 'gone');
+      },
+      () => {
+        if (!cancelled) setSymbolLinks(null);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [openSymbol, revision, at]);
 
   useEffect(() => {
     // A bundle id names no file, so asking about it can only be answered 404.
@@ -162,8 +208,33 @@ export function Sidebar({
   // The header's actions are what the panel head used to spell out as words:
   // go to it on the diagram, ask what it is for, open it in the editor. Only a
   // file has anywhere in an editor to open, or a reading to be had of it.
+  //
+  // A symbol takes the header over while it is open: both of these mean
+  // something different one level down — the reading is of this symbol, and the
+  // editor opens on its own line. The way back is not here, because a section
+  // action is hidden until the section is hovered and the way out of a view
+  // must not be; it is in the view's own header, where it is always drawn.
   const actions =
-    detail === null ? null : (
+    openSymbol !== null && detail?.kind === 'file' ? (
+      <>
+        <button
+          type="button"
+          title={`Ask Claude what ${openSymbol.name} is for — it spends your Claude quota`}
+          aria-label="Explain this symbol"
+          onClick={() => onExplainSymbol(openSymbol.id)}
+        >
+          <i className="codicon codicon-sparkle" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          title={`Open ${detail.path} at line ${openSymbol.line}`}
+          aria-label="Open in editor"
+          onClick={() => void openInEditor(root, detail.path, openSymbol.line)}
+        >
+          <i className="codicon codicon-go-to-file" aria-hidden="true" />
+        </button>
+      </>
+    ) : detail === null ? null : (
       <>
         <button
           type="button"
@@ -210,6 +281,15 @@ export function Sidebar({
           <BundleView bundle={bundle} onSelect={onSelect} />
         ) : detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
+        ) : openSymbol !== null && detail.kind === 'file' ? (
+          <SymbolView
+            symbol={openSymbol}
+            filePath={detail.path}
+            links={symbolLinks}
+            onBack={() => setOpenSymbol(null)}
+            onSelect={onSelect}
+            onFocus={onFocus}
+          />
         ) : detail.kind === 'file' ? (
           <FileView
             detail={detail}
@@ -217,6 +297,7 @@ export function Sidebar({
             onSelect={onSelect}
             symbolIds={symbolIds}
             onExplainSymbol={onExplainSymbol}
+            onOpenSymbol={setOpenSymbol}
           />
         ) : (
           <FolderView detail={detail} onSelect={onSelect} />
@@ -226,25 +307,46 @@ export function Sidebar({
   );
 }
 
+/**
+ * Why the header says fewer symbols than the list has rows, when it does.
+ *
+ * Only when there is an alias — an unconditional sentence about counting would
+ * be noise on the great majority of files, which have none.
+ */
+function aliasTitle(symbols: readonly SymbolDetail[]): string | undefined {
+  const aliases = symbols.filter((symbol) => symbol.aliasOf !== undefined).length;
+  if (aliases === 0) return undefined;
+  return `${symbols.length} rows below, ${aliases === 1 ? 'one of which is' : `${aliases} of which are`} another name for a body already counted`;
+}
+
 function FileView({
   detail,
   root,
   onSelect,
   symbolIds,
   onExplainSymbol,
+  onOpenSymbol,
 }: {
   detail: Extract<Detail, { kind: 'file' }>;
   root: string;
   onSelect: (target: string) => void;
   symbolIds: ReadonlyMap<string, string>;
   onExplainSymbol: (id: string) => void;
+  /** Open one row: what calls it, and what it calls. The graph already knows. */
+  onOpenSymbol: (symbol: SymbolDetail & { id: string }) => void;
 }) {
+  const bodies = detail.symbols.filter((symbol) => symbol.aliasOf === undefined).length;
   return (
     <>
       <header className="panel-head">
         <h2 title={detail.path}>{detail.path}</h2>
-        <p className="panel-meta">
-          {detail.symbols.length === 1 ? '1 symbol' : `${detail.symbols.length} symbols`} ·{' '}
+        {/* Bodies, not names. One function bound to two names is two rows
+            below — a reader looking for `res.type` must find it — but counting
+            both said express's response.js holds 24 where it holds 22, and a
+            count wrong in the safe-looking direction is the failure this
+            project cares most about. See `SymbolDetail.aliasOf`. */}
+        <p className="panel-meta" title={aliasTitle(detail.symbols)}>
+          {bodies === 1 ? '1 symbol' : `${bodies} symbols`} ·{' '}
           {detail.lineCount === 1 ? '1 line' : `${detail.lineCount} lines`}
         </p>
       </header>
@@ -261,13 +363,36 @@ function FileView({
           const id = found?.startsWith(`${detail.path}#`) === true ? found : undefined;
           return (
             <li key={`${symbol.name}-${index}`}>
+              {/* The click opens the symbol: what calls it, what it calls, and
+                  how much of that the graph can vouch for. `/api/symbol` has
+                  answered that all along and nothing on the page reached it,
+                  so a reader who clicked one of these fifty-one rows watched
+                  the editor fail to open and read it as nothing happening.
+
+                  A row the view gave no id for falls back to the editor, which
+                  is the one thing always possible: the id cannot be rebuilt
+                  from a name — a method is `path#Class.method` — so a file
+                  with no box on the diagram has nothing to ask about. */}
               <button
                 type="button"
                 className={`sym sym-${symbol.kind}`}
-                onClick={() => void openInEditor(root, detail.path, symbol.line)}
-                title={`Open at line ${symbol.line}`}
+                onClick={() =>
+                  id === undefined
+                    ? void openInEditor(root, detail.path, symbol.line)
+                    : onOpenSymbol({ ...symbol, id })
+                }
+                title={
+                  id === undefined
+                    ? `Open at line ${symbol.line} — this file has no box on the diagram, so the graph's id for this row is not in hand`
+                    : symbol.aliasOf === undefined
+                      ? `What calls ${symbol.name}, and what it calls`
+                      : `${symbol.name} is another name for ${symbol.aliasOf} — one body, two names, so it is listed but counted once`
+                }
               >
                 {symbol.kind === 'function' ? `${symbol.name}()` : symbol.name}
+                {/* Said on the row and not only in the title: two rows at one
+                    line with nothing between them read as two functions. */}
+                {symbol.aliasOf !== undefined && <span className="sym-alias">= {symbol.aliasOf}</span>}
                 <span className="sym-line">{symbol.line}</span>
               </button>
               {/* Hidden until the row is hovered, like every other row action.
@@ -275,8 +400,8 @@ function FileView({
                   know what a symbol is for — the panel that lists it — and
                   before this the only Explain on the page lived in a section
                   that does not exist until something is already followed. */}
-              {id !== undefined && (
-                <span className="row-actions">
+              <span className="row-actions">
+                {id !== undefined && (
                   <button
                     type="button"
                     title={`Follow ${symbol.name} and ask Claude what it is for — it spends your Claude quota`}
@@ -285,8 +410,18 @@ function FileView({
                   >
                     <i className="codicon codicon-sparkle" aria-hidden="true" />
                   </button>
-                </span>
-              )}
+                )}
+                {/* The editor kept, now that the row's own click is the graph's
+                    answer rather than the editor's. */}
+                <button
+                  type="button"
+                  title={`Open ${detail.path} at line ${symbol.line}`}
+                  aria-label={`Open ${symbol.name} in the editor`}
+                  onClick={() => void openInEditor(root, detail.path, symbol.line)}
+                >
+                  <i className="codicon codicon-go-to-file" aria-hidden="true" />
+                </button>
+              </span>
             </li>
           );
         })}
@@ -312,6 +447,67 @@ function FileView({
           the weaker evidence. Most files have none, and PathList hides an
           empty list. */}
       <PathList title="Calls" paths={detail.calls} onSelect={onSelect} />
+    </>
+  );
+}
+
+/**
+ * One symbol: what calls it, what it calls, and how much of that the graph can
+ * vouch for.
+ *
+ * The answer has been on `/api/symbol` since the day it was written and the
+ * page had no way to it — a symbol's relations could be read only by *paying*
+ * for one, because the Following section is the only place they were drawn and
+ * the only gesture that filled it was the one that spends money. This is the
+ * same answer for nothing, one level down from the file that declares it.
+ */
+function SymbolView({
+  symbol,
+  filePath,
+  links,
+  onBack,
+  onSelect,
+  onFocus,
+}: {
+  symbol: SymbolDetail;
+  filePath: string;
+  /** null while the graph is being asked; 'gone' when it answered 404. */
+  links: SymbolLinks | 'gone' | null;
+  onBack: () => void;
+  onSelect: (target: string) => void;
+  onFocus: (target: string, kind: 'file' | 'folder') => void;
+}) {
+  return (
+    <>
+      <header className="panel-head">
+        <h2 title={`${symbol.name} — ${symbol.kind}`}>{symbol.name}</h2>
+        <p className="panel-meta">
+          {/* The way out, drawn rather than hidden behind a hover: this view
+              replaced the file's, so the file has to stay one press away and
+              visibly so. It also says where the symbol lives, which is the
+              other thing the header would otherwise have to spend a line on. */}
+          <button type="button" className="symbol-back" onClick={onBack} title={`Back to ${filePath}`}>
+            <i className="codicon codicon-arrow-left" aria-hidden="true" />
+            {filePath}
+          </button>
+          <span className="symbol-where">
+            {symbol.kind} · line {symbol.line}
+          </span>
+        </p>
+      </header>
+
+      {links === null ? (
+        <p className="panel-empty">Looking up what reaches it…</p>
+      ) : links === 'gone' ? (
+        // The same silence the Following section names, for the same cause: a
+        // file saved mid-edit does not parse for a cycle and loses every symbol
+        // in it, so this is at its most likely exactly while the agent works.
+        <p className="panel-empty">
+          Not in the graph. A file that will not parse loses its symbols until the next save.
+        </p>
+      ) : (
+        <SymbolRelations links={links} onSelect={onSelect} onFocus={onFocus} />
+      )}
     </>
   );
 }
@@ -362,15 +558,23 @@ function BundleView({
   bundle,
   onSelect,
 }: {
-  bundle: { label: string; files: string[] };
+  bundle: { label: string; files: string[]; of: 'dependents' | 'dependencies' | null };
   onSelect: (target: string) => void;
 }) {
   return (
     <>
       <header className="panel-head">
         <h2 title={bundle.label}>{bundle.label}</h2>
+        {/* Which number this is, in the same words the box uses. "260
+            dependents" is a count of files that import the file in focus, and
+            read beside a followed symbol it gets taken for that symbol's — the
+            symbol had four importers and three users. */}
         <p className="panel-meta">
-          {bundle.files.length} files — too many to draw one by one
+          {bundle.files.length}{' '}
+          {bundle.of === 'dependencies'
+            ? 'files the file in focus imports'
+            : 'files that import the file in focus'}{' '}
+          — too many to draw one by one
         </p>
       </header>
 
@@ -480,6 +684,7 @@ function Followed({
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
   const { links, gone, files, explanations, running, runningIds, lastRun, failure, streamed } = following;
+  const { consent, onAcceptStore } = following;
   if (links.length === 0 && gone.length === 0 && files.length === 0) return null;
 
   // What a press can come back with words for. A gone symbol keeps its row and
@@ -559,6 +764,21 @@ function Followed({
             {failure.detail === '' ? '' : ` ${failure.detail}`}
           </p>
         )}
+        {/* A question, not an error. The press did nothing and spent nothing;
+            what it wants is permission to leave a file in a project that may
+            have been opened only to be read. Asked here rather than written
+            into the panel as a standing warning, because a sentence saying
+            "this will create a file" is read by whoever was already going to
+            be careful. Before this the refusal was swallowed and the button
+            was simply dead. */}
+        {consent !== null && (
+          <p className="explain-consent">
+            Explaining writes <code>{consent}</code>, and this project has none yet.
+            <button type="button" className="explain-consent-yes" onClick={onAcceptStore}>
+              Create it and explain
+            </button>
+          </p>
+        )}
       </div>
 
       {links.map((symbol) => (
@@ -599,48 +819,7 @@ function Followed({
             sayNothingYet={sayNothingYet}
           />
 
-          {/* The graph's own word on how much of the lists below it can vouch
-              for, and it is said whatever the state. A method's callers are
-              the typed ones only, so for one an empty list is a silence rather
-              than a count — cobra's Command.Execute read "0 in" with sixteen
-              callers in grep. But `tracked` is not the opposite of that: a
-              class handed to a function as a value is not a call either, which
-              is how QueryObserver read sixteen against 26 real sites. Drawn
-              only for the weaker state, this line was absent from exactly the
-              counts that looked trustworthy. */}
-          <p className="followed-coverage">{symbol.coverageNote}</p>
-
-          {symbol.usedBy.length === 0 && symbol.uses.length === 0 ? (
-            // A type or an interface is never *called*, so an empty relation
-            // list is the normal case for it and saying so on every one taught
-            // the reader to stop reading the line. It is only worth a sentence
-            // where callers were expected and the graph looked everywhere it
-            // can — a method's sentence is the coverage note above.
-            symbol.coverage !== 'partial' &&
-            CALLABLE.has(symbol.kind) && (
-              <p className="followed-none">
-                Nothing in the graph references this by name, and it references nothing that
-                resolved.
-              </p>
-            )
-          ) : (
-            <>
-              {/* The count wears a ≥ rather than the heading wearing the word
-                  "known": the number is what gets read and quoted, so the
-                  number is what has to say it is a floor. Only on the incoming
-                  half — what a symbol reaches is written down in its own body,
-                  and it is the callers that arrive through receivers and
-                  barrels nobody typed. */}
-              <Relations
-                title="used by"
-                floor
-                rows={symbol.usedBy}
-                onSelect={onSelect}
-                onFocus={onFocus}
-              />
-              <Relations title="uses" rows={symbol.uses} onSelect={onSelect} onFocus={onFocus} />
-            </>
-          )}
+          <SymbolRelations links={symbol} onSelect={onSelect} onFocus={onFocus} />
         </div>
       ))}
 
@@ -829,6 +1008,69 @@ function Reading({
           would take away the thing the panel is for. */}
       {running && <p className="followed-none">Reading it again…</p>}
     </div>
+  );
+}
+
+/**
+ * Both halves of one symbol's relations, with the graph's hedge over them.
+ *
+ * One component for the two surfaces that draw this — the Detail panel's
+ * symbol view and the Following section — because the hedging *is* the
+ * substance: these counts are floors in both places for the same reasons, and
+ * two copies of that reasoning is two chances for one of them to quietly stop
+ * saying it.
+ */
+function SymbolRelations({
+  links,
+  onSelect,
+  onFocus,
+}: {
+  links: SymbolLinks;
+  onSelect: (target: string) => void;
+  onFocus: (target: string, kind: 'file' | 'folder') => void;
+}) {
+  return (
+    <>
+      {/* The graph's own word on how much of the lists below it can vouch
+          for, and it is said whatever the state. A method's callers are
+          the typed ones only, so for one an empty list is a silence rather
+          than a count — cobra's Command.Execute read "0 in" with sixteen
+          callers in grep. But `tracked` is not the opposite of that: a
+          class handed to a function as a value is not a call either, which
+          is how QueryObserver read sixteen against 26 real sites. Drawn
+          only for the weaker state, this line was absent from exactly the
+          counts that looked trustworthy. */}
+      <p className="followed-coverage">{links.coverageNote}</p>
+      {/* The parser knows the names a symbol calls and not the lines they are
+          written on, so this list has no order the source would recognise. A
+          lifecycle question was answered wrong from it once. */}
+      {links.uses.length > 1 && <p className="followed-coverage">{links.usesNote}</p>}
+
+      {links.usedBy.length === 0 && links.uses.length === 0 ? (
+        // A type or an interface is never *called*, so an empty relation
+        // list is the normal case for it and saying so on every one taught
+        // the reader to stop reading the line. It is only worth a sentence
+        // where callers were expected and the graph looked everywhere it
+        // can — a method's sentence is the coverage note above.
+        links.coverage !== 'partial' &&
+        CALLABLE.has(links.kind) && (
+          <p className="followed-none">
+            Nothing in the graph references this by name, and it references nothing that resolved.
+          </p>
+        )
+      ) : (
+        <>
+          {/* The count wears a ≥ rather than the heading wearing the word
+              "known": the number is what gets read and quoted, so the
+              number is what has to say it is a floor. Only on the incoming
+              half — what a symbol reaches is written down in its own body,
+              and it is the callers that arrive through receivers and
+              barrels nobody typed. */}
+          <Relations title="used by" floor rows={links.usedBy} onSelect={onSelect} onFocus={onFocus} />
+          <Relations title="uses" rows={links.uses} onSelect={onSelect} onFocus={onFocus} />
+        </>
+      )}
+    </>
   );
 }
 

@@ -142,6 +142,71 @@ test('a file never calls itself, and a target the graph has lost is dropped', ()
 });
 
 /**
+ * cobra's `Command.execute`, cut down to the question that was asked of it.
+ *
+ * "Does flag parsing run before PersistentPreRun?" The source runs
+ * `ParseFlags` first and the persistent hooks late, so the answer is yes — but
+ * it is yes by accident of the alphabet here, and `ValidateArgs` sorting last
+ * is the same accident giving the wrong answer, since the source validates
+ * before it runs anything. Nothing on the reply said the order was the
+ * alphabet's, and nothing said the list was a floor.
+ */
+const lifecycle: Graph = {
+  nodes: new Map(
+    [
+      node('command.go', 'file', 'command.go'),
+      node('command.go#Command', 'class', 'command.go'),
+      node('command.go#Command.execute', 'method', 'command.go', 'execute'),
+      node('command.go#Command.ParseFlags', 'method', 'command.go', 'ParseFlags'),
+      node('command.go#Command.PersistentPreRun', 'field', 'command.go', 'PersistentPreRun'),
+      node('command.go#Command.PreRun', 'field', 'command.go', 'PreRun'),
+      node('command.go#Command.ValidateArgs', 'method', 'command.go', 'ValidateArgs'),
+    ].map((n) => [n.id, n]),
+  ),
+  edges: [
+    'command.go#Command.ParseFlags',
+    'command.go#Command.PersistentPreRun',
+    'command.go#Command.PreRun',
+    'command.go#Command.ValidateArgs',
+  ].map((to) => ({ from: 'command.go#Command.execute', to, kind: 'calls' as const })),
+};
+
+test('a list of calls says it is a floor, and says what its order is', () => {
+  const links = describeSymbol(lifecycle, 'command.go#Command.execute');
+
+  // The order is the alphabet's, which is worth pinning: the note claims it,
+  // and a reader who is told that much can stop reading the list as a sequence.
+  assert.deepEqual(links?.uses.map((relation) => relation.name), [
+    'ParseFlags',
+    'PersistentPreRun',
+    'PreRun',
+    'ValidateArgs',
+  ]);
+
+  // Four calls, all four found, and still not a census: the receiver a Go call
+  // is written on is often the result of another call, and that is dropped.
+  assert.equal(links?.usesCoverage, 'partial');
+  assert.match(links?.usesNote ?? '', /floor/);
+  assert.match(links?.usesNote ?? '', /result of another call/);
+  assert.match(links?.usesNote ?? '', /not the source's/);
+  assert.match(links?.usesNote ?? '', /by file and then by name/);
+
+  // The other direction keeps its own sentence; one list's caveat is not the
+  // other's, and a method's callers are missing for a different reason.
+  assert.notEqual(links?.usesNote, links?.coverageNote);
+});
+
+test("a file's own calls carry the same sentence its symbols' do", () => {
+  const detail = fileDetail(topLevel, 'main.ts');
+  assert.equal(detail.callsCoverage, 'partial');
+  assert.match(detail.callsNote, /floor/);
+  assert.match(detail.callsNote, /not the source's/);
+  // The same list an empty one would carry: a file that calls nothing is not a
+  // file the graph has read every call of.
+  assert.equal(fileDetail(topLevel, 'lib.ts').callsCoverage, 'partial');
+});
+
+/**
  * TanStack/query's shape, cut down to what decides the answer.
  *
  * `QueryObserver` is declared in one file, handed on by a barrel that declares
@@ -278,4 +343,35 @@ test('a file whose symbols the parser lost is counted as handing on, not excused
   // And the sentence claims only what is true of both kinds of empty file.
   assert.match(detail.importedByNote, /Handed on by .*imported by/);
   assert.equal(describeSymbol(unreadable, 'lib.ts#helper')?.coverage, 'partial');
+});
+
+test('an alias is carried to the panel, so what counts the symbols can count the body once', () => {
+  // express lib/response.js in miniature: `res.contentType = res.type = function`
+  // is one body under two names, and the parser marks the second. Nothing
+  // between it and the panel carried the mark, so the header said 24 symbols
+  // where response.js holds 22 — the safe-looking direction, which is the one
+  // this project refuses.
+  const aliased: Graph = {
+    nodes: new Map(
+      [
+        node('res.js', 'file', 'res.js'),
+        { ...node('res.js#res.contentType', 'function', 'res.js'), range: { startLine: 510, endLine: 517 } },
+        {
+          ...node('res.js#res.type', 'function', 'res.js'),
+          range: { startLine: 510, endLine: 517 },
+          aliasOf: 'res.contentType',
+        },
+      ].map((n) => [n.id, n]),
+    ),
+    edges: [],
+  };
+
+  const detail = describe(aliased, 'res.js') as Extract<Detail, { kind: 'file' }>;
+  assert.equal(detail.symbols.length, 2, 'both names are still listed');
+  const alias = detail.symbols.find((symbol) => symbol.name === 'res.type');
+  const primary = detail.symbols.find((symbol) => symbol.name === 'res.contentType');
+  assert.equal(alias?.aliasOf, 'res.contentType', 'the alias says which body it names');
+  assert.equal(primary?.aliasOf, undefined, 'the body itself is nobody’s alias');
+  // What the header is made of: bodies, not names.
+  assert.equal(detail.symbols.filter((symbol) => symbol.aliasOf === undefined).length, 1, 'one body');
 });

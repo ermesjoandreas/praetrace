@@ -699,6 +699,39 @@ function explainPath(root: string): string {
 }
 
 /**
+ * Where a reading is kept, and whether keeping one would put a directory into
+ * this project that is not there yet.
+ *
+ * This is a decision and not a helper. **A run that would create `.codemap/`
+ * asks first.** A repository is usually opened to be read — five reviewers
+ * pointed codemap at projects they did not own — and every press of Explain
+ * left `.codemap/explain.json` behind in a working tree somebody then had to
+ * clean out of `git status`. A tool whose whole claim is that it does not say
+ * what it cannot support has no business writing into a stranger's repository
+ * as a side effect of being looked at.
+ *
+ * It is the rule the port file already follows: `port-file.ts` writes only
+ * while `.claude/` exists, because the server does not create Claude Code's
+ * directory uninvited. This is the same sentence about our own directory.
+ *
+ * Asking rather than a warning in the panel, which was the other option: a
+ * sentence saying "this will create a file" is read by whoever was already
+ * going to be careful. Consent rides on the run request, so it is the press
+ * that agrees to it, and a project that already has the directory is never
+ * asked — the second reading is not a new decision.
+ */
+export async function explainStore(root: string): Promise<{ path: string; exists: boolean }> {
+  const file = explainPath(root);
+  return {
+    path: file,
+    exists: await access(path.dirname(file)).then(
+      () => true,
+      () => false,
+    ),
+  };
+}
+
+/**
  * Stored beside the group names, in the project, for the same reason: a reading
  * of why a piece of architecture exists is worth committing and worth sharing
  * with whoever else works here.
