@@ -416,6 +416,35 @@ const BY_NAME: Coverage = {
 };
 
 /**
+ * Java's answer, which is not `tracked` and cannot be.
+ *
+ * "Every file that imports this one" is the wrong set to start from: a Java
+ * file reaches its package siblings with nothing written down at all, so the
+ * resolver reconstructs those references from the names each file mentions.
+ * Three of them do not come back, and each was measured on a real tree rather
+ * than worried about.
+ *
+ * One is undecidable from a single file and stays that way. A bare receiver
+ * the calling file does not declare — `Streams.write()` and `helper.go()` on a
+ * `helper` a supertype in another file declares are the same three tokens —
+ * is separated only by Java's naming convention, and the convention is not the
+ * language. The other two are gaps in this resolver: a file that declares no
+ * package offers no siblings to match against, which is 80 of the 198 files in
+ * the tree this was measured on, and a type that is not the public one of its
+ * own file is looked for under a file name it does not have, which is why
+ * `Animal` in `klassene.java` answers "0 in" while the sibling beside it uses
+ * it three times.
+ *
+ * So the word is `partial` for every Java symbol reached by name, and the
+ * sentence says which three to go looking for by hand.
+ */
+const JAVA_BY_NAME: Coverage = {
+  coverage: 'partial',
+  coverageNote:
+    'Followed by name across the package and across every file that imports this one. Three are not: a use through a receiver the calling file does not declare, which only the naming convention separates from a variable; a use from a file that declares no package; and any use of a type that is not the public type of its own file. The count is a floor.',
+};
+
+/**
  * How much of `usedBy` the graph can vouch for.
  *
  * A class and a top-level function are the two that changed. They are values,
@@ -429,6 +458,12 @@ const BY_NAME: Coverage = {
  */
 function coverageOf(graph: Graph, name: string, kind: NodeKind, filePath: string): Coverage {
   if (kind === 'method' || kind === 'field') return UNTYPED_RECEIVER;
+  // Ahead of the type-position answer, because that one is about a language
+  // where a type is mostly written where no edge can be drawn. Java reaches an
+  // interface exactly as it reaches a class — by name, from the package or an
+  // import — so the two get the same answer here, and it is Java's; see
+  // `JAVA_BY_NAME` for the three references it does not get back.
+  if (filePath.endsWith('.java')) return JAVA_BY_NAME;
   if (kind === 'interface' || kind === 'type') return TYPE_POSITION;
   // A top-level function or class whose name is not a plain identifier was
   // assigned to a property: `app.init = function init`, or express's

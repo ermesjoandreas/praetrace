@@ -375,3 +375,52 @@ test('an alias is carried to the panel, so what counts the symbols can count the
   // What the header is made of: bodies, not names.
   assert.equal(detail.symbols.filter((symbol) => symbol.aliasOf === undefined).length, 1, 'one body');
 });
+
+/**
+ * The Java tree the parser was measured against, in miniature.
+ *
+ * `bil` is a lower-case class, which the parser used to refuse outright, and
+ * the panel answered "0 in · tracked" over the names it had refused. The names
+ * come back now; the word still cannot be `tracked`, because a file that
+ * declares no package and a type that is not the public one of its own file are
+ * both invisible to the resolver, and a bare receiver is decided by a
+ * convention rather than by the language.
+ */
+const java: Graph = {
+  nodes: new Map(
+    [
+      node('p/bil.java', 'file', 'p/bil.java'),
+      node('p/bil.java#bil', 'class', 'p/bil.java'),
+      node('p/Kjoerbar.java', 'file', 'p/Kjoerbar.java'),
+      node('p/Kjoerbar.java#Kjoerbar', 'interface', 'p/Kjoerbar.java'),
+      node('p/MotorvognReg.java', 'file', 'p/MotorvognReg.java'),
+      node('p/MotorvognReg.java#MotorvognReg.main', 'method', 'p/MotorvognReg.java', 'main'),
+    ].map((n) => [n.id, n]),
+  ),
+  edges: [{ from: 'p/MotorvognReg.java#MotorvognReg.main', to: 'p/bil.java#bil', kind: 'calls' }],
+};
+
+test('a Java symbol is partial, and the note names the three references not followed', () => {
+  const links = describeSymbol(java, 'p/bil.java#bil');
+  assert.equal(links?.coverage, 'partial');
+  assert.match(links?.coverageNote ?? '', /receiver the calling file does not declare/);
+  assert.match(links?.coverageNote ?? '', /declares no package/);
+  assert.match(links?.coverageNote ?? '', /not the public type of its own file/);
+  assert.match(links?.coverageNote ?? '', /floor/);
+  // And the count itself is real: the lower-case name resolves now.
+  assert.deepEqual(
+    links?.usedBy.map((relation) => [relation.id, relation.edge]),
+    [['p/MotorvognReg.java#MotorvognReg.main', 'calls']],
+  );
+});
+
+test('a Java interface gets Java\'s answer, not the one about type positions', () => {
+  // In TypeScript an interface is mostly written where no edge can be drawn.
+  // In Java it is reached by name from the package or an import, exactly as a
+  // class is, so the sentence about type positions would send a reader looking
+  // in the wrong place.
+  const links = describeSymbol(java, 'p/Kjoerbar.java#Kjoerbar');
+  assert.equal(links?.coverage, 'partial');
+  assert.doesNotMatch(links?.coverageNote ?? '', /type positions/);
+  assert.match(links?.coverageNote ?? '', /Followed by name across the package/);
+});

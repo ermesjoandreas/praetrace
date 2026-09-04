@@ -61,6 +61,22 @@ const MIN_SPLIT = 6;
 /** Two levels is what a person can read; a third is a decoration. */
 const MAX_DEPTH = 2;
 
+/**
+ * How much of an outer group may sit in one child before the outer stops being
+ * a piece of architecture in its own right.
+ *
+ * The aggregation below contributes no file of its own — an outer group is
+ * exactly the union of its children — so when one child holds nearly all of it,
+ * the two rows the panel offers are one architecture asked about twice.
+ * Measured: serilog's outer group is 108 files at cohesion 1.00 and its first
+ * child is 104 of them, which is 96% of one source tree offered as an unnamed,
+ * perfectly cohesive group; ripgrep offers 36 = 29 + 4 + 3 and 25 = 22 + 3.
+ * Against the nestings that say something — zustand's 23 = 10 + 10 + 3, vue's
+ * 272 across six children, this project's 54 across five — three quarters
+ * leaves every one of them standing.
+ */
+const MAX_DOMINANCE = 3 / 4;
+
 export function clusterFiles(graph: Graph): Cluster[] {
   const neighbours = undirectedNeighbours(graph);
   const fine = partition(neighbours, [...neighbours.keys()].sort());
@@ -91,6 +107,15 @@ export function clusterFiles(graph: Graph): Cluster[] {
     }
 
     const files = children.flatMap((child) => child.files).sort();
+    // Nor is a child that already *is* the group. The outer level is worth a
+    // row of its own only when it is more than its largest child with a few
+    // stragglers attached; when it is not, the children stand as peers and
+    // each piece of architecture is asked about once.
+    if (Math.max(...children.map((child) => child.files.length)) > files.length * MAX_DOMINANCE) {
+      outer.push(...children);
+      continue;
+    }
+
     outer.push({
       id: identify(files),
       files,

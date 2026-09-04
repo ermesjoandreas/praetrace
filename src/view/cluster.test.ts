@@ -91,3 +91,40 @@ test('two groups that lean on each other nest under one outer group, and a stran
   assert.equal(outer?.id, 'a1.ts~6');
   assert.deepEqual(lone?.children, []);
 });
+
+/** Every pair joined: the shape that certainly settles on one label. */
+const clique = (prefix: string, size: number): [string, string][] => {
+  const pairs: [string, string][] = [];
+  for (let i = 1; i <= size; i += 1) {
+    for (let j = i + 1; j <= size; j += 1) pairs.push([`${prefix}${i}.ts`, `${prefix}${j}.ts`]);
+  }
+  return pairs;
+};
+/** Sorted, because that is the order a cluster reports its members in. */
+const clan = (prefix: string, size: number): string[] =>
+  Array.from({ length: size }, (_, i) => `${prefix}${i + 1}.ts`).sort();
+
+test('a group that is really just its largest child is not offered beside it', () => {
+  // serilog's shape at a size a reader can hold: one big group, one small one,
+  // a single edge between them. The aggregation joins the two, and the outer
+  // group it makes is 20 files of which 16 are the first child — so the panel
+  // asked for a name for the architecture, and then again for the same
+  // architecture minus four files.
+  const graph = graphOf(
+    [...clan('a', 16), ...clan('b', 4)],
+    // The bridge hangs off the last member of each: from the first, the tie
+    // between "join my own group" and "join theirs" is broken on the lowest
+    // path and the small group is swallowed before the aggregation ever runs.
+    [...clique('a', 16), ...clique('b', 4), ['a16.ts', 'b4.ts']],
+  );
+  const groups = clusterFiles(graph);
+
+  assert.deepEqual(
+    groups.map((group) => group.files),
+    [clan('a', 16), clan('b', 4)],
+  );
+  assert.deepEqual(
+    groups.map((group) => group.children.length),
+    [0, 0],
+  );
+});

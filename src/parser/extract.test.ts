@@ -43,6 +43,9 @@ test('what a file bound by importing, and what it exports by default, survive pa
   assert.equal(parsed.defaultExport, 'f');
   // Bound nothing is a fact about the file, not a parser that never said.
   assert.deepEqual(parseSource('lone.ts', 'export const x = 1;\n').bindings, []);
-  // A language that does not record bindings leaves the field out.
-  assert.equal(parseSource('m.rs', 'pub fn f() {}\n').bindings, undefined);
+  // A file whose scope cannot be enumerated records none, and leaves the field
+  // out rather than claiming an empty list: `use crate::imp::*` puts names in
+  // scope that nothing in the source names, so the store keeps its older rule.
+  assert.equal(parseSource('m.rs', 'use crate::imp::*;\npub fn f() {}\n').bindings, undefined);
+  assert.deepEqual(parseSource('n.rs', 'pub fn f() {}\n').bindings, []);
 });

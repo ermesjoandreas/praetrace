@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-import type { ParsedSymbol, SymbolKind } from '../parser/types.js';
+import type { ImportBinding, ParsedSymbol, SymbolKind } from '../parser/types.js';
 import type { LanguageParse, LanguageSupport, ResolveContext, SyntaxNode } from './types.js';
 
 // A grammar is a native addon, reachable from ESM only through createRequire.
@@ -182,6 +182,13 @@ function collectReferences(root: SyntaxNode, aliases: readonly string[]): string
   return [...names];
 }
 
+/** `using File = System.IO.File` — a name this file writes, and what it stands for. */
+interface Alias {
+  local: string;
+  /** The right-hand side, written out in full, as `imports` also carries it. */
+  target: string;
+}
+
 /**
  * What the `using` directives say, which is not a list of dependencies but the
  * evidence resolve() needs to decide whether a bare name could have meant a
@@ -193,13 +200,13 @@ interface Directives {
   /** Namespaces a `global using` names — those reach the whole compilation. */
   globals: string[];
   /** Names bound locally by `using X = …`. */
-  aliases: string[];
+  aliases: Alias[];
 }
 
 function usingDirectives(root: SyntaxNode): Directives {
   const usings: string[] = [];
   const globals: string[] = [];
-  const aliases: string[] = [];
+  const aliases: Alias[] = [];
 
   const visit = (nodes: readonly SyntaxNode[], enclosing: string): void => {
     let current = enclosing;
@@ -226,7 +233,11 @@ function usingDirectives(root: SyntaxNode): Directives {
       // The alias form is the one that carries a `name` field of its own.
       const alias = node.childForFieldName('name');
       if (alias !== null) {
-        aliases.push(alias.text);
+        // What it stands for is the last thing written, and it is the name the
+        // *other* file declares — `using File = System.IO.File` is one name
+        // here and another there.
+        const target = node.namedChildren[node.namedChildren.length - 1];
+        if (target !== undefined && target !== alias) aliases.push({ local: alias.text, target: target.text });
         continue;
       }
       // `using static X.Y.T` names a type and brings its members into scope. The
@@ -645,6 +656,41 @@ function soleNamespace(scopes: readonly string[]): string | null {
   return scopes.length === 1 && only !== undefined && only !== '' ? only : null;
 }
 
+/** The last identifier of a dotted name, which is the type it ends on. */
+function tailOf(reference: string): string {
+  return reference.slice(reference.lastIndexOf('.') + 1);
+}
+
+/**
+ * Every name this file can write, and the reference each one stands for.
+ *
+ * C# writes no path and no file name: `LogEvent` is the whole of what the
+ * source says, and resolve() answers it by asking which namespaces this file
+ * could have been reading it against. A binding carries that answer down to the
+ * graph, which otherwise reads a bare name out of whichever imported file
+ * happens to export one, in import order — 1,270 of Serilog's 4,411 edges were
+ * drawn that way, and marked `guessed` because nothing in the file had said so.
+ *
+ * The list can claim to be every name the file reaches, which is what makes the
+ * graph right to refuse anything not in it. It is the same sweep the references
+ * came from, and everything downstream reduces a type expression the same way:
+ * `heritageOf`, `declaredType` and `collectCalls` all end on the last
+ * identifier, which is the tail of what collectReferences recorded whole.
+ */
+function bindings(references: readonly string[], aliases: readonly Alias[]): ImportBinding[] {
+  const bound = references.map((reference) => ({
+    local: tailOf(reference),
+    specifier: reference,
+    imported: tailOf(reference),
+  }));
+  // An alias is the one place the name written here and the name declared there
+  // are different, so it cannot be read off the reference.
+  for (const { local, target } of aliases) {
+    bound.push({ local, specifier: target, imported: tailOf(target) });
+  }
+  return bound;
+}
+
 /** A namespace and every namespace enclosing it, innermost first. */
 function scopesOf(namespace: string): string[] {
   if (namespace === '') return [];
@@ -900,10 +946,14 @@ export const csharp: LanguageSupport = {
     const scopes = declaredScopes(root);
     const directives = usingDirectives(root);
     const moduleName = soleNamespace(scopes);
+    const references = collectReferences(
+      root,
+      directives.aliases.map((alias) => alias.local),
+    );
 
     return {
       imports: [
-        ...collectReferences(root, directives.aliases),
+        ...references,
         // Not references, and never edges. See DECLARES: they ride here because
         // this is the only thing a parsed file hands the resolver, and a bare
         // name cannot be checked without them.
@@ -912,6 +962,7 @@ export const csharp: LanguageSupport = {
         ...directives.globals.map((namespace) => GLOBAL + namespace),
       ],
       symbols,
+      bindings: bindings(references, directives.aliases),
       ...(moduleName === null ? {} : { moduleName }),
     };
   },

@@ -1497,7 +1497,28 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .activity-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 
-.activity-table { width: 100%; border-collapse: collapse; font-size: var(--vsc-font-size-status); }
+/* Fixed, so the panel decides the columns and the content never decides the
+   panel. Under the automatic algorithm the widest name and the deepest
+   directory each took their maximum and the +/- column was pushed past the
+   right edge of a 300px side bar — where a right-aligned number is invisible
+   before it is illegible. */
+.activity-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: var(--vsc-font-size-status);
+}
+/* Measured against the font the cells actually use, in a 285px panel: 42 is a
+   clock without its seconds, 68 holds "+129 − 45", and the name takes every
+   pixel left over. The name and the directory lose their tail to an ellipsis
+   and keep the whole path in the row's own tooltip; the +/- is never clipped,
+   because it is the one thing in the row that cannot be recovered from
+   anywhere else on the page. */
+.col-when { width: 42px; }
+.col-mark { width: 24px; }
+.col-what { width: auto; }
+.col-where { width: 62px; }
+.col-lines { width: 68px; }
 .activity-table tr { cursor: default; }
 .activity-write { cursor: pointer; }
 .activity-table tr:hover { background: var(--vsc-list-hover); }
@@ -1513,12 +1534,11 @@ main { display: flex; flex: 1; min-height: 0; }
 .activity-table td:last-child { padding-right: 8px; }
 
 .activity-when {
-  width: 34px;
   color: var(--vsc-fg-disabled);
   font-size: var(--vsc-font-size-sm);
   font-variant-numeric: tabular-nums;
 }
-.activity-mark { width: 24px; color: var(--vsc-fg-muted); }
+.activity-mark { color: var(--vsc-fg-muted); }
 /* A block, not an inline: an inline 16px icon sits on the text baseline and
    grows the row past 22. */
 .activity-mark .codicon { display: block; }
@@ -1529,7 +1549,6 @@ main { display: flex; flex: 1; min-height: 0; }
 .activity-what {
   color: var(--vsc-fg);
   font-family: var(--vsc-font-mono);
-  max-width: 118px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -1543,7 +1562,6 @@ main { display: flex; flex: 1; min-height: 0; }
   direction: rtl;
   font-family: var(--vsc-font-mono);
   font-size: var(--vsc-font-size-sm);
-  max-width: 92px;
   overflow: hidden;
   text-align: left;
   text-overflow: ellipsis;
@@ -1554,11 +1572,10 @@ main { display: flex; flex: 1; min-height: 0; }
    so before a word of it is read. One line with the rest in the title, because
    a paragraph in this table would push the row it explains off the screen. */
 .activity-words {
-  /* A hard width for the same reason the two columns above have one: this cell
-     holds text nobody here wrote, and a table cell sized to its content would
-     let a long sentence widen the whole table and put a horizontal scrollbar
-     under the panel. */
-  max-width: 200px;
+  /* It spans the last three columns, and the fixed layout is what keeps it
+     from widening them: this cell holds text nobody here wrote, and a table
+     sized to its content would let one long sentence put a horizontal
+     scrollbar under the panel. */
   color: var(--vsc-fg);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2034,10 +2051,14 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
   /* No overflow clipping here: the base picker opens upward out of this bar. */
   white-space: nowrap;
 }
-.statusbar-left { display: flex; align-items: center; flex: none; padding-left: 4px; }
-/* The right half is the one that yields when the window is narrow, and the
-   language list is the one item in it that still reads once cut short. */
-.statusbar-right { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; margin-left: auto; padding-right: 4px; }
+/* The left half is the one that yields now, and the right half holds. It used
+   to be the other way round, which made the language summary the only thing on
+   the bar that could give way — and it is the one item here that says nothing
+   at all once cut, while the left holds the one item that still reads when it
+   is. `min-width: 0` because every item is `white-space: nowrap`, so a half's
+   own minimum is its whole content and it would otherwise never shrink at all. */
+.statusbar-left { display: flex; align-items: center; flex: 0 1 auto; min-width: 0; padding-left: 4px; }
+.statusbar-right { display: flex; align-items: center; flex: none; margin-left: auto; padding-right: 4px; }
 
 /* 21, not 22: the bar is 22 including its top line, so a 22px item stood
    half a pixel proud of it above and below, and the document was a pixel
@@ -2117,6 +2138,17 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 /* Source the tool cannot read, or could not fully parse: a gap rather than a
    fact, and still not an error. */
 .unread, .parse-errors { color: var(--vsc-warning); }
+/* The one item on this bar that gives way, and the only one that can. It is
+   the widest — 303px on apache/superset — it leads with the biggest kind, and
+   every kind it holds is repeated in its own tooltip and on the welcome
+   screen. Every other item is a count, and half a number is not a smaller
+   fact, it is a wrong one.
+
+   Squeezed hard it comes down to the warning glyph and an ellipsis, which is
+   an invitation to hover rather than a claim; the language summary it makes
+   room for used to be cut to "Python ·", which is a claim, and a false one. */
+.unread { flex: 0 1 auto; min-width: 0; }
+.unread-kinds { overflow: hidden; text-overflow: ellipsis; }
 
 /* The broken files open out of the bar, the way the git base does. Relative,
    because the list is placed against this and not against the footer. */
@@ -2139,7 +2171,13 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .unresolved { color: var(--vsc-fg-muted); font-variant-numeric: tabular-nums; }
 
 .counts, .langs { color: var(--vsc-fg-muted); }
-.langs { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Never cut. This is the line's answer to "what is this project", it is sorted
+   biggest first, and clipping it takes the minority language — which in a
+   Python back end with a TypeScript front end is exactly the half somebody
+   opened the tool to find. It used to be the only item on the bar that could
+   shrink: measured on apache/superset in a 1209px window, 15px of the 273px it
+   asked for, which reads as "Python ·". */
+.langs { flex: none; }
 
 /* What the agent last asked, and how long ago. Naming the tool tells you what
    it is actually doing, which is the thing worth glancing at. */

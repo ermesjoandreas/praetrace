@@ -85,6 +85,37 @@ import { frameClusters, keepLayout, NODE_WIDTH, boxHeight, layoutNodes, type Clu
 const nodeTypes = { box: BoxNode, frame: GroupNode };
 
 type FlowNode = BoxNodeType | GroupNodeType;
+
+/**
+ * Hand React Flow the size the layout already decided, rather than waiting for
+ * it to measure one.
+ *
+ * React Flow holds the `fitView` prop until every node has been measured, and
+ * `onlyRenderVisibleElements` means a box outside the camera is never in the
+ * DOM, so its observer never fires. On any diagram wider than the window that
+ * is never — so a view opened wide never fitted at all, which is worse than a
+ * fit that does a poor job: the diagram it refuses to move is by definition
+ * the one the reader cannot see. Measured on ripgrep's `crates/core`: 27
+ * boxes spanning 4 336px sat in a 579px canvas at scale 1.
+ *
+ * This is the fit that happens on its own, when a view opens. The one a person
+ * asks for is a separate mechanism and had a separate bug; see `fitToScreen`.
+ *
+ * Nothing is guessed here. dagre placed these boxes from exactly these
+ * numbers — `boxHeight` gives a box its height, and a frame is the rectangle
+ * around where its members landed — so this reports the size the layout has
+ * already committed to. The observer still corrects it for any box that does
+ * come on screen and renders taller.
+ */
+function withMeasured(node: FlowNode): FlowNode {
+  const { width, height } = node;
+  // Every box and frame is built with both, which is also what the cull
+  // rectangle is computed from, so this narrows a type rather than guarding
+  // against a case that happens.
+  if (width === undefined || height === undefined) return node;
+  return { ...node, measured: { width, height } };
+}
+
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
 /** The default edge kinds plus calls; the button is a shortcut for this set. */
@@ -1730,7 +1761,10 @@ export function App() {
       ];
     });
 
-    return { nodes: [...frames, ...laid.nodes] as FlowNode[], edges: builtEdges };
+    return {
+      nodes: ([...frames, ...laid.nodes] as FlowNode[]).map(withMeasured),
+      edges: builtEdges,
+    };
   }, [
     view,
     changedBoxIds,
@@ -2009,10 +2043,38 @@ export function App() {
     });
   }, [handleSwitchProject]);
 
+  /**
+   * Fit the camera to the diagram, now, rather than the next time the graph
+   * changes.
+   *
+   * `flow.fitView()` does not move the camera itself. It raises
+   * `fitViewQueued` and pushes a no-op onto React Flow's node queue, and the
+   * fit only runs when `setNodes` next reaches the store — which in a fully
+   * controlled flow means the `nodes` prop being rebuilt. This page rebuilds
+   * it when the graph changes and `onNodesChange` only records a selection,
+   * so nothing a menu item does gets there. Measured on ripgrep's
+   * `crates/core`, zoomed out to 0.10 with the diagram spilling out of the
+   * canvas on both sides: ⇧⌘F, the View menu item and React Flow's own fit
+   * button each moved the camera 0px — and then it jumped to a fit on its own
+   * the moment an unrelated file was saved, which is the worse half. A
+   * command that does nothing is a bug; a command that does its work later,
+   * on top of whatever the reader was looking at by then, is a surprise.
+   *
+   * `fitBounds` is the same arithmetic the queued fit would have done —
+   * `getViewportForBounds` over the same nodes at the same padding — handed
+   * straight to the pan/zoom, so it happens when it is asked for.
+   */
+  const fitToScreen = useCallback(() => {
+    // Empty is the `viewMissing` case, where React Flow holds no nodes and the
+    // bounds would be a point at the origin.
+    if (nodes.length === 0) return;
+    void flow.fitBounds(flow.getNodesBounds(nodes), { padding: 0.15 });
+  }, [flow, nodes]);
+
   // The key handler is registered once; these keep it pointed at the current
   // callbacks without tearing the listener down on every render.
   openProjectRef.current = openProject;
-  fitRef.current = () => void flow.fitView({ padding: 0.15 });
+  fitRef.current = fitToScreen;
   /**
    * Place everything afresh. The only way, other than opening a view, to
    * make dagre run: every save since the first layout put its new boxes
@@ -2356,7 +2418,7 @@ export function App() {
         ),
         { label: 'Zoom in', separatorBefore: true, run: () => void flow.zoomIn() },
         { label: 'Zoom out', run: () => void flow.zoomOut() },
-        { label: 'Fit to screen', shortcut: '⇧⌘F', run: () => void flow.fitView({ padding: 0.15 }) },
+        { label: 'Fit to screen', shortcut: '⇧⌘F', run: fitToScreen },
         {
           // A save never moves a box; this is the one thing that does, and it
           // is asked for by name.
@@ -2480,7 +2542,7 @@ export function App() {
         label: 'Fit to screen',
         shortcut: '⇧⌘F',
         separatorBefore: true,
-        run: () => void flow.fitView({ padding: 0.15 }),
+        run: fitToScreen,
       },
       {
         label: 'Up one level',
@@ -2837,7 +2899,12 @@ export function App() {
           maxZoom={2}
         >
           <Background gap={22} size={1} />
-          <Controls showInteractive={false} />
+          {/* The fit button runs `fitToScreen` as well as React Flow's own
+              queued fit, because on its own it is the same no-op the menu item
+              was: measured on ripgrep's `crates/core`, zoomed out to 0.09, this
+              button moved the camera 0px. React Flow calls both, and once ours
+              has fitted, the queued one lands on the same place. */}
+          <Controls showInteractive={false} onFitView={fitToScreen} />
           <MiniMap
             pannable
             zoomable

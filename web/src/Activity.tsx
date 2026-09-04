@@ -24,11 +24,14 @@ import { Section } from './Section';
 /** Enough to answer "what happened while I was away" without a scrollback. */
 const MAX_ROWS = 80;
 
-const clock = new Intl.DateTimeFormat(undefined, {
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-});
+/**
+ * No seconds. A clock is only reached once a row is an hour old, and at that
+ * distance the second is not information — the same reason the ages stop
+ * counting in seconds after a minute. It is also 18px of a 300px panel, and
+ * every one of those pixels is taken from the columns that say what happened
+ * and how much of it.
+ */
+const clock = new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' });
 
 interface Row {
   at: number;
@@ -203,6 +206,22 @@ export function Activity({
       ) : (
         <div className="activity-scroll">
           <table className="activity-table">
+            {/* The columns are declared, not inferred from the widest row.
+                Left to itself the table sized every column to its content and
+                grew past the 300px panel — 331px of table in 285px of visible
+                width — and the column it pushed over the edge was the last one,
+                which is the +/- this table counts the session in. Measured on
+                ripgrep: a 129-line edit read "+12", a 3-line edit showed
+                nothing at all, and the numbers are right-aligned, so the
+                shortest ones were the ones that disappeared entirely: the two
+                largest edits of a session looked like the smallest. */}
+            <colgroup>
+              <col className="col-when" />
+              <col className="col-mark" />
+              <col className="col-what" />
+              <col className="col-where" />
+              <col className="col-lines" />
+            </colgroup>
             <tbody>
               {rows.map((row, index) => {
                 const path = row.kind === 'change' ? row.target : null;

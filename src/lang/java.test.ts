@@ -249,3 +249,95 @@ public class Bar extends Builder {
     'p/Bar.java -> q/Foo.java',
   ]);
 });
+
+test('a lower-case class is a class: the convention is not the language', () => {
+  // The directory named after the inheritance lecture, in miniature. Every
+  // type in it is lower case, which is not how Java is usually written and is
+  // entirely legal — and the casing test read all four names as variables, so
+  // the package drew its boxes and none of its `extends`.
+  const graph = graphOf(
+    parsedFile('p/motorvogn.java', 'package p;\npublic class motorvogn { String skiltNummer; }\n'),
+    parsedFile(
+      'p/bil.java',
+      `package p;
+public class bil extends motorvogn {
+  double lasteKapasitet;
+}
+`,
+    ),
+    parsedFile(
+      'p/MotorvognReg.java',
+      `package p;
+import java.util.ArrayList;
+public class MotorvognReg {
+  public static void main(String[] args) {
+    ArrayList<motorvogn> garasjenMin = new ArrayList<>();
+    bil ferrari = new bil();
+    garasjenMin.add(ferrari);
+  }
+}
+`,
+    ),
+  );
+
+  assert.deepEqual(edges(graph, 'extends'), ['p/bil.java#bil -> p/motorvogn.java#motorvogn']);
+  assert.deepEqual(edges(graph, 'imports'), [
+    'p/MotorvognReg.java -> p/bil.java',
+    'p/MotorvognReg.java -> p/motorvogn.java',
+    'p/bil.java -> p/motorvogn.java',
+  ]);
+  assert.deepEqual(
+    edges(graph, 'calls'),
+    ['p/MotorvognReg.java#MotorvognReg.main -> p/bil.java#bil'],
+  );
+});
+
+test('what the casing test was protecting: a variable, a package qualifier, and `var`', () => {
+  // Each of these is a name in a position a type could hold, and none of them
+  // is one. `writer` and `helper` are receivers the file binds to values, which
+  // it says outright; `oppgave3` and `java` are package segments, which only the
+  // convention separates from a class; and `var` is a type_identifier naming
+  // nothing, which the casing test used to drop by accident.
+  const { imports, symbols } = parse(`
+    package oppgave3;
+    import java.util.List;
+    public class main {
+      private Writer writer;
+      void run(Helper helper) {
+        writer.value();
+        helper.go();
+        var v = new Item();
+        oppgave3.metodene.charMethod(v);
+        java.util.Arrays.asList(v);
+        Streams.write();
+      }
+    }
+  `);
+  const named = imports.map((specifier) => specifier.slice(specifier.lastIndexOf('.') + 1)).sort();
+  assert.deepEqual(named, ['Helper', 'Item', 'List', 'Streams', 'Writer']);
+  // And the calls read `writer` and `helper` as the variables they are.
+  assert.deepEqual(sorted(byName(symbols, 'run').calls), [
+    'Helper.go',
+    'Item',
+    'Streams',
+    'Writer.value',
+  ]);
+});
+
+test('an upper-case name the file binds to a value is a variable, not a class', () => {
+  // `Taxi OsloTaxi = new Taxi()` is how this tree writes a local, and the
+  // convention has nothing to say about it. The casing test read the receiver
+  // as a class nothing declares, so the call landed nowhere; what the file
+  // declared says which type it is.
+  const { symbols } = parse(`
+    package p;
+    public class Runner {
+      public static void main(String[] args) {
+        Taxi OsloTaxi = new Taxi();
+        OsloTaxi.calculateCost(100);
+        Streams.write();
+      }
+    }
+  `);
+  assert.deepEqual(sorted(byName(symbols, 'main').calls), ['Streams', 'Taxi', 'Taxi.calculateCost']);
+});

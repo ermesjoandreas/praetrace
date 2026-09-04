@@ -35,17 +35,26 @@ const METHOD_NODES = new Set([
 ]);
 
 /**
- * Java has no casing rule, but it has a convention every real project follows:
- * packages and variables are lowerCamelCase and types are not. That is what
- * separates `Helper` from `writer` in `Helper.go()` and `writer.value()`, and
- * the package segments from the type in `com.example.deep.Deep`.
+ * Java has no casing rule, but it has a convention: packages and variables are
+ * lowerCamelCase and types are not.
+ *
+ * This is not the language, and it must only be asked where the language
+ * genuinely cannot be. It used to gate every unbound name a file mentioned, and
+ * on a tree that does not follow the convention that hides the project: 128 of
+ * the 258 classes in the one this was measured on start lower case, and the
+ * directory named after the inheritance lecture drew seven boxes and not one of
+ * the `extends` its source holds. A map that shows no coupling where there is
+ * plenty is the failure this layer exists to avoid, and `describeSymbol` called
+ * that result `tracked` besides.
+ *
+ * What it is really for is one case, `receiverOf`: a bare receiver nothing in
+ * the file declares. A type position is a type because the grammar says so, and
+ * needs no convention to vouch for it.
  *
  * Written as "not lower-case" rather than "upper-case" because the convention
  * that holds is the one about packages and variables. A generated type is
  * spelled `$Gson$Types` or `_Impl` and is still a type; nothing is ever a
- * package or a local named that way. Getting this wrong costs a lookup that
- * finds nothing, never a wrong edge: the resolver still has to find a file whose
- * declared package matches.
+ * package or a local named that way.
  */
 function looksLikeType(name: string): boolean {
   const first = name[0];
@@ -53,15 +62,81 @@ function looksLikeType(name: string): boolean {
 }
 
 /**
+ * Every name the file binds to a value: a field, a parameter, a local, a loop,
+ * resource or pattern variable, a lambda's parameter, an enum constant.
+ *
+ * What the casing test was mostly standing in for, and the file says it
+ * outright — so `writer.value()` is a call on a variable rather than a
+ * reference to a class called writer without anyone having to believe in the
+ * convention. It answers where the convention is silent too: this tree writes
+ * `Taxi OsloTaxi = new Taxi()`, and `OsloTaxi.calculateCost(…)` was read as a
+ * class nothing declares instead of as the Taxi method it is.
+ *
+ * Over the whole file rather than per member, so a name bound anywhere is a
+ * variable everywhere. That refuses a static call written through a name some
+ * other method happens to use as a local, and refusing it is the cheaper
+ * mistake: a missing edge is a gap, a wrong one is a lie.
+ */
+function valueNames(root: SyntaxNode): Set<string> {
+  const values = new Set<string>();
+  const bind = (name: string | undefined): void => {
+    if (name !== undefined) values.add(name);
+  };
+
+  for (const declaration of root.descendantsOfType([
+    'field_declaration',
+    'constant_declaration',
+    'local_variable_declaration',
+  ])) {
+    for (const declarator of declaration.namedChildren) {
+      if (declarator.type === 'variable_declarator') bind(declarator.childForFieldName('name')?.text);
+    }
+  }
+  for (const node of root.descendantsOfType([
+    'formal_parameter',
+    'spread_parameter',
+    'catch_formal_parameter',
+    'enhanced_for_statement',
+    'resource',
+    'instanceof_expression',
+    'enum_constant',
+  ])) {
+    bind(node.childForFieldName('name')?.text);
+    // A catch parameter and a resource can write their name in a declarator.
+    for (const declarator of node.descendantsOfType('variable_declarator')) {
+      bind(declarator.childForFieldName('name')?.text);
+    }
+  }
+  for (const lambda of root.descendantsOfType('lambda_expression')) {
+    const parameters = lambda.childForFieldName('parameters');
+    if (parameters?.type === 'identifier') bind(parameters.text);
+    else if (parameters?.type === 'inferred_parameters') {
+      for (const parameter of parameters.namedChildren) bind(parameter.text);
+    }
+  }
+
+  return values;
+}
+
+/**
  * The receiver of a qualified call or field access, when it names a type rather
  * than a variable: the `Streams` in `Streams.write(…)`, the `UnsafeAllocator` in
  * `UnsafeAllocator.INSTANCE`. A same-package static utility is reached this way
  * and no other, so a file that only uses one leaves no other trace of it.
+ *
+ * The one place Java cannot be read out of one file. `Streams.write()` and
+ * `helper.go()` on a `helper` a supertype in another file declares are the same
+ * three tokens, and the package segments of `oppgave3.metodene.charMethod(…)`
+ * look the same again. So the names the file binds are subtracted — that part is
+ * known — and the convention decides what is left. It can decide wrong in both
+ * directions, which is why `describeSymbol` calls a Java count a floor rather
+ * than a census.
  */
-function receiverOf(node: SyntaxNode): string | null {
+function receiverOf(node: SyntaxNode, values: ReadonlySet<string>): string | null {
   const receiver = node.childForFieldName('object');
-  if (receiver?.type !== 'identifier' || !looksLikeType(receiver.text)) return null;
-  return receiver.text;
+  if (receiver?.type !== 'identifier') return null;
+  const name = receiver.text;
+  return values.has(name) || !looksLikeType(name) ? null : name;
 }
 
 /** A type expression reduced to the one name an edge can be drawn to. */
@@ -194,6 +269,13 @@ interface Enclosing {
    * class called `Node` as easily as it can name a type parameter that.
    */
   typeParameters: ReadonlySet<string>;
+  /**
+   * Every name the file binds to a value, so a receiver is judged by what the
+   * file declared before it is judged by how it is spelled; see `valueNames`.
+   * Per file rather than per type, and carried here because this is what every
+   * call site already has in its hand.
+   */
+  values: ReadonlySet<string>;
 }
 
 /**
@@ -318,37 +400,29 @@ function innermost(bodies: readonly InnerBody[], node: SyntaxNode): InnerBody | 
  * `cfg.load()` on a `cfg` nothing declared is left out rather than guessed, and
  * so is any of these inside a body that is another type's; see `innerBodies`.
  */
-function collectCalls(
-  node: SyntaxNode,
-  exclude: readonly SyntaxNode[] = [],
-  enclosing: Enclosing | null = null,
-): string[] {
+function collectCalls(node: SyntaxNode, exclude: readonly SyntaxNode[], enclosing: Enclosing): string[] {
   const names = new Set<string>();
   const within = (candidate: SyntaxNode, regions: readonly SyntaxNode[]): boolean =>
     regions.some((region) => candidate.startIndex >= region.startIndex && candidate.endIndex <= region.endIndex);
-  const typed = enclosing === null ? null : typedNames(node, enclosing);
+  const typed = typedNames(node, enclosing);
   // What each inner body declared for itself, with the enclosing type's fields
   // withheld and the member's own `<T>` still refused; see `innerBodies`.
-  const inner: InnerBody[] =
-    enclosing === null
-      ? []
-      : innerBodies(node).map((body) => ({
-          body,
-          typed: typedNames(body, {
-            ...enclosing,
-            fields: new Map(),
-            typeParameters: new Set([...enclosing.typeParameters, ...typeParametersOf(node)]),
-          }),
-        }));
+  const inner: InnerBody[] = innerBodies(node).map((body) => ({
+    body,
+    typed: typedNames(body, {
+      ...enclosing,
+      fields: new Map(),
+      typeParameters: new Set([...enclosing.typeParameters, ...typeParametersOf(node)]),
+    }),
+  }));
 
   for (const call of node.descendantsOfType('method_invocation')) {
     if (within(call, exclude)) continue;
-    const receiver = receiverOf(call);
+    const receiver = receiverOf(call, enclosing.values);
     if (receiver) {
       names.add(receiver);
       continue;
     }
-    if (enclosing === null || typed === null) continue;
 
     const method = call.childForFieldName('name')?.text;
     if (method === undefined) continue;
@@ -430,6 +504,8 @@ interface Collected {
    * nested in an import, because that file came first.
    */
   bindings: ImportBinding[];
+  /** Every name the file binds to a value, read off the root once. */
+  values: ReadonlySet<string>;
 }
 
 /**
@@ -556,7 +632,7 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
       }
     }
   }
-  const enclosing: Enclosing = { owner: name, methods, fields, typeParameters };
+  const enclosing: Enclosing = { owner: name, methods, fields, typeParameters, values: out.values };
 
   if (components) {
     for (const parameter of components.namedChildren) {
@@ -663,7 +739,11 @@ function unboundNames(root: SyntaxNode, out: Collected): string[] {
   );
 
   const names = new Set<string>();
-  for (const reference of root.descendantsOfType('type_identifier')) names.add(reference.text);
+  // `var` is a type_identifier that names no type. The casing test dropped it
+  // as a side effect of dropping every lower-case name, so it needs saying now.
+  for (const reference of root.descendantsOfType('type_identifier')) {
+    if (reference.text !== 'var') names.add(reference.text);
+  }
   // An annotation's name is an identifier rather than a type, and `@Expose` is
   // as real a dependency on its declaring file as any field type.
   for (const annotation of root.descendantsOfType(['annotation', 'marker_annotation'])) {
@@ -671,13 +751,11 @@ function unboundNames(root: SyntaxNode, out: Collected): string[] {
     if (name) names.add(name);
   }
   for (const qualified of root.descendantsOfType(['method_invocation', 'field_access'])) {
-    const receiver = receiverOf(qualified);
+    const receiver = receiverOf(qualified, out.values);
     if (receiver) names.add(receiver);
   }
 
-  return [...names].filter(
-    (name) => looksLikeType(name) && !declared.has(name) && !parameters.has(name) && !out.bound.has(name),
-  );
+  return [...names].filter((name) => !declared.has(name) && !parameters.has(name) && !out.bound.has(name));
 }
 
 /**
@@ -834,6 +912,7 @@ export const java: LanguageSupport = {
       packageName: null,
       bound: new Set(),
       bindings: [],
+      values: valueNames(root),
     };
     for (const child of root.namedChildren) collectTopLevel(child, out);
 

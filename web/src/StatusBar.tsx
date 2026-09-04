@@ -322,9 +322,17 @@ export function StatusBar({
             {/* What it means first, then what it was: the row is scanned left
                 to right, and three kinds are what fits. The rest are in the
                 tooltip, with a count so a fourth cannot hide behind the
-                truncation. */}
-            not read: {unreadable.kinds.slice(0, 3).join(' · ')}
-            {unreadable.kinds.length > 3 ? ` +${unreadable.kinds.length - 3}` : ''}
+                truncation.
+
+                In its own element so it can be the thing that gives way when
+                the bar is too full. It is the widest item here — 303px on
+                apache/superset — and the only one that still reads once cut
+                short, because the biggest kind comes first and the whole list
+                is in the tooltip above. */}
+            <span className="unread-kinds">
+              not read: {unreadable.kinds.slice(0, 3).join(' · ')}
+              {unreadable.kinds.length > 3 ? ` +${unreadable.kinds.length - 3}` : ''}
+            </span>
           </span>
         )}
 
