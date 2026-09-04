@@ -87,6 +87,11 @@ export function Welcome({
             </button>
           </li>
           {[
+            // The pair, kept next to each other because the difference between
+            // them is the thing a newcomer has to learn: ⌘K leaves for the
+            // symbol, ⌘F lights it where it already is.
+            ['Run a command', '⇧⌘P'],
+            ['Find in the diagram', '⌘F'],
             ['Toggle panel', '⌘B'],
             ['Back, forward', '⌘[ ⌘]'],
             ['Fit to screen', '⇧⌘F'],

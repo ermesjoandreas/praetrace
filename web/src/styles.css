@@ -145,7 +145,8 @@ code { font-size: var(--vsc-font-size-status); }
 .depth button,
 .welcome-close,
 .group-editor-close,
-.group-palette-close {
+.group-palette-close,
+.findbar button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -161,13 +162,15 @@ code { font-size: var(--vsc-font-size-status); }
 .depth button:hover:not(:disabled),
 .welcome-close:hover,
 .group-editor-close:hover,
-.group-palette-close:hover {
+.group-palette-close:hover,
+.findbar button:hover:not(:disabled) {
   background: var(--vsc-toolbar-hover);
   color: var(--vsc-fg);
 }
 .section-actions button:disabled,
 .row-actions button:disabled,
-.depth button:disabled {
+.depth button:disabled,
+.findbar button:disabled {
   color: var(--vsc-fg-disabled);
 }
 
@@ -212,7 +215,8 @@ code { font-size: var(--vsc-font-size-status); }
 /* A keycap, where VS Code draws one: beside a search box and on a Quick Pick
    row. Menus and the welcome list print their keys as plain muted text. */
 .search-open kbd,
-.hit-keys kbd {
+.hit-keys kbd,
+.cmd-shortcut {
   display: inline-block;
   padding: 0 4px;
   border: 1px solid var(--vsc-border-input);
@@ -224,11 +228,13 @@ code { font-size: var(--vsc-font-size-status); }
 }
 
 /* Everything that floats, and only what floats, casts a shadow. The error is
-   a notification; the empty-view message is plain text on the canvas. */
+   a notification; the find bar hangs over the diagram it is marking; the
+   empty-view message is plain text on the canvas. */
 .menu-drop,
 .project-menu,
 .palette,
 .group-editor,
+.findbar,
 .error {
   background: var(--vsc-widget-bg);
   border: 1px solid var(--vsc-border-menu);
@@ -569,6 +575,20 @@ main { display: flex; flex: 1; min-height: 0; }
 .box:hover { border-color: var(--vsc-border-menu); }
 /* Selection is the accent on the edge, never a fill over the members. */
 .react-flow__node-box.selected .box { border-color: var(--vsc-accent); }
+
+/* Every box is a tab stop — React Flow makes its nodes focusable and there are
+   two dozen of them on a scope view — and React Flow's own stylesheet takes
+   the ring off them again. The ring is never removed, so it is put back here,
+   at the same weight every other standalone control on the page wears. The
+   selector is `.react-flow__node.selectable:focus-visible` because that is
+   what has to be answered, character for character: anything weaker loses on
+   specificity and anything stronger would also catch a frame, which already
+   has its ring from the page's own rule. A group frame is `.draggable`, not
+   `.selectable`, which is what keeps the two apart. */
+.react-flow__node.selectable:focus-visible {
+  outline: 1px solid var(--vsc-accent);
+  outline-offset: 2px;
+}
 
 /* 7 + 18 + 7 and a 1px rule: with the box's top border and the 4px the member
    list starts with, this is HEADER_HEIGHT in layout.ts. The line-height is
@@ -1687,6 +1707,11 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
   white-space: nowrap;
 }
 .group-title.named, .group-title:hover { color: var(--vsc-fg); }
+/* Inset, like every other row the arrows walk. Without this it falls back to
+   the 2px a standalone control wears, and the ring is then drawn outside a
+   20px name inside a 22px row — over the row above and the row below. The
+   files under a group already had this; the group's own name is a row too. */
+.group-title:focus-visible { outline-offset: -1px; }
 .group-cohesion { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
 
 /* A model's guess at a name: the row under the group it is for, one indent
@@ -2315,6 +2340,105 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
   font-size: var(--vsc-font-size-sm);
 }
 .hit-active .hit-keys { color: var(--vsc-fg); }
+
+/* --- command palette ------------------------------------------------------- */
+
+/* ⌘⇧P is ⌘K's sibling and wears the same shell: `.palette-backdrop` and
+   `.palette` above are both, so the two cannot drift apart in anything but
+   their rows. `.hit-match` and `.hit-keys` are shared for the same reason —
+   where the query landed, and what Enter would do, mean one thing in this app
+   and are drawn one way. */
+
+.cmd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  white-space: nowrap;
+}
+.cmd:hover:not([aria-disabled='true']) { background: var(--vsc-list-hover); }
+.cmd-active, .cmd-active:hover { background: var(--vsc-list-active-sel); color: var(--vsc-fg-strong); }
+.cmd:focus-visible { outline-offset: -1px; }
+.cmd-active .hit-keys { color: var(--vsc-fg); }
+
+/* The tick a checked item wears, in a column of its own so the labels of the
+   checked and the unchecked line up — the menu drop keeps the same column. */
+.cmd-check { display: inline-flex; flex: none; width: 16px; color: var(--vsc-fg-muted); }
+.cmd-active .cmd-check { color: var(--vsc-fg); }
+
+.cmd-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* The menu it came from, said the way VS Code says it: "View: Re-layout". */
+.cmd-menu { color: var(--vsc-fg-muted); }
+.cmd-active .cmd-menu { color: var(--vsc-fg); }
+
+/* Greyed with its reason, the rule the menu bar already follows. The matched
+   characters stay a shade above the row rather than turning the link colour:
+   they are still saying where the query landed, on a row that still cannot
+   run. */
+/* A greyed command carries `aria-disabled`, not `disabled`: it has to stay in
+   the accessibility tree for its reason to be read out at all. */
+.cmd[aria-disabled='true'] { color: var(--vsc-fg-disabled); }
+.cmd[aria-disabled='true'] .cmd-menu,
+.cmd[aria-disabled='true'] .hit-match { color: var(--vsc-fg-muted); }
+
+/* Why it is greyed, on the active row — a keyboard cannot hover, and a
+   tooltip only ever reaches a mouse. */
+.cmd-why {
+  flex: none;
+  max-width: 45%;
+  margin-left: 8px;
+  overflow: hidden;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  text-overflow: ellipsis;
+}
+
+.cmd-shortcut { flex: none; }
+
+/* Not a row: a search that found nothing has nothing to run, so this says so
+   in the list's place and is never something the keyboard can land on. */
+.palette-empty {
+  height: var(--vsc-row-h);
+  margin-bottom: 4px;
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  line-height: var(--vsc-row-h);
+}
+
+/* --- find in view ---------------------------------------------------------- */
+
+/* VS Code's find widget, in the corner React Flow leaves free — the slice line
+   holds the other one. It floats over the diagram it is marking, which is what
+   earns it the widget shadow; it changes nothing underneath, because a
+   highlight is not a view. */
+.findbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  /* Above React Flow's own panes, below the palette backdrop. */
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+}
+
+.findbar-input { width: 180px; }
+
+/* Beside the input rather than inside it, so the input keeps the 1px border
+   and the inset focus ring every input on this page has. Tabular figures and
+   a floor under the width, or the buttons shuffle sideways as the count goes
+   from 9 to 10. */
+.findbar-count {
+  flex: none;
+  min-width: 64px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
 /* --- project picker (desktop only) ----------------------------------------- */
 

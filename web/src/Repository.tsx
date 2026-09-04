@@ -25,6 +25,12 @@ import { Section } from './Section';
  * and when an action here changes what the server would answer — a fetch moves
  * ahead/behind, an install flips the hook — the result is handed back up rather
  * than kept, because the log and the menu bar read the same facts.
+ *
+ * No arrow keys, unlike every other list in the left bar. These rows are a `dl`
+ * of facts: a label and a value, nothing to select and nothing for Enter to
+ * run. What can be run here is the button under each block, and Tab reaches
+ * three buttons in the whole panel. `listkeys.ts` is for a list you walk; this
+ * is a list you read.
  */
 export function Repository({
   repo,

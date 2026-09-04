@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { money } from './api';
+import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
 import type { GroupColor, GroupSuggestion, OrphanGroup, Suggestion } from './api';
 
@@ -111,6 +112,12 @@ export function Categories({
   onSuggest: () => void;
   onDismissSuggestion: (id: string) => void;
 }) {
+  // One walk over the whole list, in the order it is drawn: a group, the name
+  // being typed in place of it, then the files under it. A group's files are
+  // its rows as much as the group's own name is, and the arrows read the list
+  // the eye reads. The swatch, the palette and the row actions are not rows —
+  // they act on the row they sit in, and Tab still reaches them.
+  const keys = useListKeys();
   const [naming, setNaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   /** The row whose palette and membership are open. One at a time. */
@@ -191,7 +198,7 @@ export function Categories({
         </p>
       )}
 
-      <ul>
+      <ul {...keys}>
         {live.map((group) => {
           const manual = group.origin === 'manual';
           const decided = manual || group.state === 'accepted';
@@ -212,7 +219,10 @@ export function Categories({
               title={group.parent === null ? undefined : `Inside "${parentLabel(group.parent)}"`}
             >
               {naming === group.id ? (
+                // A row while it is being renamed, so the walk does not lose
+                // its place; the arrows inside it belong to the caret.
                 <input
+                  {...LIST_ROW}
                   autoFocus
                   value={draft}
                   placeholder="Name this category"
@@ -248,6 +258,7 @@ export function Categories({
                   )}
                   <button
                     type="button"
+                    {...LIST_ROW}
                     className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
                     onClick={() => {
                       // A guess is a starting point for typing as much as a
@@ -377,7 +388,7 @@ export function Categories({
                 {group.files.map((file) =>
                   open && manual ? (
                     <span className="group-row" key={file}>
-                      <button type="button" title={file} onClick={() => onSelect(file)}>
+                      <button type="button" {...LIST_ROW} title={file} onClick={() => onSelect(file)}>
                         {file}
                       </button>
                       <span className="row-actions">
@@ -403,7 +414,7 @@ export function Categories({
                       </span>
                     </span>
                   ) : (
-                    <button type="button" key={file} title={file} onClick={() => onSelect(file)}>
+                    <button type="button" {...LIST_ROW} key={file} title={file} onClick={() => onSelect(file)}>
                       {file}
                     </button>
                   ),
@@ -431,7 +442,11 @@ export function Categories({
           finds now. They used to be dropped on read, so a committed name could
           vanish from the panel with no way to learn why, let alone delete it.
           Kept and listed: the code a name described may come back, and until
-          then the one thing to do with it is take it out on purpose. */}
+          then the one thing to do with it is take it out on purpose.
+
+          No arrow keys: a row here is a name and a count, and the one thing
+          that can be done to it is the trash in its actions. A walk whose
+          Enter does nothing would be a list that looks reachable and is not. */}
       {orphans.length > 0 && (
         <div className="categories-orphans">
           <h3

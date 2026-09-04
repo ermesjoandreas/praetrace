@@ -472,6 +472,16 @@ web/              the browser page (Vite, built into dist/web)
   src/Section.tsx      one side bar section: 22px header, a chevron that folds it,
                        actions hidden until hover. Every panel region is one
   src/SearchPalette.tsx  ⌘K, in Quick Pick's shape
+  src/CommandPalette.tsx ⇧⌘P, the same shape over the menu bar's own items
+  src/commands.ts the menu tree flattened into commands, matched and ranked —
+                  pure, and the one home of the subsequence matcher ⌘K shares
+  src/FindBar.tsx ⌘F: the matches in what is drawn, stepped, camera-moving
+  src/find.ts     which boxes and members a query lights — pure
+  src/listkeys.ts arrows in a list, and roving tabindex: one Tab stop per list
+                  rather than one per row. Pure rules, tested; the hook reads
+                  the rows out of the DOM
+  src/Sash.tsx    one draggable border, reporting a size in pixels
+  src/panes.ts    how wide the bars are and how the sections divide them — pure
   src/AgentStatus.tsx  what the agent is doing, and how long ago
   src/layout.ts   dagre for a view's first layout, keepLayout for every save after
   src/api.ts      fetch + the shared types, imported from src/
@@ -726,6 +736,22 @@ governs membership.
   `gst` finds `GraphStore`; ranking is exact name, then code before test, fixture
   and `.d.ts`, then match quality, then the shorter path. The keyboard owns the
   active row; the mouse only hovers and clicks.
+- **⌘F is the other half of the pair, and the difference is the whole reason both
+  exist.** ⌘K searches the project and takes you somewhere; ⌘F searches what is
+  *drawn* and takes you nowhere — it lights the matching boxes and member rows,
+  Enter and ⇧Enter step the camera through them, and it rides no URL, because a
+  highlight is not a view. It refuses to open on an empty diagram, the same
+  state that greys it in the menu and in the palette.
+- **⇧⌘P runs anything the menu bar can.** The palette is built *from* the menus,
+  so it can never offer an action a menu does not, and a greyed command appears
+  greyed with its reason rather than being hidden — being told why is the point.
+  Both palettes are one Tab stop: rows are `tabIndex -1` and Tab is trapped, so
+  focus cannot wander out of a modal that claims `aria-modal`.
+- **Every list is one Tab stop, not one per row.** `listkeys.ts` — arrows move,
+  Home and End jump, Enter is left to the browser because every row is already a
+  button. Before it, getting past Source Control meant 300 presses. The stop
+  follows the *focused row* and not a remembered index, or a file arriving above
+  it on an agent's save would move the stop to its neighbour.
 - **Call edges** are off by default (`?calls=1`). When on, a call edge *replaces* the
   import between the same pair rather than being drawn beside it.
 - **The side panel.** A followed method or field prints the graph's coverage

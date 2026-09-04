@@ -105,7 +105,19 @@ import {
   type SectionId,
   type Viewport,
 } from './panes';
-import { frameClusters, keepLayout, NODE_WIDTH, boxHeight, layoutNodes, type ClusterBounds, type Rect } from './layout';
+import {
+  frameClusters,
+  keepLayout,
+  MAX_MEMBERS,
+  NODE_WIDTH,
+  boxHeight,
+  layoutNodes,
+  type ClusterBounds,
+  type Rect,
+} from './layout';
+import { matchedAt } from './commands';
+import { CommandPalette } from './CommandPalette';
+import { FindBar } from './FindBar';
 
 const nodeTypes = { box: BoxNode, frame: GroupNode };
 
@@ -373,6 +385,35 @@ export function App() {
   const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
+  /**
+   * ⌘⇧P. The other half of VS Code's split: ⌘K finds a thing, this runs one.
+   * It holds nothing of its own — every command it lists is a `MenuItem` the
+   * menu bar is already built from — so opening it is the whole of its state.
+   */
+  const [commandsOpen, setCommandsOpen] = useState(false);
+  /**
+   * ⌘F, and what has been typed into it. Not a view: a highlight says where
+   * something already on the canvas is, so it rides no URL and survives no
+   * reload, the same way the selection does not.
+   *
+   * `null` is closed. An open bar with an empty query is `''`, which is a
+   * different state: the bar is up and waiting, and nothing is dimmed yet.
+   */
+  const [findQuery, setFindQuery] = useState<string | null>(null);
+  /**
+   * Which match Enter is standing on, as an index into `found.boxes`, and −1
+   * for "not stepped yet". Two different things, and the bar says so: with
+   * nothing stepped it reads "17 matches", and only once the camera has been
+   * somewhere does it read "3 of 17". A find that claimed to be on match 1
+   * before it had moved would be describing a camera that had not gone there.
+   */
+  const [findAt, setFindAt] = useState(-1);
+  /**
+   * Bumped by ⌘F. The bar takes it as "select what is in the box": a second
+   * ⌘F in an editor means "search for something else", not "put the caret
+   * wherever the mouse left it".
+   */
+  const [findFocus, setFindFocus] = useState(0);
   /** Where the right-click menu is, and what was under the cursor. */
   const [contextAt, setContextAt] = useState<{ x: number; y: number; node: string | null } | null>(null);
   /**
@@ -1301,6 +1342,60 @@ export function App() {
     return found;
   }, [following, links]);
 
+  /**
+   * What ⌘F found, in the slice that is drawn. Null when the bar is shut, and
+   * null while it is open with nothing typed — an empty query is not a search
+   * and must dim nothing.
+   *
+   * ⌘K and this ask different questions and the answers come from different
+   * places on purpose. ⌘K asks the server about the whole graph and takes you
+   * somewhere; this walks the boxes already on screen and takes you nowhere.
+   * So it is a memo over `view` rather than a fetch, and it is spelled with
+   * `matchedAt` — the matcher both palettes use — so `gst` finds `GraphStore`
+   * here too.
+   *
+   * Matched against what the box actually draws: its label and its members'
+   * names. Not the id, which on a bundle is `bundle:dependents:1` and would
+   * answer to letters nobody can see on the canvas.
+   *
+   * A box holding a matching member is itself a match — that is where the
+   * symbol *is*, and where the camera has to go to show it. Which row inside
+   * it matched is not recorded here, because there is nowhere to put it: a
+   * box draws what `BoxData` carries, and the field for it does not exist
+   * yet. Until it does the box lights and the row does not, which is a
+   * smaller answer than the one intended but not a wrong one.
+   *
+   * `boxes` is a list and not a set because Enter walks it, and the order it
+   * walks has to be the view's own rather than whatever a set iterated in.
+   */
+  const found = useMemo(() => {
+    const needle = (findQuery ?? '').trim().toLowerCase();
+    if (needle === '' || view === undefined) return null;
+    const boxes = view.nodes
+      .filter(
+        (node) =>
+          matchedAt(node.label, needle).length > 0 ||
+          node.members.some((member) => matchedAt(member.name, needle).length > 0),
+      )
+      .map((node) => node.id);
+    return { boxes, on: new Set(boxes) };
+  }, [findQuery, view]);
+
+  /**
+   * A different set of matches is a different search, so the step resets with
+   * it. Typing already resets; this is the other way the set can change —
+   * navigating, filtering, or an agent's save landing under the bar. Without
+   * it the bar went on reading "2 of 11" over a diagram whose 20 matches the
+   * camera had never visited.
+   *
+   * Keyed on the matches and not on the view, so a save that changes nothing
+   * the query matches leaves the reader standing where they were.
+   */
+  const foundKey = found === null ? '' : found.boxes.join('\u0000');
+  useEffect(() => {
+    setFindAt(-1);
+  }, [foundKey]);
+
   /** The box the selection names, or null when the diagram is not drawing one. */
   const selectedBox = useMemo(
     () => view?.nodes.find((node) => node.id === selected) ?? null,
@@ -1661,6 +1756,23 @@ export function App() {
       return node !== undefined && node.files.some((file) => relatedFiles.has(file));
     };
 
+    /**
+     * Which boxes are dimmed, and by whom. Two lenses can be on at once — a
+     * followed symbol and a find — and both dim by the same means, so one of
+     * them has to be in charge or a box would stay lit only where the two
+     * agreed, which is the answer to neither question.
+     *
+     * ⌘F wins while it has something typed. It is the transient one: a
+     * keystroke opens it and a keystroke closes it, and the following lens is
+     * exactly as it was underneath when it does. It also asked last, which is
+     * usually what a person means.
+     */
+    const lit = (id: string): boolean => {
+      if (found !== null) return found.on.has(id);
+      return involved(id);
+    };
+    const dimming = found !== null || relatedFiles !== null;
+
     const builtEdges: Edge[] = view.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
       source: edge.from,
@@ -1673,7 +1785,7 @@ export function App() {
       // is a fact about how the line was found, so it is added to whatever the
       // kind already says rather than replacing it.
       className: `edge-${edge.kind}${edge.guessed === true ? ' edge-guessed' : ''}${
-        relatedFiles !== null && !(involved(edge.from) && involved(edge.to)) ? ' edge-aside' : ''
+        dimming && !(lit(edge.from) && lit(edge.to)) ? ' edge-aside' : ''
       }`,
       // A weight of one is the common case and labelling it is just noise.
       ...(edge.weight > 1 ? { label: String(edge.weight) } : {}),
@@ -1732,13 +1844,18 @@ export function App() {
         onExplain: explainFile,
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
-        aside: relatedFiles !== null && !node.files.some((file) => relatedFiles.has(file)),
+        aside: dimming && !lit(node.id),
         // Why a dimmed box is not proof. Dimming is the diagram's own drawing
         // of "nothing here takes part in this", and it is built from the same
         // caller list the panel prints a count of — so where that list is a
         // floor, so is the dimming, and the box was the one surface saying it
         // without saying so.
-        asideNote: reach.note,
+        //
+        // Null while ⌘F owns the dimming: there the sentence would be
+        // qualifying a claim the box is no longer making. A find dims what
+        // does not match the letters typed, and that is not a floor — it is
+        // exactly what was asked for.
+        asideNote: found === null ? reach.note : null,
       },
     }));
 
@@ -1900,6 +2017,7 @@ export function App() {
     reach.note,
     relatedIds,
     relatedFiles,
+    found,
     expanded,
     toggleExpanded,
     picked,
@@ -1912,6 +2030,48 @@ export function App() {
     editGroup,
     renameGroup,
   ]);
+
+  /**
+   * Enter walks the matches, and takes the camera with it.
+   *
+   * Only Enter. Typing moves nothing: a find that panned on every keystroke
+   * would be a navigation, and this one is a highlight — "show me where it
+   * is" said without disturbing what is being looked at until it is asked
+   * for. It is also why the camera keeps the zoom it was at: the reader chose
+   * that, and a fit here would answer a question nobody asked.
+   *
+   * It wraps, the way an editor's find does, so ⇧Enter on the first match is
+   * the last one rather than a dead key.
+   */
+  const stepFind = useCallback(
+    (delta: number) => {
+      const hits = found?.boxes ?? [];
+      if (hits.length === 0) return;
+      // Nothing stepped yet is −1, and it has to answer differently in each
+      // direction: Enter means the first match and ⇧Enter means the last, so
+      // the walk starts from just before the list going forwards and from the
+      // top of it going back.
+      const from = findAt < 0 ? (delta > 0 ? -1 : 0) : findAt;
+      const next = (((from + delta) % hits.length) + hits.length) % hits.length;
+      setFindAt(next);
+      const box = nodes.find((node) => node.id === hits[next]);
+      if (box === undefined) return;
+      // No `duration`, and that is not a taste. With one, React Flow runs the
+      // move as a d3 transition on the pane, and the state update this handler
+      // has already queued re-renders the flow underneath it: the transition
+      // is interrupted before its first frame, its promise never settles, and
+      // the camera stays exactly where it was. Measured — ⌘F, Enter, and the
+      // viewport transform unchanged to the decimal, three presses running.
+      // Without one it is the same arithmetic applied at once, which is how
+      // `fitToScreen` above had to be written, for a cousin of this reason.
+      void flow.setCenter(
+        box.position.x + (box.width ?? NODE_WIDTH) / 2,
+        box.position.y + (box.height ?? 0) / 2,
+        { zoom: flow.getZoom() },
+      );
+    },
+    [found, findAt, nodes, flow],
+  );
 
   const navigate = useCallback((params: URLSearchParams) => {
     const query = params.toString();
@@ -2113,15 +2273,28 @@ export function App() {
     [data, goTo],
   );
 
-  // Cmd-K is the primary; Cmd-P is the muscle memory, and the browser's print
-  // dialog has to be told no.
+  // Every shortcut the page has, in one listener, registered once. ⌘K is the
+  // primary and ⌘P is the muscle memory, so the browser's print dialog has to
+  // be told no; so does ⌘F, whose own find would search a DOM this page culls.
+  // Escape is the long one, and the comment on its branch says why.
   useEffect(() => {
     const onKey = (event: globalThis.KeyboardEvent) => {
       const command = event.metaKey || event.ctrlKey;
 
-      if (command && (event.key === 'k' || event.key === 'p')) {
+      // ⌘⇧P first, or ⌘⇧P would be read as ⌘P and open the wrong palette.
+      // The letter is upper case while Shift is down, hence the fold.
+      if (command && event.shiftKey && event.key.toLowerCase() === 'p') {
         event.preventDefault();
-        setSearchOpen(true);
+        openCommands();
+      } else if (command && (event.key === 'k' || event.key === 'p')) {
+        event.preventDefault();
+        openSearch();
+      } else if (command && event.key === 'f') {
+        // The browser's own find would search the DOM, which on this page is
+        // whatever React Flow happens to have mounted — it culls everything
+        // off screen, so the browser's answer would be a lie about the graph.
+        event.preventDefault();
+        openFind();
       } else if (command && event.key === 'b') {
         event.preventDefault();
         setShowSidebar((was) => !was);
@@ -2135,6 +2308,29 @@ export function App() {
         event.preventDefault();
         relayoutRef.current?.();
       } else if (event.key === 'Escape') {
+        // Escape closes one layer, the topmost, and stops there. See
+        // `closeTopLayerRef` for what the layers are and why they are in that
+        // order.
+        //
+        // Two of them say so before this listener runs. A menu and the find
+        // bar take the key by preventing the default — a menu listens on
+        // `document`, which bubbles before `window`, and the bar's handler is
+        // React's, which runs earlier still.
+        //
+        // A palette says so by where the press came from, and it has to,
+        // because by now the page cannot be asked. React flushes a discrete
+        // event's state updates as soon as its own dispatch is over, which is
+        // before this listener is reached at all: the palette has already
+        // closed itself and re-rendered, so a layer stack read here would
+        // report the state from *after* the press and go on to shut the find
+        // bar underneath it. Measured: one ⎋ closed ⌘K and the find bar
+        // together. The event still knows where it started.
+        if (event.defaultPrevented) return;
+        const target = event.target;
+        const inside = target instanceof HTMLElement ? target : null;
+        if (inside?.closest('.palette') != null) return;
+        if (closeTopLayerRef.current?.() === true) return;
+
         clearSelection();
         // The lens, and not the list. `reading` survives on purpose: a keystroke
         // that means "stop dimming things" must not also empty a list the user
@@ -2144,11 +2340,8 @@ export function App() {
         // A frozen view is the one state on the page that hides the present,
         // so the key that means "get me out of this" ends it too — unless the
         // key was meant for a field, where it cancels an edit, not a view.
-        const target = event.target;
-        const inField = target instanceof HTMLElement && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
-        // Nor when a menu already took the key to close itself: a press that
-        // dismissed the File menu did not mean "back to now".
-        if (!inField && !event.defaultPrevented) backToNowRef.current?.();
+        const inField = inside !== null && (inside.tagName === 'INPUT' || inside.tagName === 'TEXTAREA');
+        if (!inField) backToNowRef.current?.();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -2159,6 +2352,56 @@ export function App() {
   const fitRef = useRef<(() => void) | null>(null);
   const relayoutRef = useRef<(() => void) | null>(null);
   const backToNowRef = useRef<(() => void) | null>(null);
+  const closeTopLayerRef = useRef<(() => boolean) | null>(null);
+  const findableRef = useRef(false);
+
+  /**
+   * The two palettes are one layer, and only one of them is ever up. Both are
+   * an input that swallows every keystroke, so two of them stacked is two
+   * lists arguing over Enter — and there is no reading of ⌘K pressed inside
+   * ⌘⇧P that means "keep both". Opening either closes the other, wherever it
+   * is opened from, which is why nothing calls the setters directly.
+   */
+  const openSearch = useCallback(() => {
+    setCommandsOpen(false);
+    setSearchOpen(true);
+  }, []);
+
+  const openCommands = useCallback(() => {
+    setSearchOpen(false);
+    setCommandsOpen(true);
+  }, []);
+
+  /**
+   * ⌘F. A search over what is drawn, and nothing else: it moves no camera on
+   * its own, changes no view, and touches no URL, so opening it costs the
+   * reader nothing to undo. Re-pressing it while it is open re-selects the
+   * text rather than clearing it, which the bar does for itself.
+   */
+  const openFind = useCallback(() => {
+    // Greyed in the menu bar and in the palette when there is nothing drawn,
+    // so the shortcut must not be the one door left open onto a search that
+    // can only ever answer "No results".
+    if (findableRef.current !== true) return;
+    // A palette is modal and paints over the bar. Focus was about to move into
+    // something the reader cannot see, and every keystroke after it would have
+    // gone to the wrong box.
+    setSearchOpen(false);
+    setCommandsOpen(false);
+    setFindQuery((was) => was ?? '');
+    setFindFocus((token) => token + 1);
+  }, []);
+
+  const closeFind = useCallback(() => {
+    setFindQuery(null);
+    setFindAt(-1);
+  }, []);
+
+  /** A different query is a different search, so the camera is nowhere in it yet. */
+  const typeFind = useCallback((query: string) => {
+    setFindQuery(query);
+    setFindAt(-1);
+  }, []);
 
   const openProject = useCallback(() => {
     void pickProject().then((picked) => {
@@ -2206,6 +2449,63 @@ export function App() {
    */
   const relayout = useCallback(() => setRelayoutToken((n) => n + 1), []);
   relayoutRef.current = relayout;
+
+  /**
+   * What Escape closes, and in what order. Three overlays and a page under
+   * them, and until now no rule about which one a press belonged to: ⎋ with
+   * ⌘K open both closed the palette *and* cleared the selection, stopped the
+   * following and left a frozen view, all from one keystroke.
+   *
+   * The layers, topmost first:
+   *
+   *   1. A menu — the bar's drop, or the canvas's right-click menu. Each one
+   *      already takes the key by preventing the default, and it listens on
+   *      `document`, which bubbles before the `window` handler above.
+   *   2. A palette — ⌘K or ⌘⇧P. They are one layer because only one of them
+   *      is ever open: both are an input that swallows every keystroke, and
+   *      two of those stacked is two lists arguing over Enter. Opening either
+   *      closes the other.
+   *   3. The find bar. *Under* the palettes rather than above them, because
+   *      it is the one overlay that is not modal — it has no backdrop, the
+   *      canvas stays live behind it, and a palette opened and shut over it
+   *      leaves it exactly where it was. That is VS Code's behaviour too.
+   *   4. The page itself: the selection, the following lens, the welcome
+   *      screen, and a view frozen at a commit.
+   *
+   * Returning true means the press was spent here, and layer 4 never sees it.
+   * Layers 1 to 3 each close themselves when the key was pressed inside them,
+   * which is the usual case; this is what answers when the focus had wandered
+   * off — a click on the canvas with the find bar still up, say — and the key
+   * would otherwise fall straight through to the page.
+   */
+  closeTopLayerRef.current = () => {
+    if (searchOpen) {
+      setSearchOpen(false);
+      return true;
+    }
+    if (commandsOpen) {
+      setCommandsOpen(false);
+      return true;
+    }
+    // Above the find bar, because it paints over it: `.welcome` is z-index 20
+    // and `.findbar` is 6, so closing the bar first spends the press on
+    // something the reader cannot see and reads as ⎋ doing nothing.
+    if (showWelcome) {
+      setShowWelcome(false);
+      return true;
+    }
+    if (findQuery !== null) {
+      closeFind();
+      return true;
+    }
+    return false;
+  };
+
+  /**
+   * Whether there is anything to find in. Held in a ref because the ⌘F
+   * listener is bound once and must not be rebound on every view.
+   */
+  findableRef.current = view !== undefined && view.nodes.length > 0;
 
   // --- the sashes ------------------------------------------------------------
 
@@ -2659,6 +2959,17 @@ export function App() {
     onDelete: (storedId) => editGroup({ action: 'delete', id: storedId }),
   };
 
+  /**
+   * The boxes with more symbols than a box draws, and whether any is open.
+   * Read by the View menu and by the canvas menu, which offer the same command
+   * — so it is computed once here rather than twice in two places that could
+   * drift.
+   */
+  const expandable = (view?.nodes ?? [])
+    .filter((node) => node.members.length > MAX_MEMBERS)
+    .map((node) => node.id);
+  const anyExpanded = expandable.some((id) => expanded.has(id));
+
   const menus: Menu[] = [
     {
       title: 'File',
@@ -2750,7 +3061,22 @@ export function App() {
     {
       title: 'View',
       items: [
-        { label: 'Panel', shortcut: '⌘B', checked: showSidebar, run: () => setShowSidebar((was) => !was) },
+        {
+          // First, and in this menu rather than in Go, because it is where VS
+          // Code keeps it and because it goes nowhere: it runs a thing. The
+          // list it shows is built from this bar, so it can never offer an
+          // action a menu does not.
+          label: 'Command palette…',
+          shortcut: '⇧⌘P',
+          run: openCommands,
+        },
+        {
+          label: 'Panel',
+          shortcut: '⌘B',
+          separatorBefore: true,
+          checked: showSidebar,
+          run: () => setShowSidebar((was) => !was),
+        },
         {
           // Every pane at once. Double-clicking a sash does the one it is on;
           // this is the way back when several have been moved and the window
@@ -2821,12 +3147,36 @@ export function App() {
             ? { disabledBecause: 'Nothing on the canvas to lay out' }
             : { run: relayout }),
         },
+        {
+          // Here as well as on the canvas, and that is the point: a command
+          // that lives only behind a right-click cannot be typed, and this
+          // round exists so that everything can be.
+          label: anyExpanded ? 'Collapse every box' : 'Expand every box',
+          ...(expandable.length === 0
+            ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
+            : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) }),
+        },
+        {
+          label: 'Copy link to this view',
+          separatorBefore: true,
+          run: () => void navigator.clipboard.writeText(window.location.href),
+        },
       ],
     },
     {
       title: 'Go',
       items: [
-        { label: 'Find a file or symbol…', shortcut: '⌘K', run: () => setSearchOpen(true) },
+        { label: 'Find a file or symbol…', shortcut: '⌘K', run: openSearch },
+        {
+          // The other half of the pair, and the difference is the whole reason
+          // both exist: ⌘K searches the project and takes you somewhere, this
+          // searches what is drawn and takes you nowhere.
+          label: 'Find in the diagram…',
+          shortcut: '⌘F',
+          ...(view === undefined || view.nodes.length === 0
+            ? { disabledBecause: 'Nothing is drawn to find anything in' }
+            : { run: openFind }),
+        },
         { label: 'Back', shortcut: '⌘[', separatorBefore: true, run: () => window.history.back() },
         { label: 'Forward', shortcut: '⌘]', run: () => window.history.forward() },
         {
@@ -2914,6 +3264,26 @@ export function App() {
       ];
     }
 
+    /**
+     * Empty canvas. The menu the diagram itself offers, grouped the way the
+     * View menu is: the selection, then how the drawing is laid out, then what
+     * is drawn in it, then where you are, then the link to it.
+     *
+     * Every view control a person reaches for used to be somewhere else — the
+     * View menu is three hundred pixels away from the thing being looked at,
+     * and reaching it means leaving the diagram. Nothing here is new; it is
+     * the same `MenuItem` the bar builds, so an item greyed there is greyed
+     * here with the same words.
+     *
+     * Two blocks are present only in the state that gives them meaning: depth
+     * needs a focus, "back to now" needs a freeze. That is not the greying
+     * rule being dodged — a greyed item teaches you why an action cannot run
+     * *here*, while "Depth 2" outside a focus names a control that does not
+     * exist to be run. The other rule this obeys is length: a context menu
+     * that scrolls is one nobody reads, so ⌘K and "Clear filters" moved out.
+     * Both are already one press away on the row above the canvas — ⌘K is a
+     * labelled button there, and every filter is a chip that removes itself.
+     */
     return [
       {
         label:
@@ -2938,21 +3308,76 @@ export function App() {
         run: fitToScreen,
       },
       {
-        label: 'Up one level',
-        ...(view && view.trail.length > 1
-          ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
-          : { disabledBecause: 'Already at the top' }),
+        label: 'Re-layout',
+        shortcut: '⇧⌘L',
+        ...(view === undefined || view.nodes.length === 0
+          ? { disabledBecause: 'Nothing on the canvas to lay out' }
+          : { run: relayout }),
       },
-      { label: 'Whole project', run: () => goToScope('') },
       {
-        label: 'Find a file or symbol…',
-        shortcut: '⌘K',
+        // One item and not two, because "every box" is a state and not two
+        // actions: with some boxes open and some shut, pressing it twice —
+        // collapse, then expand — is what reaches "all of them open", and a
+        // second greyed row would say less than that.
+        label: anyExpanded ? 'Collapse every box' : 'Expand every box',
+        ...(expandable.length === 0
+          ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
+          : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) }),
+      },
+      { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
+      { label: 'Association edges (has-a)', checked: showAssoc, run: toggleAssoc },
+      {
+        label: 'Changes only',
+        checked: onlyChanged,
+        ...(git === null
+          ? { disabledBecause: 'This project is not a git work tree' }
+          : frozen
+            ? { disabledBecause: 'A past commit has no working-tree changes' }
+            : { run: toggleChanged }),
+      },
+      { label: 'Hide tests', checked: hideTests, run: () => setFilter('tests', hideTests ? null : '0') },
+      // The breadcrumb's ± walks one hop at a time; this is the jump, and it
+      // is on the canvas because deciding how far to look is something you do
+      // while looking. Absent without a focus, where depth means nothing.
+      ...(focus === null
+        ? []
+        : [1, 2, 3].map(
+            (hops, index): MenuItem => ({
+              label: `Depth ${hops}`,
+              checked: depth === hops,
+              ...(index === 0 ? { separatorBefore: true } : {}),
+              ...(depth === hops
+                ? { disabledBecause: `Already ${hops === 1 ? '1 hop' : `${hops} hops`} out` }
+                : { run: () => changeDepth(hops) }),
+            }),
+          )),
+      // A focus has no trail to walk up — it is a file and its neighbours, not
+      // a place in the directory tree — so the row is left out there rather
+      // than greyed, the same reading as the depth block above it. In a scope
+      // it stays, greyed at the top, because there it is a real place to go
+      // and being told you are already at it is the answer.
+      ...(focus === null
+        ? [
+            {
+              label: 'Up one level',
+              separatorBefore: true,
+              ...(view && view.trail.length > 1
+                ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
+                : { disabledBecause: 'Already at the top' }),
+            },
+          ]
+        : []),
+      { label: 'Whole project', ...(focus === null ? {} : { separatorBefore: true }), run: () => goToScope('') },
+      // Only while frozen, for the same reason as the depth block: with no
+      // commit on screen there is no "now" to come back from.
+      ...(frozen ? [{ label: 'Back to now', shortcut: '⎋', run: backToNow }] : []),
+      {
+        // The view is the URL — that is why scope, focus, depth and the commit
+        // all live in it — so the link to what is on screen is the address bar,
+        // and this is the one gesture that says so out loud.
+        label: 'Copy link to this view',
         separatorBefore: true,
-        run: () => setSearchOpen(true),
-      },
-      {
-        label: 'Clear filters',
-        ...(isFiltered ? { run: clearFilters } : { disabledBecause: 'Nothing is filtered' }),
+        run: () => void navigator.clipboard.writeText(window.location.href),
       },
     ];
   })();
@@ -3122,7 +3547,7 @@ export function App() {
         <button
           type="button"
           className="search-open"
-          onClick={() => setSearchOpen(true)}
+          onClick={openSearch}
           title="Find a file or symbol (⌘K)"
         >
           Search <kbd>⌘K</kbd>
@@ -3147,6 +3572,10 @@ export function App() {
       </nav>
 
       {searchOpen && <SearchPalette at={at} onPick={handlePick} onClose={() => setSearchOpen(false)} />}
+
+      {/* The other palette. It is handed the bar itself rather than a list
+          built for it, so an action cannot exist in one and not the other. */}
+      {commandsOpen && <CommandPalette menus={menus} onClose={() => setCommandsOpen(false)} />}
 
       {contextAt !== null && (
         <ContextMenu
@@ -3243,6 +3672,20 @@ export function App() {
         {data !== null && barSash('leftbar', 'before')}
 
         <div className="canvas" ref={canvasRef}>
+        {/* On the canvas and not over the window, the way the welcome screen
+            is: it marks what is drawn, so it belongs to the region that draws
+            it, and the chrome around it stays reachable while it is up. */}
+        {findQuery !== null && (
+          <FindBar
+            query={findQuery}
+            onQuery={typeFind}
+            matches={found?.boxes.length ?? 0}
+            current={findAt}
+            onStep={stepFind}
+            onClose={closeFind}
+            focusToken={findFocus}
+          />
+        )}
         {(showWelcome || emptyProject) && (
           <Welcome
             onOpen={(path) => {
@@ -3251,7 +3694,7 @@ export function App() {
             }}
             onSearch={() => {
               setShowWelcome(false);
-              setSearchOpen(true);
+              openSearch();
             }}
             onClose={showWelcome ? () => setShowWelcome(false) : null}
             unreadable={unreadableReport}

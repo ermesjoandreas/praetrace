@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { assignLanes, type LaneRow, type LaneSegment } from '../../src/view/lanes.js';
 import type { Commit } from './api';
+import { LIST_ROW, useListKeys } from './listkeys';
 
 /**
  * The commit graph, drawn the way VS Code's Source Control Graph draws it:
@@ -15,6 +16,10 @@ import type { Commit } from './api';
  * Clicking a row does not select it, it navigates: the diagram becomes the
  * project as of that commit, and the row shows as selected because the view
  * now says so — the same way a box shows as focused because the URL does.
+ *
+ * The list this file draws is the reason `listkeys.ts` exists: 300 rows, each
+ * one a button, is 300 tab stops between the Source Control panel and anything
+ * below it. One stop now, and it starts on the commit the diagram is at.
  */
 
 /** Pixels per lane. Wide enough for a 6px dot and a curve between neighbours. */
@@ -232,8 +237,13 @@ export function GitGraph({
     selectedRef.current?.scrollIntoView({ block: 'nearest' });
   }, [selectedSha]);
 
+  // Tab arrives on the commit on screen rather than on the newest one, which
+  // in a 300-commit log can be a long way from what the diagram is showing.
+  // -1 when nothing is selected, which the hook reads as the first row.
+  const keys = useListKeys(commits.findIndex((commit) => commit.sha === selectedSha));
+
   return (
-    <div className="git-graph">
+    <div className="git-graph" {...keys}>
       {commits.map((commit, index) => {
         const row = rows[index];
         if (row === undefined) return null;
@@ -243,6 +253,7 @@ export function GitGraph({
           <button
             key={commit.sha}
             type="button"
+            {...LIST_ROW}
             ref={selected ? selectedRef : undefined}
             className={selected ? 'git-row git-row-selected' : 'git-row'}
             aria-current={selected ? 'true' : undefined}

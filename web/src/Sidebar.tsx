@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
 import { FLOOR, money, fetchDetail,
   fetchSymbol,
@@ -375,6 +376,7 @@ function FileView({
                   with no box on the diagram has nothing to ask about. */}
               <button
                 type="button"
+                {...LIST_ROW}
                 className={`sym sym-${symbol.kind}`}
                 onClick={() =>
                   id === undefined
@@ -583,6 +585,15 @@ function BundleView({
   );
 }
 
+/**
+ * Every list the Detail panel draws: Declares, Used by, Uses, Calls, Files.
+ *
+ * The arrow keys are wired here rather than five times over, which is the whole
+ * reason this component takes children instead of rows — the rows come from
+ * five callers with five shapes, and each of them marks its own with LIST_ROW.
+ * A caller that forgets the mark gets a list the keyboard walks past, not a
+ * broken one.
+ */
 function PanelList({
   title,
   note = '',
@@ -593,11 +604,12 @@ function PanelList({
   note?: string;
   children: ReactNode;
 }) {
+  const keys = useListKeys();
   return (
     <div className="panel-list">
       <h3>{title}</h3>
       {note !== '' && <p className="followed-coverage">{note}</p>}
-      <ul>{children}</ul>
+      <ul {...keys}>{children}</ul>
     </div>
   );
 }
@@ -622,7 +634,7 @@ function PathList({
     <PanelList title={`${title} (${floor ? FLOOR : ''}${paths.length})`} note={note}>
       {paths.map((path) => (
         <li key={path}>
-          <button type="button" className="path" onClick={() => onSelect(path)} title={path}>
+          <button type="button" {...LIST_ROW} className="path" onClick={() => onSelect(path)} title={path}>
             {path}
           </button>
         </li>
@@ -673,6 +685,12 @@ const FAILURE_WORDS: Record<ExplainFailure | 'refused', string> = {
  *
  * The explanations live here rather than in a panel of their own, because a
  * reading parted from the thing it reads is how a rotted one gets believed.
+ *
+ * The arrow keys reach the rows inside it — what a followed symbol is used by
+ * and what it uses — and not the heads above them. A head is not a row: it is
+ * a name, where the file is, how the reading stands, and two actions on hover.
+ * There is nothing for Enter to do to one, and a walk that stopped on a row
+ * whose Enter did nothing would teach the keyboard that this list is broken.
  */
 function Followed({
   following,
@@ -1089,6 +1107,7 @@ function Relations({
   onSelect: (target: string) => void;
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
+  const keys = useListKeys();
   if (rows.length === 0) return null;
   return (
     <>
@@ -1099,11 +1118,12 @@ function Relations({
           {rows.length}
         </span>
       </h3>
-      <ul className="followed-rows">
+      <ul className="followed-rows" {...keys}>
         {rows.map((row) => (
           <li key={row.id + row.edge}>
             <button
               type="button"
+              {...LIST_ROW}
               title={
                 // A file caller has no line to open at: the call was written
                 // outside every symbol, so the row names a whole box and says

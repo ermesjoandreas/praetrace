@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import type { GitFileStatus, GitStatus, LogResponse } from './api';
 import { GitGraph, shortSha } from './GitGraph';
+import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
 import { GIT_BASES } from './StatusBar';
 
@@ -85,7 +86,9 @@ function DiffAgainst({ base, onChangeBase }: { base: string | null; onChangeBase
  * A deleted file has no box on the diagram, so its row cannot inspect or
  * navigate anything. It is still listed — the diff is git's, and a list that
  * quietly dropped deletions would disagree with the count in its own header
- * — but it is greyed, with the reason where the cursor will find it.
+ * — but it is greyed, with the reason where the cursor will find it. It stays
+ * in the keyboard's walk for the same reason it stays in the list: skipping it
+ * would make the arrows disagree with what is drawn.
  */
 function Changes({
   git,
@@ -97,13 +100,14 @@ function Changes({
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
   const paths = useMemo(() => Object.keys(git.files).sort(), [git.files]);
+  const keys = useListKeys();
 
   if (paths.length === 0) {
     return <p className="scm-empty">No changes against {git.base}.</p>;
   }
 
   return (
-    <ul className="scm-changes">
+    <ul className="scm-changes" {...keys}>
       {paths.map((path) => {
         const status = git.files[path];
         if (status === undefined) return null;
@@ -113,6 +117,7 @@ function Changes({
           <li key={path}>
             <button
               type="button"
+              {...LIST_ROW}
               className={gone ? 'scm-change scm-change-gone' : 'scm-change'}
               aria-disabled={gone}
               onClick={gone ? undefined : () => onSelect(path)}

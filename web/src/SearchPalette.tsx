@@ -77,6 +77,14 @@ export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
   }, [active]);
 
   const onKeyDown = (event: React.KeyboardEvent) => {
+    // A modal that Tab can leave is not modal, and `aria-modal` on the shell
+    // above would be claiming otherwise. There is exactly one thing to focus
+    // here — the input — so the trap is that Tab stays put, which is also what
+    // Quick Pick does.
+    if (event.key === 'Tab') {
+      event.preventDefault();
+      return;
+    }
     if (event.key === 'Escape') {
       onClose();
     } else if (event.key === 'ArrowDown') {
@@ -95,17 +103,28 @@ export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
 
   return (
     <div className="palette-backdrop" onMouseDown={onClose}>
-      <div className="palette" onMouseDown={(event) => event.stopPropagation()}>
+      <div
+        className="palette"
+        role="dialog"
+        aria-modal
+        aria-label="Find a file or a symbol"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <input
           ref={input}
           value={query}
           placeholder="Find a file or a symbol…"
+          role="combobox"
+          aria-expanded
+          aria-controls="palette-hits"
+          aria-activedescendant={hits.length > 0 ? `palette-hit-${active}` : undefined}
+          aria-label="Find a file or a symbol"
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={onKeyDown}
         />
 
         {hits.length > 0 && (
-          <ul ref={list}>
+          <ul ref={list} id="palette-hits" role="listbox" aria-label="Results">
             {hits.map((hit, index) => {
               // A file was matched on its whole path and its name is the tail
               // of that path, so one match colours both; a symbol was matched
@@ -115,9 +134,15 @@ export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
               const nameOffset = isFile ? hit.path.length - hit.name.length : 0;
 
               return (
-                <li key={`${hit.path}-${hit.name}-${index}`}>
+                <li key={`${hit.path}-${hit.name}-${index}`} role="presentation">
                   <button
                     type="button"
+                    id={`palette-hit-${index}`}
+                    role="option"
+                    aria-selected={index === active}
+                    // The input is the only tab stop: a row that could take
+                    // focus is a row where Escape stops reaching the palette.
+                    tabIndex={-1}
                     className={index === active ? 'hit hit-active' : 'hit'}
                     onClick={(event) => onPick(hit, event.shiftKey)}
                   >
