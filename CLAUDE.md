@@ -48,6 +48,8 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
   wrote is coupled to
 - An oracle: the TypeScript checker as a re-runnable test, `scripts/oracle.mjs`
   over any repository and `src/oracle/checker.test.ts` over a pinned fixture
+- Python, the seventh language, and a baseline that pins what the graph draws
+  for express, zod, cobra and flask at four commits
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
@@ -117,6 +119,24 @@ inherited from a base class, which the store does not walk for any language; and
 a class nested in a class. `moduleName` waits on `extract` being handed the file
 path — the source cannot say it — so an unresolved `flask.x` is not yet counted
 as internal.
+
+**A convention is not the language.** Java refused a lower-case name to be a
+type, which is how Java is usually written and not how it is defined: 131 of the
+266 classes in a real first-year tree break it, and a directory named after the
+inheritance lecture drew no edges while its source held four `extends`. The
+convention survives in exactly one place — judging the receiver of a qualified
+call, where `Streams.write()` and `helper.go()` on an inherited field are the
+same three tokens and no table the resolver holds can separate them — and
+because that case is undecidable, a Java symbol never answers `tracked`.
+
+**A file's own import line decides what it reached.** TypeScript, JavaScript, Go,
+Java, C# and Rust all record what the file named, and `lookup` admits nothing
+else. Before C# and Rust did, three of ripgrep's six `Config` edges pointed at a
+type the file cannot name while `use crate::searcher::{Config}` sat six lines
+above. A file whose scope genuinely cannot be enumerated — a Rust wildcard `use`,
+`#[macro_use]` — records none and keeps the whole-table rule, and its edges wear
+`guessed`. A hostile sample found 50 of 52 of those correct, so the mark is
+pessimistic rather than a warning about a bad graph.
 
 **Detected, never declared.** Opening a project does not ask what language it is.
 File extensions are unambiguous, and real repositories are mixed — TanStack/query is
@@ -337,6 +357,9 @@ npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
 node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
 node scripts/oracle.mjs <dir>     # where the TypeScript checker says we are wrong
+node scripts/baseline.mjs --fetch # clone the four pinned corpus repositories
+node scripts/baseline.mjs --check # what the graph draws for them, against the pin
+node scripts/baseline.mjs --accept # record today's numbers as the new baseline
 node scripts/baseline.mjs --fetch # clone the four pinned repositories, once
 node scripts/baseline.mjs --check # measure them: did the graph get worse?
 node scripts/baseline.mjs --accept  # ... and write down what it measured
@@ -375,11 +398,13 @@ src/
     javascript.ts, java.ts, go.ts, csharp.ts, rust.ts
     python.ts     module path -> file from every source root; `a.b#c` for a
                   from-import, decided by the resolver; every import a re-export
-  oracle/         a second opinion from the TypeScript checker — dev only, never
-                  in the live path, never imported from server/, cli/ or project/:
-                  it pulls in `typescript`, a devDependency
+  oracle/         a second opinion, and a memory — dev only, never in the live
+                  path, never imported from server/, cli/ or project/: it pulls
+                  in `typescript`, a devDependency
     checker.ts    ts.Program -> our edge shape, with the diagnostics gate
     fixtures/     the shapes that have caught us before, pinned
+    baseline.json what the graph draws for four repositories at four commits
+    baseline.test.ts runs scripts/baseline.mjs; skips a clone it does not have
   parser/         everything that knows about ASTs
     types.ts      ParsedFile / ParsedSymbol + worker message shapes
     extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
@@ -899,6 +924,16 @@ Use `node --test`. It is built into Node, so this adds no dependency and no cere
 `npm test` compiles and runs every `*.test.ts` beside the module it tests — one for
 each pure module in `src/`, and `web/src/*.test.ts` run as they are.
 
+- **Pin what the graph draws, not only what a function returns.** Every unit test
+  passed while five invented edges lived in zod, twelve false imports in flask
+  and a symbol list omitted four public methods, because each function was right
+  and the composition lied. `scripts/baseline.mjs` records files, nodes and edges
+  by kind, guessed edges, unresolved counts, the root view and the clusters for
+  express, zod, cobra and flask — four languages, so a change to one resolver
+  moves one project and leaves the others alone. **The comparison is
+  directional**: a count moving towards more resolved prints and passes, one
+  moving the other way fails and names the project and the count. A test that
+  failed on every improvement would be deleted within the week.
 - **Test the pure modules**: `graph/`, `view/`, `project/groups.ts`, and the parsing
   half of `project/git.ts`. These are where logic hides and where a bug is silent.
 - **Do not** unit-test the server, the React page, or the parser workers. Those are
@@ -1007,6 +1042,16 @@ the graph can be trusted at a glance on a project that is not this one:
   Cargo's build output is 2 818 "unreadable" files on this repository alone and
   the scan drew generated `.rs` from it as source. Honouring `.gitignore` would be
   the real answer.
+- **The language boundary is invisible.** A Python backend and a TypeScript front
+  end in one tree draw as two islands, correctly — no import crosses, the
+  coupling is HTTP — and nothing on screen separates that from a parse that
+  failed. langflow's 2711-file frontend sits alone beside "27249 unresolved" in
+  the same status bar. There is no edge kind for it and no sentence saying the
+  map stopped.
+- **tree-sitter-typescript 0.23.2 predates TypeScript 4.7 variance annotations**,
+  so `interface $ZodCheck<in T = never>` is a parse error and whatever sat in the
+  error region is dropped. That is zod's four `parseErrors` in the baseline, and
+  the box carries the warning badge honestly.
 - **Gaps the oracle pins**, TS/JS, in `src/oracle/checker.test.ts`'s KNOWN_GAPS: a
   call to a member a class *inherits* reaches nothing, because `memberOf` reads
   only the owner's own declarations — hundreds of edges in zod; a function's own
@@ -1026,6 +1071,10 @@ the graph can be trusted at a glance on a project that is not this one:
   method is refused (gson: 14 such, all true), because only the anonymous type's
   supertype, which is not read, tells it from `new Runnable() { run() { run(); } }`.
   Go: a package-level variable types receivers only in the file that declares it.
+- An outer group that is exactly the union of its children is not offered beside
+  them: the panel asked a person to name one architecture twice, ripgrep as
+  twelve rows for ten pieces and serilog as three for two. A nesting that says
+  something — zustand's 23 as 10 + 10 + 3 — is untouched.
 - Grouping keys off the directory tree only. There is no filtering by name, kind or
   path glob, and a flat directory above the threshold cannot be grouped at all (it
   reports `grouped: false` honestly rather than claiming otherwise).
