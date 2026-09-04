@@ -1,0 +1,219 @@
+{
+  "note": "What the graph engine makes of four real repositories, one record each, at the commit named beside it, plus the oracle's own fixture, which is in this repository and so needs no commit of its own. Written by `node scripts/baseline.mjs --accept`, enforced by src/oracle/baseline.test.ts, and explained in scripts/baseline.mjs. The clones are not checked in — the commit is what makes the numbers reproducible; `node scripts/baseline.mjs --fetch` gets them. Four languages on purpose: a resolver that quietly stops answering for one of them is invisible in the other three.",
+  "measured": "2026-09-04",
+  "projects": [
+    {
+      "project": "oracle-fixture",
+      "language": "typescript",
+      "directory": "src/oracle/fixtures/graph",
+      "record": {
+        "files": 13,
+        "parseFailures": 0,
+        "parseErrors": 0,
+        "nodes": {
+          "file": 13,
+          "class": 6,
+          "function": 10,
+          "interface": 1,
+          "type": 0,
+          "method": 13,
+          "field": 6
+        },
+        "edges": {
+          "imports": 14,
+          "extends": 1,
+          "implements": 1,
+          "calls": 20,
+          "contains": 36,
+          "associates": 1
+        },
+        "guessed": 0,
+        "unresolved": {
+          "imports": 0,
+          "calls": 1
+        },
+        "rootView": {
+          "boxes": 13,
+          "edges": 16,
+          "isolated": 1
+        },
+        "clusters": {
+          "count": 1,
+          "largest": 8
+        }
+      }
+    },
+    {
+      "project": "express",
+      "language": "javascript",
+      "url": "https://github.com/expressjs/express.git",
+      "ref": "v5.2.1",
+      "commit": "dbac741a49a5a64336b70c06e85c2e2706e36336",
+      "record": {
+        "files": 142,
+        "parseFailures": 0,
+        "parseErrors": 0,
+        "nodes": {
+          "file": 142,
+          "class": 0,
+          "function": 151,
+          "interface": 0,
+          "type": 0,
+          "method": 0,
+          "field": 22
+        },
+        "edges": {
+          "imports": 153,
+          "extends": 0,
+          "implements": 0,
+          "calls": 12,
+          "contains": 173,
+          "associates": 0
+        },
+        "guessed": 0,
+        "unresolved": {
+          "imports": 0,
+          "calls": 188
+        },
+        "rootView": {
+          "boxes": 5,
+          "edges": 7,
+          "isolated": 0
+        },
+        "clusters": {
+          "count": 2,
+          "largest": 38
+        }
+      }
+    },
+    {
+      "project": "zod",
+      "language": "typescript",
+      "url": "https://github.com/colinhacks/zod.git",
+      "ref": "v4.5.4",
+      "commit": "e8e206fa33ac5fe7ce20a2beb12d57b1cb3df653",
+      "record": {
+        "files": 497,
+        "parseFailures": 0,
+        "parseErrors": 4,
+        "nodes": {
+          "file": 497,
+          "class": 84,
+          "function": 1107,
+          "interface": 673,
+          "type": 551,
+          "method": 555,
+          "field": 1698
+        },
+        "edges": {
+          "imports": 916,
+          "extends": 664,
+          "implements": 1,
+          "calls": 3797,
+          "contains": 4668,
+          "associates": 5
+        },
+        "guessed": 0,
+        "unresolved": {
+          "imports": 1,
+          "calls": 1038
+        },
+        "rootView": {
+          "boxes": 7,
+          "edges": 4,
+          "isolated": 2
+        },
+        "clusters": {
+          "count": 6,
+          "largest": 182
+        }
+      }
+    },
+    {
+      "project": "cobra",
+      "language": "go",
+      "url": "https://github.com/spf13/cobra.git",
+      "ref": "v1.9.1",
+      "commit": "40b5bc1437a564fc795d388b23835e84f54cd1d1",
+      "record": {
+        "files": 36,
+        "parseFailures": 0,
+        "parseErrors": 0,
+        "nodes": {
+          "file": 36,
+          "class": 10,
+          "function": 418,
+          "interface": 1,
+          "type": 8,
+          "method": 168,
+          "field": 101
+        },
+        "edges": {
+          "imports": 97,
+          "extends": 0,
+          "implements": 0,
+          "calls": 1629,
+          "contains": 706,
+          "associates": 9
+        },
+        "guessed": 0,
+        "unresolved": {
+          "imports": 0,
+          "calls": 98
+        },
+        "rootView": {
+          "boxes": 36,
+          "edges": 97,
+          "isolated": 0
+        },
+        "clusters": {
+          "count": 1,
+          "largest": 19
+        }
+      }
+    },
+    {
+      "project": "flask",
+      "language": "python",
+      "url": "https://github.com/pallets/flask.git",
+      "ref": "3.1.3",
+      "commit": "22d924701a6ae2e4cd01e9a15bbaf3946094af65",
+      "record": {
+        "files": 83,
+        "parseFailures": 0,
+        "parseErrors": 0,
+        "nodes": {
+          "file": 83,
+          "class": 64,
+          "function": 513,
+          "interface": 0,
+          "type": 0,
+          "method": 317,
+          "field": 166
+        },
+        "edges": {
+          "imports": 190,
+          "extends": 21,
+          "implements": 0,
+          "calls": 602,
+          "contains": 1060,
+          "associates": 24
+        },
+        "guessed": 0,
+        "unresolved": {
+          "imports": 0,
+          "calls": 218
+        },
+        "rootView": {
+          "boxes": 4,
+          "edges": 3,
+          "isolated": 1
+        },
+        "clusters": {
+          "count": 1,
+          "largest": 28
+        }
+      }
+    }
+  ]
+}
