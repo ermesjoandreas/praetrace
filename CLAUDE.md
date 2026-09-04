@@ -84,7 +84,7 @@ rather than building it.
 **The direction changed on 2026-09-01.** The tool reads TypeScript, JavaScript,
 Java, Go, C#, Rust and Python. Anyone can point it at their repository. VISION.md's
 "language sprawl" line is overridden by this section, and its reasoning — a
-mediocre parser for six languages is worse than an excellent one for a single
+mediocre parser for seven languages is worse than an excellent one for a single
 language — is answered by the rule below rather than dismissed.
 
 **The graph model did not change, and that is why this was affordable.** File,
@@ -337,6 +337,9 @@ npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
 node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
 node scripts/oracle.mjs <dir>     # where the TypeScript checker says we are wrong
+node scripts/baseline.mjs --fetch # clone the four pinned repositories, once
+node scripts/baseline.mjs --check # measure them: did the graph get worse?
+node scripts/baseline.mjs --accept  # ... and write down what it measured
 
 node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
 npm run tauri dev                 # the desktop app
@@ -906,6 +909,17 @@ each pure module in `src/`, and `web/src/*.test.ts` run as they are.
   real `ts.Program` over `src/oracle/fixtures/` and `project/coverage.test.ts`
   writes a temp directory; both are the third category, and both exist because
   what they check cannot be reached with a pure input.
+- **The corpus baseline is checked in; the clones are not.** `src/oracle/baseline.json`
+  holds what the engine makes of express, zod, cobra and flask at pinned commits —
+  four languages, so a resolver that quietly stops answering for one of them is not
+  hidden by the other three — and `src/oracle/baseline.test.ts` runs
+  `scripts/baseline.mjs` against them. **The comparison is the design**: a count that
+  moves towards more resolved passes and prints what changed, a count that moves the
+  other way fails and names the project and the count, and `--accept` is how a better
+  baseline is written down. A test must never clone from the network, so the clones
+  are optional and skip with their fetch command printed; the oracle's own fixture is
+  in the same file and measured on every run, which is what keeps this from being a
+  suite nobody notices skipping.
 - A bug worth fixing is worth a test that fails first. The last three bugs found by
   review all lived in pure functions.
 
