@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import type { Graph, GraphNode } from '../graph/types.js';
 import type { Coverage } from '../report/types.js';
 import { NO_FILTER, type ViewFilter } from './filter.js';
-import { selectView } from './select.js';
+import { ownershipOf, selectView } from './select.js';
 import type { ViewSpec } from './types.js';
 
 /** Files that import each other, some of them broken, in the order given. */
@@ -22,7 +22,7 @@ function graphOf(files: readonly string[], imports: readonly [string, string][],
   return { nodes, edges: imports.map(([from, to]) => ({ from, to, kind: 'imports' as const })) };
 }
 
-const root: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER, at: null };
+const root: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER, at: null, diagram: 'classes' };
 
 const files = [
   'src/app.ts',
@@ -573,4 +573,169 @@ test('a row that is another name for a body beside it says so, and the body does
       ['res.type', 'res.contentType'],
     ],
   );
+});
+
+// --- what an association line carries -----------------------------------------
+
+const ASSOCIATES: ViewFilter = { ...NO_FILTER, edgeKinds: ['imports', 'associates'] };
+const DEPENDS: ViewFilter = { ...NO_FILTER, edgeKinds: ['imports', 'depends'] };
+
+/**
+ * Two classes in `src/tree.ts` both hold a `Node` from `src/node.ts`, and one
+ * of them also names it in a signature. The store writes one association per
+ * class pair with the fields behind it, and an import beside them.
+ */
+function holding(): Graph {
+  const range = { startLine: 1, endLine: 1 };
+  const nodes = new Map<string, GraphNode>();
+  for (const [filePath, names] of [
+    ['src/tree.ts', ['Tree', 'Forest', 'Walker']],
+    ['src/node.ts', ['Node']],
+  ] as const) {
+    nodes.set(filePath, { id: filePath, kind: 'file', name: filePath, filePath, range });
+    for (const name of names) {
+      const id = `${filePath}#${name}`;
+      nodes.set(id, { id, kind: 'class', name, filePath, range });
+    }
+  }
+  return {
+    nodes,
+    edges: [
+      { from: 'src/tree.ts', to: 'src/node.ts', kind: 'imports' },
+      {
+        from: 'src/tree.ts#Tree',
+        to: 'src/node.ts#Node',
+        kind: 'associates',
+        roles: [{ name: 'root', ownership: 'composition' }, { name: 'cursor', optional: true }],
+      },
+      { from: 'src/tree.ts#Forest', to: 'src/node.ts#Node', kind: 'associates', roles: [{ name: 'trees', many: true }] },
+      { from: 'src/tree.ts#Walker', to: 'src/node.ts#Node', kind: 'depends' },
+    ],
+  };
+}
+
+test('an association line carries every role behind it, in graph order, and replaces the import', () => {
+  const view = selectView(holding(), { ...root, filter: ASSOCIATES }, 0);
+  assert.deepEqual(view.edges, [
+    {
+      from: 'src/tree.ts',
+      to: 'src/node.ts',
+      kind: 'associates',
+      weight: 2,
+      // Both class pairs' roles, Tree's before Forest's: a line that stands
+      // for several fields keeps all of them rather than the first.
+      roles: [{ name: 'root', ownership: 'composition' }, { name: 'cursor', optional: true }, { name: 'trees', many: true }],
+      // The one field that states an ownership decides the diamond; the two
+      // that say nothing do not vote.
+      ownership: 'composition',
+    },
+  ]);
+  // The roles are the graph's own objects copied, not shared: a view is
+  // serialised and handed around, and must not be able to edit the graph.
+  const role = view.edges[0]?.roles?.[0];
+  assert.notEqual(role, holding().edges[1]?.roles?.[0]);
+});
+
+test('a line of any other kind carries no roles, and the default filter draws neither', () => {
+  const plain = selectView(holding(), root, 0);
+  assert.deepEqual(plain.edges, [{ from: 'src/tree.ts', to: 'src/node.ts', kind: 'imports', weight: 1 }]);
+  assert.equal('roles' in (plain.edges[0] ?? {}), false);
+});
+
+test('a dependency is opt-in like a call, and is drawn beside the import, never instead of it', () => {
+  // The review's case: Tree holds a Node and Walker only names one. With only
+  // the dependency asked for, the line that stood in for the import read
+  // "merely depends on" between two files one of which holds the other.
+  const view = selectView(holding(), { ...root, filter: DEPENDS }, 0);
+  assert.deepEqual(sortedEdges(view.edges), [
+    { from: 'src/tree.ts', to: 'src/node.ts', kind: 'depends', weight: 1 },
+    { from: 'src/tree.ts', to: 'src/node.ts', kind: 'imports', weight: 1 },
+  ]);
+});
+
+const sortedEdges = <T extends { kind: string }>(edges: readonly T[]): T[] =>
+  [...edges].sort((a, b) => a.kind.localeCompare(b.kind));
+
+test('a folder line concatenates the roles of every file line it stands for', () => {
+  const range = { startLine: 1, endLine: 1 };
+  const files = [
+    ...Array.from({ length: 41 }, (_, index) => `src/a/f${index}.ts`),
+    'src/b/g0.ts',
+    'src/b/g1.ts',
+  ];
+  const graph = graphOf(files, []);
+  const nodes = new Map(graph.nodes);
+  for (const [filePath, name] of [
+    ['src/a/f0.ts', 'A0'],
+    ['src/a/f1.ts', 'A1'],
+    ['src/b/g0.ts', 'B0'],
+    ['src/b/g1.ts', 'B1'],
+  ] as const) {
+    const id = `${filePath}#${name}`;
+    nodes.set(id, { id, kind: 'class', name, filePath, range });
+  }
+  const view = selectView(
+    {
+      nodes,
+      edges: [
+        { from: 'src/a/f0.ts#A0', to: 'src/b/g0.ts#B0', kind: 'associates', roles: [{ name: 'first' }] },
+        { from: 'src/a/f1.ts#A1', to: 'src/b/g1.ts#B1', kind: 'associates', roles: [{ name: 'second', ownership: 'aggregation' }] },
+      ],
+    },
+    { ...root, filter: ASSOCIATES },
+    0,
+  );
+  assert.deepEqual(view.edges, [
+    {
+      from: 'src/a',
+      to: 'src/b',
+      kind: 'associates',
+      weight: 2,
+      roles: [{ name: 'first' }, { name: 'second', ownership: 'aggregation' }],
+      ownership: 'aggregation',
+    },
+  ]);
+});
+
+test('a line wears a diamond only when every field that states an ownership states the same one', () => {
+  const range = { startLine: 1, endLine: 1 };
+  const nodes = new Map<string, GraphNode>();
+  for (const [filePath, names] of [
+    ['src/tree.ts', ['Tree', 'Forest']],
+    ['src/node.ts', ['Node']],
+    ['src/leaf.ts', ['Leaf']],
+  ] as const) {
+    nodes.set(filePath, { id: filePath, kind: 'file', name: filePath, filePath, range });
+    for (const name of names) {
+      const id = `${filePath}#${name}`;
+      nodes.set(id, { id, kind: 'class', name, filePath, range });
+    }
+  }
+  const view = selectView(
+    {
+      nodes,
+      edges: [
+        // Two classes, one builds its Node and the other says nothing: the
+        // unknown does not vote, and the line is a composition.
+        { from: 'src/tree.ts#Tree', to: 'src/node.ts#Node', kind: 'associates', roles: [{ name: 'root', ownership: 'composition' }] },
+        { from: 'src/tree.ts#Forest', to: 'src/node.ts#Node', kind: 'associates', roles: [{ name: 'any' }] },
+        // One built and one handed in: the source said two things, so no diamond.
+        { from: 'src/tree.ts#Tree', to: 'src/leaf.ts#Leaf', kind: 'associates', roles: [{ name: 'built', ownership: 'composition' }] },
+        { from: 'src/tree.ts#Forest', to: 'src/leaf.ts#Leaf', kind: 'associates', roles: [{ name: 'given', ownership: 'aggregation' }] },
+      ],
+    },
+    { ...root, filter: ASSOCIATES },
+    0,
+  );
+  assert.deepEqual(
+    view.edges.map((edge) => [edge.to, edge.ownership]),
+    [
+      ['src/node.ts', 'composition'],
+      ['src/leaf.ts', undefined],
+    ],
+  );
+  assert.equal('ownership' in (view.edges[1] ?? {}), false);
+  assert.deepEqual(ownershipOf([{ name: 'a', ownership: 'aggregation' }, { name: 'b' }]), 'aggregation');
+  assert.deepEqual(ownershipOf([{ name: 'b' }]), undefined);
+  assert.deepEqual(ownershipOf(undefined), undefined);
 });

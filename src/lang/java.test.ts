@@ -341,3 +341,81 @@ test('an upper-case name the file binds to a value is a variable, not a class', 
   `);
   assert.deepEqual(sorted(byName(symbols, 'main').calls), ['Streams', 'Taxi', 'Taxi.calculateCost']);
 });
+
+/** The five things a field says about the part it holds, and nothing else. */
+const attribute = (symbol: ParsedSymbol) => ({
+  ...(symbol.typeName === undefined ? {} : { typeName: symbol.typeName }),
+  ...(symbol.many === undefined ? {} : { many: symbol.many }),
+  ...(symbol.optional === undefined ? {} : { optional: symbol.optional }),
+  ...(symbol.composed === undefined ? {} : { composed: symbol.composed }),
+  ...(symbol.handedIn === undefined ? {} : { handedIn: symbol.handedIn }),
+});
+
+test('a field says whether the part may be absent and who builds it, from the declaration and the constructors', () => {
+  const { symbols } = parse(`
+    package p;
+    import java.util.List;
+    import java.util.Optional;
+    public class Engine {
+      private Store store = new Store();
+      private final Config config;
+      private Logger log;
+      private Cache cache;
+      private List<Item> items = new ArrayList<>();
+      private Optional<Owner> owner;
+      private @Nullable Peer peer;
+      @Nullable private Peer other;
+      private Reader reader = new BufferedReader();
+      private Widget widget;
+      public Engine(Config config, Logger logger) {
+        this.config = config;
+        cache = new Cache();
+        log = logger;
+        Widget widget = new Widget();
+        widget = new Widget();
+      }
+      public Engine() { this.config = new Config(); }
+      public Result run(Event e, List<Task> tasks, Map<String, Peer> peers) { return null; }
+      public <T> T gen(T t, Store s) { return t; }
+      void go() { new Runnable() { public void run() { config = null; } }; }
+    }
+  `);
+  assert.deepEqual(attribute(byName(symbols, 'store')), { typeName: 'Store', composed: true });
+  // Handed in by one constructor and built by the other: both, and the graph decides.
+  assert.deepEqual(attribute(byName(symbols, 'config')), { typeName: 'Config', composed: true, handedIn: true });
+  // A bare `log = logger` is the field, because nothing in the constructor rebound `log`.
+  assert.deepEqual(attribute(byName(symbols, 'log')), { typeName: 'Logger', handedIn: true });
+  assert.deepEqual(attribute(byName(symbols, 'cache')), { typeName: 'Cache', composed: true });
+  // `new ArrayList<>()` builds the list, not an Item.
+  assert.deepEqual(attribute(byName(symbols, 'items')), { typeName: 'Item', many: true });
+  assert.deepEqual(attribute(byName(symbols, 'owner')), { typeName: 'Owner', optional: true });
+  assert.deepEqual(attribute(byName(symbols, 'peer')), { typeName: 'Peer', optional: true });
+  assert.deepEqual(attribute(byName(symbols, 'other')), { typeName: 'Peer', optional: true });
+  // A BufferedReader may be a Reader, and this file cannot say so.
+  assert.deepEqual(attribute(byName(symbols, 'reader')), { typeName: 'Reader' });
+  // The `widget` assigned in the constructor is its local, not the field.
+  assert.deepEqual(attribute(byName(symbols, 'widget')), { typeName: 'Widget' });
+  // Every type name the signatures write; `T` names whatever the caller supplies.
+  assert.deepEqual(sorted(byName(symbols, 'Engine').dependsOn ?? []), [
+    'Config', 'Event', 'List', 'Logger', 'Map', 'Peer', 'Result', 'Store', 'String', 'Task',
+  ]);
+});
+
+test('a record\'s components arrive through its constructor by definition', () => {
+  const { symbols } = parse(`
+    package p;
+    public record Pair(Left left, Optional<Right> right) {}
+  `);
+  assert.deepEqual(attribute(byName(symbols, 'left')), { typeName: 'Left', handedIn: true });
+  assert.deepEqual(attribute(byName(symbols, 'right')), { typeName: 'Right', optional: true, handedIn: true });
+});
+
+test('a parameter the constructor reassigns is no longer what was handed in', () => {
+  const { symbols } = parse(`class E {
+  private Config config;
+  public E(Config config) { config = new Config(); this.config = config; }
+}`);
+  const config = byName(symbols, 'config');
+  // "Handed in" on a part the constructor built drew an aggregation diamond.
+  assert.equal(config.handedIn, undefined);
+});

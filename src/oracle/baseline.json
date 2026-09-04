@@ -25,7 +25,8 @@
           "implements": 1,
           "calls": 20,
           "contains": 36,
-          "associates": 1
+          "associates": 1,
+          "depends": 0
         },
         "guessed": 0,
         "unresolved": {
@@ -68,7 +69,8 @@
           "implements": 0,
           "calls": 12,
           "contains": 173,
-          "associates": 0
+          "associates": 0,
+          "depends": 0
         },
         "guessed": 0,
         "unresolved": {
@@ -103,15 +105,16 @@
           "interface": 673,
           "type": 551,
           "method": 555,
-          "field": 1698
+          "field": 1703
         },
         "edges": {
           "imports": 916,
           "extends": 664,
           "implements": 1,
           "calls": 3797,
-          "contains": 4668,
-          "associates": 5
+          "contains": 4673,
+          "associates": 372,
+          "depends": 287
         },
         "guessed": 0,
         "unresolved": {
@@ -124,8 +127,8 @@
           "isolated": 2
         },
         "clusters": {
-          "count": 6,
-          "largest": 182
+          "count": 5,
+          "largest": 220
         }
       }
     },
@@ -154,7 +157,8 @@
           "implements": 0,
           "calls": 1629,
           "contains": 706,
-          "associates": 9
+          "associates": 9,
+          "depends": 0
         },
         "guessed": 0,
         "unresolved": {
@@ -197,7 +201,8 @@
           "implements": 0,
           "calls": 602,
           "contains": 1060,
-          "associates": 24
+          "associates": 24,
+          "depends": 0
         },
         "guessed": 0,
         "unresolved": {

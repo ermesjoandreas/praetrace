@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { REACHES, type ReachingEdgeKind } from '../graph/edges.js';
-import type { Graph, NodeKind } from '../graph/types.js';
+import type { Graph, GraphEdge, NodeKind } from '../graph/types.js';
+import { ownershipOf } from './select.js';
 import type { Tracking } from './types.js';
 
 /**
@@ -340,8 +341,41 @@ export interface SymbolRelation {
   kind: NodeKind;
   filePath: string;
   line: number;
-  /** Which relationship, so a call can read differently from an inheritance. */
-  edge: ReachingEdgeKind;
+  /**
+   * Which relationship, so a call can read differently from an inheritance.
+   *
+   * `depends` is here and not in `REACHES`, on purpose and only here. A class
+   * that names another in a parameter or return type does not hold, run or
+   * extend it, so the hook must not tell the agent the two are coupled — but
+   * a person following that class asked what it is related to, and a type it
+   * names in its own operations is an answer. The panel is the one surface
+   * that widens past `REACHES`; the hook reads the set and stays narrow.
+   */
+  edge: ReachingEdgeKind | 'depends';
+  /**
+   * The relationship in the graph's own words, for the row to print beside
+   * the name: `calls`, `extends`, `implements`, `depends on`, and for an
+   * association one of three — `composed of` when the class builds the
+   * part, `aggregates` when the part is handed in, `holds` when the source
+   * said neither or said both. Decided over the edge's roles by the same
+   * rule that puts the diamond on the canvas, so the word and the shape
+   * cannot disagree; "owns" is never said of a line the source did not mark.
+   */
+  phrase: string;
+}
+
+/** See `SymbolRelation.phrase`. */
+function phraseFor(edge: GraphEdge): string {
+  switch (edge.kind) {
+    case 'associates': {
+      const ownership = ownershipOf(edge.roles);
+      return ownership === 'composition' ? 'composed of' : ownership === 'aggregation' ? 'aggregates' : 'holds';
+    }
+    case 'depends':
+      return 'depends on';
+    default:
+      return edge.kind;
+  }
 }
 
 export interface SymbolLinks {
@@ -411,8 +445,13 @@ const TYPE_POSITION: Coverage = {
 
 const BY_NAME: Coverage = {
   coverage: 'tracked',
+  // "Written only in a type" has one exception since dependencies were drawn:
+  // a class or interface that names this in its own operations' signatures is
+  // listed as depending on it. A free function's signature still is not, and
+  // neither is any other type position, so the sentence keeps its shape and
+  // names the exception rather than dropping the clause.
   coverageNote:
-    'References by name are followed across every file that imports this one; one passed to a function as a value, or written only in a type, is not. The count is a floor.',
+    'References by name are followed across every file that imports this one, and a class that names this in its own methods’ signatures is listed as depending on it; one passed to a function as a value, or written only in any other type, is not. The count is a floor.',
 };
 
 /**
@@ -489,7 +528,7 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
   // was a top-level statement — the largest class of call the graph knows
   // about, 1560 edges on zod. `contains` is the only edge that would put a
   // symbol's own file in this list, and REACHES already leaves it out.
-  const relate = (otherId: string, edge: string): SymbolRelation | null => {
+  const relate = (otherId: string, edge: GraphEdge): SymbolRelation | null => {
     const other = graph.nodes.get(otherId);
     if (!other) return null;
     return {
@@ -498,7 +537,8 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
       kind: other.kind,
       filePath: other.filePath,
       line: other.range.startLine,
-      edge: edge as SymbolRelation['edge'],
+      edge: edge.kind as SymbolRelation['edge'],
+      phrase: phraseFor(edge),
     };
   };
 
@@ -506,12 +546,13 @@ export function describeSymbol(graph: Graph, id: string): SymbolLinks | null {
   const usedBy: SymbolRelation[] = [];
 
   for (const edge of graph.edges) {
-    if (!REACHES.has(edge.kind)) continue;
+    // The panel's one widening past REACHES — see `SymbolRelation.edge`.
+    if (!REACHES.has(edge.kind) && edge.kind !== 'depends') continue;
     if (edge.from === id) {
-      const found = relate(edge.to, edge.kind);
+      const found = relate(edge.to, edge);
       if (found) uses.push(found);
     } else if (edge.to === id) {
-      const found = relate(edge.from, edge.kind);
+      const found = relate(edge.from, edge);
       if (found) usedBy.push(found);
     }
   }

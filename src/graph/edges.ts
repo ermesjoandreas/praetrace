@@ -3,7 +3,11 @@
  *
  * `contains` and `imports` are left out on purpose. They are structural: a
  * symbol belongs to its file and a file mentions another, and neither says the
- * code on one end runs, extends or holds the code on the other.
+ * code on one end runs, extends or holds the code on the other. So is
+ * `depends`, for the opposite reason: it is the weakest thing UML draws — a
+ * class that only names another in a parameter or return type — and putting
+ * it here would tell the agent, after an edit, that a class it never holds or
+ * runs is coupled to the file it just wrote.
  *
  * It lives here, in `graph/`, because both sides of the question ask it and
  * neither may import the other. `view/detail.ts` answers it for the panel and

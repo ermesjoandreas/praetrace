@@ -361,3 +361,36 @@ const internal = { hidden() {} };
   assert.equal(byName(symbols, 'environmentManager').exported, true);
   assert.deepEqual(byName(symbols, 'reset').calls, ['reset']);
 });
+
+test('a JavaScript field is typed by the one thing that types it: what it was built as', () => {
+  const { symbols } = parse(`
+    export class Store {
+      log = new Logger()
+      cache
+      count = 0
+      #view
+      constructor(repo, opts) {
+        this.cache = new Cache()
+        this.#view = repo
+        this.count = opts.count
+      }
+      run(x) {}
+    }
+  `);
+  const attribute = (name: string) => {
+    const symbol = byName(symbols, name);
+    return {
+      ...(symbol.typeName === undefined ? {} : { typeName: symbol.typeName }),
+      ...(symbol.composed === undefined ? {} : { composed: symbol.composed }),
+      ...(symbol.handedIn === undefined ? {} : { handedIn: symbol.handedIn }),
+    };
+  };
+  assert.deepEqual(attribute('log'), { typeName: 'Logger', composed: true });
+  assert.deepEqual(attribute('cache'), { typeName: 'Cache', composed: true });
+  // `0` and `opts.count` say nothing about a type, and nothing is drawn.
+  assert.deepEqual(attribute('count'), {});
+  // Handed in, and of a type the source never wrote: the mark without the line.
+  assert.deepEqual(attribute('#view'), { handedIn: true });
+  // No signature carries a type, so a JavaScript class has no dependencies.
+  assert.equal(byName(symbols, 'Store').dependsOn, undefined);
+});

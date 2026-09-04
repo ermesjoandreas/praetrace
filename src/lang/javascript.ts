@@ -4,10 +4,12 @@ import type { ParsedSymbol, Reexport, SymbolKind } from '../parser/types.js';
 import {
   FUNCTION_VALUES,
   assignedSymbolsOf,
+  attributeOf,
   classScope,
   collectCalls,
   collectFileCalls,
   computedSymbolsOf,
+  constructorAssignments,
   exportsOf,
   importBindings,
   markExports,
@@ -48,10 +50,15 @@ function superclassOf(declaration: SyntaxNode): string[] {
  * A class's members, as symbols of their own. Returns the method bodies, which
  * the class must not claim the calls of.
  *
- * No `typeName` is read, so JavaScript draws no associations: nothing in the
- * source declares a field's type. The coupling is not lost — a field
- * initialised with `new Thing()` still calls Thing — it is drawn as a call
- * rather than as a has-a, which is as much as the language actually said.
+ * A field's type is read from the one place JavaScript writes one: `= new
+ * Thing()`, where it is declared or in the constructor. That is what the
+ * shared reader gives a TypeScript field with no annotation too, and it is
+ * the association's composition case exactly — the class builds the part —
+ * so refusing it here would leave every JavaScript class box with no has-a
+ * while the same shape in a `.ts` file drew the filled diamond. A field
+ * bound to anything else says nothing about its type and draws nothing; the
+ * coupling of a `new` is still a call either way. No signature carries a
+ * type, so no dependency is read.
  */
 function collectMembers(
   declaration: SyntaxNode,
@@ -65,6 +72,7 @@ function collectMembers(
   const bodies: SyntaxNode[] = [];
   const fields: ParsedSymbol[] = [];
   const methods: ParsedSymbol[] = [];
+  const assigned = constructorAssignments(declaration);
 
   for (const member of body.namedChildren) {
     const isMethod = member.type === 'method_definition';
@@ -98,7 +106,7 @@ function collectMembers(
     } else {
       // A field initialiser can call things, and those calls are the class's
       // doing rather than any method's, so they are collected here too.
-      fields.push({ ...common, kind: 'field', calls });
+      fields.push({ ...common, kind: 'field', calls, ...attributeOf(member, scope.typeParameters, assigned.get(name)) });
     }
   }
 

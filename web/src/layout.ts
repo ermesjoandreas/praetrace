@@ -43,6 +43,30 @@ export function boxHeight(memberCount: number, manyFiles: boolean, expanded = fa
   return HEADER_HEIGHT + (shown + overflowRow) * ROW_HEIGHT + 10;
 }
 
+/**
+ * The count line under a component's name: 5 + 17 + 5, with the line-height
+ * pinned in `.box-component .box-meta` so nothing above it can move the number.
+ */
+const META_HEIGHT = 27;
+
+/**
+ * A component box: the header, the count line, then a compartment of what it
+ * provides. The server has already cut that list at a box's worth and says
+ * how many it held, so the "+N more" row is counted here rather than found by
+ * comparing two lengths — the page never holds the rest.
+ *
+ * `provided` is the rows drawn, never zero: a component nothing outside
+ * reaches draws one row saying so, or the compartment would be an empty band
+ * under the header that reads as a box left half-rendered. The trailing 5 is
+ * the list's bottom padding and the box's bottom border; the list's top
+ * padding is inside HEADER_HEIGHT, as it is for a file box. Measured: 291px
+ * for thirteen rows, 87 for one.
+ */
+export function componentHeight(provided: number, more: boolean): number {
+  const rows = Math.max(provided, 1) + (more ? 1 : 0);
+  return HEADER_HEIGHT + META_HEIGHT + rows * ROW_HEIGHT + 5;
+}
+
 export interface ClusterInput {
   id: string;
   files: string[];
@@ -519,4 +543,107 @@ export function frameClusters<T extends Node>(
   }
 
   return withoutOverlaps(candidates);
+}
+
+// --- the activity diagram ----------------------------------------------------
+
+/**
+ * A box on the flow of one function, sized by the page before dagre places it
+ * — the same order the class diagram keeps, and for the same reason: dagre
+ * needs the dimensions up front, and the cull rectangle is computed from them.
+ */
+export interface FlowBox {
+  id: string;
+  width: number;
+  height: number;
+}
+
+export interface FlowLink {
+  from: string;
+  to: string;
+}
+
+/**
+ * How wide a character of the label is, in the 11px monospace the boxes are
+ * set in. Menlo at 11px measures 6.6px a glyph; a label longer than the widest
+ * box is cut with an ellipsis, and the line range on the box says where the
+ * rest is.
+ */
+const FLOW_CHAR = 6.6;
+/** The room a diamond's corners take from its label, either side. */
+const DIAMOND_SLACK = 56;
+/** One line of a box: the label, or the `+N more` / note line under it. */
+const FLOW_LINE = 14;
+
+/**
+ * The size of one box, by what it is. The two circles are UML's own — a
+ * filled dot for start and a bullseye for end — and a decision wants a
+ * diamond, which is why it is wider and taller than the text it holds: the
+ * label sits in the diamond's middle band, and the corners need room past it.
+ */
+export function flowBoxSize(
+  kind: 'start' | 'end' | 'action' | 'decision' | 'loop' | 'try' | 'exit',
+  label: string,
+  extraLines = 0,
+): { width: number; height: number } {
+  const text = Math.ceil(label.length * FLOW_CHAR);
+  switch (kind) {
+    case 'start':
+      return { width: 20, height: 20 };
+    case 'end':
+      return { width: 24, height: 24 };
+    case 'decision':
+    case 'loop':
+      return { width: Math.min(340, Math.max(128, text + DIAMOND_SLACK)), height: 56 + extraLines * FLOW_LINE };
+    case 'try':
+      return { width: Math.min(200, Math.max(72, text + 24)), height: 28 };
+    case 'exit':
+      return { width: Math.min(320, Math.max(72, text + 24)), height: 24 };
+    default:
+      return { width: Math.min(320, Math.max(96, text + 24)), height: 28 + extraLines * FLOW_LINE };
+  }
+}
+
+/**
+ * Where every box of a flow stands, top to bottom, and which links run back
+ * up — a loop's way round, a `continue` — so the page can draw those round the
+ * side of the body rather than through it.
+ *
+ * Top to bottom because that is how an activity diagram reads and how the
+ * source reads: the first statement at the top, the end at the bottom. dagre
+ * breaks the cycles a loop makes on its own; what it does not say is which
+ * edge it reversed, and the answer the page wants is the geometric one anyway:
+ * a link whose target sits at or above its source is drawn as a return.
+ *
+ * `backward` is aligned with `links` by index rather than keyed by the pair,
+ * because two cases of a switch can run from the same decision to the same
+ * box under different labels, and a key would fold them into one.
+ */
+export function layoutFlow(
+  boxes: readonly FlowBox[],
+  links: readonly FlowLink[],
+): { positions: Map<string, { x: number; y: number }>; backward: boolean[] } {
+  const graph = new dagre.graphlib.Graph();
+  graph.setDefaultEdgeLabel(() => ({}));
+  graph.setGraph({ rankdir: 'TB', nodesep: 32, ranksep: 36, marginx: 24, marginy: 24 });
+  for (const box of boxes) graph.setNode(box.id, { width: box.width, height: box.height });
+  const known = new Set(boxes.map((box) => box.id));
+  for (const link of links) {
+    if (known.has(link.from) && known.has(link.to)) graph.setEdge(link.from, link.to);
+  }
+  dagre.layout(graph);
+
+  const positions = new Map<string, { x: number; y: number }>();
+  for (const box of boxes) {
+    const placed = graph.node(box.id);
+    if (!placed) continue;
+    // dagre positions by centre, React Flow by top-left corner.
+    positions.set(box.id, { x: placed.x - box.width / 2, y: placed.y - box.height / 2 });
+  }
+  const backward = links.map((link) => {
+    const from = positions.get(link.from);
+    const to = positions.get(link.to);
+    return from !== undefined && to !== undefined && to.y <= from.y;
+  });
+  return { positions, backward };
 }

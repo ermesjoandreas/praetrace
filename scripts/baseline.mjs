@@ -60,7 +60,7 @@ const corpusRoot = () => process.env.CODEMAP_CORPUS ?? path.join(os.tmpdir(), 'c
  * a number nobody prints.
  */
 const NODE_KINDS = ['file', 'class', 'function', 'interface', 'type', 'method', 'field'];
-const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'contains', 'associates'];
+const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'contains', 'associates', 'depends'];
 
 /**
  * Nothing that moves when a file's mtime does.

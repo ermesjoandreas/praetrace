@@ -747,3 +747,128 @@ namespace Legacy {
     ],
   );
 });
+
+/** The five things a field says about the part it holds, and nothing else. */
+const attribute = (symbol: ParsedSymbol) => ({
+  ...(symbol.typeName === undefined ? {} : { typeName: symbol.typeName }),
+  ...(symbol.many === undefined ? {} : { many: symbol.many }),
+  ...(symbol.optional === undefined ? {} : { optional: symbol.optional }),
+  ...(symbol.composed === undefined ? {} : { composed: symbol.composed }),
+  ...(symbol.handedIn === undefined ? {} : { handedIn: symbol.handedIn }),
+});
+
+test('a field says how many, whether the part may be absent, and who builds it', () => {
+  const { symbols } = parse(`
+    export class Cache<K> {
+      private log: Logger
+      timer: Timer | null = null
+      maybe?: Thing
+      alsoMaybe: Thing | undefined
+      pool = new Pool()
+      built: Pool = new Pool()
+      items: Item[] = []
+      more?: Item[]
+      key!: K
+      base: Logger = new Sub()
+      either: Timer | Thing
+      constructor(private readonly repo: Repo, readonly things: Thing[], cfg: Config, k?: K) {
+        this.log = new Logger()
+        this.timer = cfg.timer
+      }
+    }
+  `);
+  // A parameter property is a field, listed where the constructor is written.
+  assert.deepEqual(
+    symbols.filter((s) => s.kind === 'field').map((s) => s.name),
+    ['log', 'timer', 'maybe', 'alsoMaybe', 'pool', 'built', 'items', 'more', 'key', 'base', 'either', 'repo', 'things'],
+  );
+  assert.deepEqual(attribute(byName(symbols, 'log')), { typeName: 'Logger', composed: true });
+  // `= null` builds nothing and `cfg.timer` says nothing; `| null` says 0..1.
+  assert.deepEqual(attribute(byName(symbols, 'timer')), { typeName: 'Timer', optional: true });
+  assert.deepEqual(attribute(byName(symbols, 'maybe')), { typeName: 'Thing', optional: true });
+  assert.deepEqual(attribute(byName(symbols, 'alsoMaybe')), { typeName: 'Thing', optional: true });
+  // No annotation: what it was built as is the one type the source wrote.
+  assert.deepEqual(attribute(byName(symbols, 'pool')), { typeName: 'Pool', composed: true });
+  assert.deepEqual(attribute(byName(symbols, 'built')), { typeName: 'Pool', composed: true });
+  // `[]` builds a container, not an Item.
+  assert.deepEqual(attribute(byName(symbols, 'items')), { typeName: 'Item', many: true });
+  assert.deepEqual(attribute(byName(symbols, 'more')), { typeName: 'Item', many: true, optional: true });
+  assert.deepEqual(attribute(byName(symbols, 'key')), {});
+  // A Sub may be a Logger, and this file cannot say so: not composed.
+  assert.deepEqual(attribute(byName(symbols, 'base')), { typeName: 'Logger' });
+  // Two real types are not either of them.
+  assert.deepEqual(attribute(byName(symbols, 'either')), {});
+  assert.deepEqual(attribute(byName(symbols, 'repo')), { typeName: 'Repo', handedIn: true });
+  assert.equal(byName(symbols, 'repo').visibility, 'private');
+  assert.deepEqual(attribute(byName(symbols, 'things')), { typeName: 'Thing', many: true, handedIn: true });
+  assert.equal(byName(symbols, 'things').visibility, undefined);
+  // The constructor's signature names Repo and Thing too; the graph, which
+  // sees the fields, is what leaves them out. `K` names whatever the caller supplies.
+  assert.deepEqual(byName(symbols, 'Cache').dependsOn, ['Repo', 'Thing', 'Config']);
+});
+
+test('the types a class names in its signatures are its dependencies, less what it declared itself', () => {
+  const { symbols } = parse(`
+    export class Service<T> {
+      private store: Store
+      cache = new Cache()
+      constructor(store: Store, cfg?: Config) {
+        this.store = store
+        this.cache = new Cache()
+        el.on('x', function () { this.cache = new Other() })
+      }
+      run(e: Event, xs: Map<string, Result>): Promise<Result[]> { return null }
+      each<U>(u: U, w: ns.Widget): U { return u }
+      handle = (h: Handler): void => {}
+      self(): this { return this }
+      when(x: typeof fallback, y: 'lit', z: string): T { return null }
+    }
+    export interface Sink { push(e: Event): Result; size?: number }
+    export class Plain { count = 0 }
+  `);
+  assert.deepEqual(attribute(byName(symbols, 'store')), { typeName: 'Store', handedIn: true });
+  // The inline `new` and the constructor's agree; the one inside a nested
+  // `function` is that function's `this`, not the class's.
+  assert.deepEqual(attribute(byName(symbols, 'cache')), { typeName: 'Cache', composed: true });
+  // Every classifier a signature writes, qualifier kept, in the order
+  // written: a type parameter, `this`, `typeof`, a literal and a predefined
+  // type name nothing. Which of these are also fields is the graph's call.
+  assert.deepEqual(byName(symbols, 'Service').dependsOn, [
+    'Store', 'Config', 'Event', 'Map', 'Result', 'Promise', 'ns.Widget', 'Handler',
+  ]);
+  assert.deepEqual(byName(symbols, 'Sink').dependsOn, ['Event', 'Result']);
+  assert.equal(byName(symbols, 'Plain').dependsOn, undefined);
+  assert.deepEqual(attribute(byName(symbols, 'size')), { optional: true });
+});
+
+test('a part the class both builds and accepts carries both marks, and the graph decides', () => {
+  const { symbols } = parse(`
+    export class A {
+      x: T = new T()
+      y: T
+      constructor(t?: T, u?: T) { if (t) this.x = t; this.y = new T(); this.y = u ?? this.y }
+    }
+  `);
+  assert.deepEqual(attribute(byName(symbols, 'x')), { typeName: 'T', composed: true, handedIn: true });
+  // `u ?? this.y` is neither a construction nor a parameter: nothing.
+  assert.deepEqual(attribute(byName(symbols, 'y')), { typeName: 'T', composed: true });
+});
+
+test('a parameter property the constructor also builds says both, which the graph reads as neither', () => {
+  const { symbols } = parse(`class A {
+  constructor(private log: Logger) { this.log = new Logger(); }
+}`);
+  const log = byName(symbols, 'log');
+  // Reading only the parameter drew a hollow diamond on a part the class constructs.
+  assert.equal(log.handedIn, true);
+  assert.equal(log.composed, true);
+});
+
+test('a parameter the constructor reassigns is no longer what was handed in', () => {
+  const { symbols } = parse(`class E {
+  cfg: Config;
+  constructor(cfg: Config) { cfg = new Config(); this.cfg = cfg; }
+}`);
+  const cfg = byName(symbols, 'cfg');
+  assert.equal(cfg.handedIn, undefined);
+});

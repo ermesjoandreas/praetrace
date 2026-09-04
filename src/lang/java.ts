@@ -177,7 +177,28 @@ const ELEMENT_AT: ReadonlyMap<string, number> = new Map([
   ['Map', 1],
 ]);
 
-function associationOf(type: SyntaxNode | null): { typeName?: string; many?: boolean } {
+/** What a field's type says about the association; see `attributeOf` for the rest. */
+type Attribute = Pick<ParsedSymbol, 'typeName' | 'many' | 'optional' | 'composed' | 'handedIn'>;
+
+/**
+ * `@Nullable` on a declaration, by simple name — javax's, JetBrains' and the
+ * checker framework's all spell it so, and it is the one way Java writes
+ * 0..1 outside `Optional`. Read off the `modifiers` of a field and off an
+ * `annotated_type`, which is where a parameter keeps it.
+ */
+function isNullable(declaration: SyntaxNode, type: SyntaxNode | null): boolean {
+  const holders = [
+    ...(declaration.namedChildren.find((child) => child.type === 'modifiers')?.namedChildren ?? []),
+    ...(type?.type === 'annotated_type' ? type.namedChildren : []),
+  ];
+  return holders.some(
+    (node) =>
+      (node.type === 'marker_annotation' || node.type === 'annotation') &&
+      node.childForFieldName('name')?.text === 'Nullable',
+  );
+}
+
+function associationOf(type: SyntaxNode | null): Attribute {
   if (!type) return {};
 
   if (type.type === 'array_type') {
@@ -187,16 +208,147 @@ function associationOf(type: SyntaxNode | null): { typeName?: string; many?: boo
 
   if (type.type === 'generic_type') {
     const base = typeNameOf(type.namedChildren[0] ?? null);
+    const args = type.namedChildren.find((child) => child.type === 'type_arguments');
+    // `Optional<T>` is one T that may be absent: the association's 0..1.
+    if (base === 'Optional') {
+      const element = typeNameOf(args?.namedChildren[0] ?? null);
+      return element === null ? { optional: true } : { typeName: element, optional: true };
+    }
     const at = base === null ? undefined : ELEMENT_AT.get(base);
     if (at === undefined) return base === null ? {} : { typeName: base };
 
-    const args = type.namedChildren.find((child) => child.type === 'type_arguments');
     const element = typeNameOf(args?.namedChildren[at] ?? null);
     return element === null ? { many: true } : { typeName: element, many: true };
   }
 
   const name = typeNameOf(type);
   return name === null ? {} : { typeName: name };
+}
+
+/** What a constructor did to one field; see `constructorAssignments`. */
+interface Assigned {
+  /** The one type it was built as, `this.x = new T()`; null when none or two. */
+  constructed: string | null;
+  /** `this.x = param`, for a `param` the constructor took. */
+  handedIn: boolean;
+}
+
+/**
+ * Field -> what the type's constructors assigned to it. `this.x = new T()`
+ * and a bare `x = new T()` say the class builds the part; `this.x = param`
+ * says it was handed in. Every constructor is read, because a class with two
+ * may build the part in one and accept it in the other, and both are what
+ * the source said. Nothing inside an anonymous class body counts — its
+ * `this` is its own — and a bare name the constructor bound itself, as a
+ * parameter or a local, is that and not the field.
+ */
+function constructorAssignments(entries: readonly SyntaxNode[], fields: ReadonlySet<string>): Map<string, Assigned> {
+  /** Field -> every type it was built as; two is not either, the rule `typedNames` applies. */
+  const built = new Map<string, Set<string>>();
+  const handedIn = new Set<string>();
+  for (const constructor of entries) {
+    if (constructor.type !== 'constructor_declaration') continue;
+    const parameters = new Set<string>();
+    for (const parameter of constructor.childForFieldName('parameters')?.namedChildren ?? []) {
+      const name = parameter.childForFieldName('name')?.text;
+      if (name !== undefined) parameters.add(name);
+    }
+    const body = constructor.childForFieldName('body');
+    if (!body) continue;
+    const locals = new Set<string>();
+    for (const declarator of body.descendantsOfType('variable_declarator')) {
+      const name = declarator.childForFieldName('name')?.text;
+      if (name !== undefined) locals.add(name);
+    }
+    const inner = innerBodies(body);
+    const within = (node: SyntaxNode): boolean =>
+      inner.some((region) => node.startIndex >= region.startIndex && node.endIndex <= region.endIndex);
+    // A parameter the body assigns to — `config = new Config()` before
+    // `this.config = config` — is no longer what was handed in. Saying neither
+    // about it is never wrong; "handed in" about a part the class built was.
+    const rebound = new Set<string>();
+    for (const assignment of body.descendantsOfType('assignment_expression')) {
+      const left = assignment.childForFieldName('left');
+      if (left?.type === 'identifier' && parameters.has(left.text)) rebound.add(left.text);
+    }
+
+    for (const assignment of body.descendantsOfType('assignment_expression')) {
+      if (within(assignment)) continue;
+      const left = assignment.childForFieldName('left');
+      const right = assignment.childForFieldName('right');
+      if (!left || !right) continue;
+      const field =
+        left.type === 'field_access' && left.childForFieldName('object')?.type === 'this'
+          ? left.childForFieldName('field')?.text
+          : left.type === 'identifier' && !parameters.has(left.text) && !locals.has(left.text)
+            ? left.text
+            : undefined;
+      if (field === undefined || !fields.has(field)) continue;
+
+      if (right.type === 'object_creation_expression') {
+        const constructed = typeNameOf(right.childForFieldName('type'));
+        if (constructed !== null) built.set(field, new Set(built.get(field)).add(constructed));
+      } else if (right.type === 'identifier' && parameters.has(right.text) && !rebound.has(right.text)) {
+        handedIn.add(field);
+      }
+    }
+  }
+  const assigned = new Map<string, Assigned>();
+  for (const field of new Set([...built.keys(), ...handedIn])) {
+    const types = built.get(field);
+    assigned.set(field, {
+      constructed: types !== undefined && types.size === 1 ? [...types][0] ?? null : null,
+      handedIn: handedIn.has(field),
+    });
+  }
+  return assigned;
+}
+
+/**
+ * Everything a field's declaration and its class's constructors say about the
+ * part it holds. `composed` only when what was built is the field's own type:
+ * `List<G> gs = new ArrayList<>()` builds the list and not a G, and `Reader r
+ * = new BufferedReader()` builds something this file cannot say is a Reader.
+ */
+function attributeOf(
+  declaration: SyntaxNode,
+  type: SyntaxNode | null,
+  declarator: SyntaxNode | null,
+  assigned: Assigned | undefined,
+): Attribute {
+  const association = associationOf(type);
+  const inline = declarator?.childForFieldName('value');
+  const built =
+    inline?.type === 'object_creation_expression' ? typeNameOf(inline.childForFieldName('type')) : null;
+  const composed =
+    association.typeName !== undefined &&
+    (built === association.typeName || assigned?.constructed === association.typeName);
+  return {
+    ...association,
+    ...(association.optional === true || isNullable(declaration, type) ? { optional: true as const } : {}),
+    ...(composed ? { composed: true as const } : {}),
+    ...(assigned?.handedIn === true ? { handedIn: true as const } : {}),
+  };
+}
+
+/**
+ * Every type name an operation's signature writes — parameters and return
+ * type — less `var` and the `<T>` in force. `Outer.Inner` yields both, the
+ * way `unboundNames` binds both. See `ParsedSymbol.dependsOn`.
+ */
+function signatureTypes(operation: SyntaxNode, typeParameters: ReadonlySet<string>): string[] {
+  const generic = new Set([...typeParameters, ...typeParametersOf(operation)]);
+  const names: string[] = [];
+  const read = (node: SyntaxNode | null): void => {
+    for (const reference of node?.descendantsOfType('type_identifier') ?? []) {
+      if (reference.text !== 'var' && !generic.has(reference.text)) names.push(reference.text);
+    }
+  };
+  read(operation.childForFieldName('type'));
+  for (const parameter of operation.childForFieldName('parameters')?.namedChildren ?? []) {
+    read(parameter.childForFieldName('type'));
+  }
+  return names;
 }
 
 /**
@@ -525,6 +677,7 @@ function bodyEntries(body: SyntaxNode | null): SyntaxNode[] {
 function collectMember(
   member: SyntaxNode,
   enclosing: Enclosing,
+  assigned: ReadonlyMap<string, Assigned>,
   symbols: ParsedSymbol[],
 ): SyntaxNode | null {
   const owner = enclosing.owner;
@@ -549,7 +702,7 @@ function collectMember(
   // the enclosing type keeps it too — the same split the TypeScript module makes,
   // where only a method body is taken away from its class.
   if (member.type === 'field_declaration' || member.type === 'constant_declaration') {
-    const association = associationOf(member.childForFieldName('type'));
+    const type = member.childForFieldName('type');
     for (const declarator of member.namedChildren) {
       if (declarator.type !== 'variable_declarator') continue;
       const name = declarator.childForFieldName('name')?.text;
@@ -560,7 +713,7 @@ function collectMember(
           name,
           kind: 'field',
           calls: collectCalls(member, [], enclosing),
-          ...association,
+          ...attributeOf(member, type, declarator, assigned.get(name)),
         });
       }
     }
@@ -633,11 +786,14 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
     }
   }
   const enclosing: Enclosing = { owner: name, methods, fields, typeParameters, values: out.values };
+  const assigned = constructorAssignments(bodyEntries(body), new Set(fields.keys()));
+  const dependsOn = new Set<string>();
 
   if (components) {
     for (const parameter of components.namedChildren) {
       const component = parameter.childForFieldName('name')?.text;
       if (!component) continue;
+      // A component arrives through the canonical constructor by definition.
       members.push({
         name: component,
         kind: 'field',
@@ -647,7 +803,7 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
         extends: [],
         implements: [],
         calls: [],
-        ...associationOf(parameter.childForFieldName('type')),
+        ...attributeOf(parameter, parameter.childForFieldName('type'), null, { constructed: null, handedIn: true }),
       });
     }
   }
@@ -658,7 +814,10 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
       claimed.push(entry);
       continue;
     }
-    const taken = collectMember(entry, enclosing, members);
+    if (METHOD_NODES.has(entry.type)) {
+      for (const type of signatureTypes(entry, typeParameters)) dependsOn.add(type);
+    }
+    const taken = collectMember(entry, enclosing, assigned, members);
     if (taken) claimed.push(taken);
   }
 
@@ -672,6 +831,7 @@ function collectType(node: SyntaxNode, kind: SymbolKind, out: Collected): void {
     implements: heritage.implements,
     calls: collectCalls(node, claimed, enclosing),
     ...modifiersOf(node),
+    ...(dependsOn.size === 0 ? {} : { dependsOn: [...dependsOn] }),
   });
   out.symbols.push(...members);
 

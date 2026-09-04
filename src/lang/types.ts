@@ -28,6 +28,8 @@ export interface SyntaxNode {
   endIndex: number;
   namedChildren: SyntaxNode[];
   children: SyntaxNode[];
+  /** Null at the root. Read to tell a function that is an argument from one that is the symbol. */
+  parent: SyntaxNode | null;
   childForFieldName(name: string): SyntaxNode | null;
   descendantsOfType(type: string | string[]): SyntaxNode[];
 }

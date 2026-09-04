@@ -408,6 +408,8 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
           {shown.map((member, index) => (
             <li
               key={`${member.owner ?? ''}${member.name}-${index}`}
+              // Which row a right-click landed on: React Flow hands App the box, and App reads this off the row.
+              data-member-id={member.id}
               // Indented under the class that holds it. A flat list would put a
               // method beside the class it belongs to as though they were peers.
               className={[

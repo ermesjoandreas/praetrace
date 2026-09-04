@@ -362,11 +362,19 @@ const MANY = new Set([
   'ReadOnlyMemory', 'ImmutableArray', 'ImmutableList', 'ImmutableHashSet',
 ]);
 
-/** The declared type of a field or property, reduced to one name and a count. */
-function declaredType(node: SyntaxNode | null): Pick<ParsedSymbol, 'typeName' | 'many'> {
+/** What a field's declaration says about the association; see `attributeOf`. */
+type Attribute = Pick<ParsedSymbol, 'typeName' | 'many' | 'optional' | 'composed' | 'handedIn'>;
+
+/**
+ * The declared type of a field or property, reduced to one name and a count.
+ * `T?` is the one T that may be absent — the association's 0..1 — whichever
+ * of a reference type under nullable annotations or a `Nullable<T>` struct
+ * the compiler makes of it.
+ */
+function declaredType(node: SyntaxNode | null): Attribute {
   if (!node) return {};
 
-  if (node.type === 'nullable_type') return declaredType(node.childForFieldName('type'));
+  if (node.type === 'nullable_type') return { ...declaredType(node.childForFieldName('type')), optional: true };
   if (node.type === 'array_type') {
     const name = bareTypeName(node.childForFieldName('type'));
     return name === null ? { many: true } : { typeName: name, many: true };
@@ -383,6 +391,121 @@ function declaredType(node: SyntaxNode | null): Pick<ParsedSymbol, 'typeName' | 
 
   const name = bareTypeName(node);
   return name === null ? {} : { typeName: name };
+}
+
+/** What a constructor did to one field; see `constructorAssignments`. */
+interface Assigned {
+  /** The one type it was built as, `_x = new T()`; null when none or two. */
+  constructed: string | null;
+  /** `_x = param`, for a `param` the constructor took. */
+  handedIn: boolean;
+}
+
+/**
+ * Field -> what the type's constructors assigned to it: `_x = new T()` or
+ * `this.X = new T()` says the class builds the part, `_x = param` says it was
+ * handed in. Every constructor is read, because one may build what another
+ * accepts, and both are what the source said. A bare name the constructor
+ * bound itself — a parameter, a local — is that and not the field.
+ */
+function constructorAssignments(constructors: readonly SyntaxNode[], fields: ReadonlySet<string>): Map<string, Assigned> {
+  /** Field -> every type it was built as; two is not either. */
+  const built = new Map<string, Set<string>>();
+  const handedIn = new Set<string>();
+  for (const constructor of constructors) {
+    const parameters = new Set<string>();
+    for (const parameter of constructor.childForFieldName('parameters')?.namedChildren ?? []) {
+      const name = parameter.childForFieldName('name')?.text;
+      if (name !== undefined) parameters.add(name);
+    }
+    const body = constructor.childForFieldName('body');
+    if (!body) continue;
+    const locals = new Set<string>();
+    for (const declarator of body.descendantsOfType('variable_declarator')) {
+      const name = declarator.childForFieldName('name')?.text;
+      if (name !== undefined) locals.add(name);
+    }
+    // A parameter the body assigns to is no longer what was handed in; see
+    // the same rule in java.ts.
+    const rebound = new Set<string>();
+    for (const assignment of body.descendantsOfType('assignment_expression')) {
+      const left = assignment.childForFieldName('left');
+      if (left?.type === 'identifier' && parameters.has(left.text)) rebound.add(left.text);
+    }
+
+    for (const assignment of body.descendantsOfType('assignment_expression')) {
+      const left = assignment.childForFieldName('left');
+      const right = assignment.childForFieldName('right');
+      if (!left || !right) continue;
+      // The grammar spells `this` as an anonymous node, so it is matched by type.
+      const qualifier = left.type === 'member_access_expression' ? left.childForFieldName('expression') : null;
+      const field =
+        left.type === 'member_access_expression' && (qualifier === null || qualifier.type === 'this')
+          ? left.childForFieldName('name')?.text
+          : left.type === 'identifier' && !parameters.has(left.text) && !locals.has(left.text)
+            ? left.text
+            : undefined;
+      if (field === undefined || !fields.has(field)) continue;
+
+      if (right.type === 'object_creation_expression') {
+        const constructed = bareTypeName(right.childForFieldName('type'));
+        if (constructed !== null) built.set(field, new Set(built.get(field)).add(constructed));
+      } else if (right.type === 'identifier' && parameters.has(right.text) && !rebound.has(right.text)) {
+        handedIn.add(field);
+      }
+    }
+  }
+  const assigned = new Map<string, Assigned>();
+  for (const field of new Set([...built.keys(), ...handedIn])) {
+    const types = built.get(field);
+    assigned.set(field, {
+      constructed: types !== undefined && types.size === 1 ? [...types][0] ?? null : null,
+      handedIn: handedIn.has(field),
+    });
+  }
+  return assigned;
+}
+
+/**
+ * Everything a member's declaration and its type's constructors say about the
+ * part it holds. `composed` only when what was built is the member's own
+ * type: `List<T> _xs = new()` builds the list and not a T, and a base type
+ * initialised with a subclass is not the part without a resolution this file
+ * cannot do. `initializer` is the `= new T()` beside the declaration — on the
+ * declarator for a field, on the property itself.
+ */
+function attributeOf(type: SyntaxNode | null, initializer: SyntaxNode | null, assigned: Assigned | undefined): Attribute {
+  const declared = declaredType(type);
+  const built =
+    initializer?.type === 'object_creation_expression' ? bareTypeName(initializer.childForFieldName('type')) : null;
+  const composed =
+    declared.typeName !== undefined && (built === declared.typeName || assigned?.constructed === declared.typeName);
+  return {
+    ...declared,
+    ...(composed ? { composed: true as const } : {}),
+    ...(assigned?.handedIn === true ? { handedIn: true as const } : {}),
+  };
+}
+
+/**
+ * Every type an operation's signature writes — parameters and return type —
+ * reduced to the tail the graph looks a C# name up by, less the `<T>` in
+ * force. See `ParsedSymbol.dependsOn`.
+ */
+function signatureTypes(operation: SyntaxNode, typeParameters: ReadonlySet<string>): string[] {
+  const generic = new Set(typeParameters);
+  for (const parameter of operation.descendantsOfType('type_parameter')) {
+    const name = parameter.childForFieldName('name')?.text;
+    if (name !== undefined) generic.add(name);
+  }
+  const names = new Set<string>();
+  const returned = operation.childForFieldName('returns');
+  if (returned) collectTypeNames(returned, names);
+  for (const parameter of operation.childForFieldName('parameters')?.namedChildren ?? []) {
+    const type = parameter.childForFieldName('type');
+    if (type) collectTypeNames(type, names);
+  }
+  return [...names].map(tailOf).filter((name) => !generic.has(name));
 }
 
 /**
@@ -462,71 +585,117 @@ function memberOf(node: SyntaxNode): Member | null {
  * Returns the subtrees the enclosing type must not claim the calls of: its
  * operations, and any type nested inside it.
  */
+/** What `collectMembers` hands back about the type itself. */
+interface Members {
+  /** The subtrees the enclosing type must not claim the calls of. */
+  claimed: SyntaxNode[];
+  /** See `ParsedSymbol.dependsOn`. */
+  dependsOn: string[];
+}
+
+/** The body's own entries, `#if` arms flattened; a nested type's are its own. */
+function bodyEntries(body: SyntaxNode): SyntaxNode[] {
+  const entries: SyntaxNode[] = [];
+  for (const node of body.namedChildren) {
+    if (CONDITIONAL.has(node.type)) entries.push(...bodyEntries(node));
+    else entries.push(node);
+  }
+  return entries;
+}
+
 function collectMembers(
   body: SyntaxNode,
   owner: string,
   symbols: ParsedSymbol[],
   nested: SyntaxNode[],
-): SyntaxNode[] {
+  typeParameters: ReadonlySet<string>,
+): Members {
   const claimed: SyntaxNode[] = [];
   const fields: ParsedSymbol[] = [];
   const methods: ParsedSymbol[] = [];
+  const dependsOn = new Set<string>();
+  const entries = bodyEntries(body);
 
-  const visit = (container: SyntaxNode): void => {
-    for (const node of container.namedChildren) {
-      if (CONDITIONAL.has(node.type)) {
-        visit(node);
-        continue;
+  // Which names are fields has to be known before the constructors are read,
+  // so a bare `_x = new T()` can be told from a local.
+  const declared = new Set<string>();
+  for (const node of entries) {
+    if (node.type === 'field_declaration' || node.type === 'event_field_declaration') {
+      for (const declarator of node.descendantsOfType('variable_declarator')) {
+        const name = declarator.childForFieldName('name')?.text;
+        if (name !== undefined) declared.add(name);
       }
-      if (TYPE_KINDS.has(node.type)) {
-        nested.push(node);
-        claimed.push(node);
-        continue;
-      }
-
-      const common = {
-        owner,
-        startLine: node.startPosition.row + 1,
-        endLine: node.endPosition.row + 1,
-        extends: [],
-        implements: [],
-        calls: collectCalls(node),
-        ...modifiersOf(node),
-      };
-
-      // A field declaration can name several: `int a, b;` is two attributes
-      // sharing one type.
-      if (node.type === 'field_declaration' || node.type === 'event_field_declaration') {
-        const declaration = node.namedChildren.find((child) => child.type === 'variable_declaration');
-        if (!declaration) continue;
-        const type = declaredType(declaration.childForFieldName('type'));
-        for (const declarator of declaration.namedChildren) {
-          if (declarator.type !== 'variable_declarator') continue;
-          const name = declarator.childForFieldName('name');
-          if (name) fields.push({ ...common, name: name.text, kind: 'field', ...type });
-        }
-        continue;
-      }
-
+    } else {
       const member = memberOf(node);
-      if (!member) continue;
-      if (member.kind === 'method') {
-        claimed.push(node);
-        methods.push({ ...common, name: member.name, kind: 'method' });
-      } else {
-        fields.push({ ...common, name: member.name, kind: 'field', ...declaredType(member.type) });
-      }
+      if (member?.kind === 'field') declared.add(member.name);
     }
-  };
+  }
+  const assigned = constructorAssignments(
+    entries.filter((node) => node.type === 'constructor_declaration'),
+    declared,
+  );
 
-  visit(body);
+  for (const node of entries) {
+    if (TYPE_KINDS.has(node.type)) {
+      nested.push(node);
+      claimed.push(node);
+      continue;
+    }
+
+    const common = {
+      owner,
+      startLine: node.startPosition.row + 1,
+      endLine: node.endPosition.row + 1,
+      extends: [],
+      implements: [],
+      calls: collectCalls(node),
+      ...modifiersOf(node),
+    };
+
+    // A field declaration can name several: `int a, b;` is two attributes
+    // sharing one type.
+    if (node.type === 'field_declaration' || node.type === 'event_field_declaration') {
+      const declaration = node.namedChildren.find((child) => child.type === 'variable_declaration');
+      if (!declaration) continue;
+      const type = declaration.childForFieldName('type');
+      for (const declarator of declaration.namedChildren) {
+        if (declarator.type !== 'variable_declarator') continue;
+        const name = declarator.childForFieldName('name');
+        if (!name) continue;
+        // The initialiser is the declarator's one child that is not its name.
+        const initializer = declarator.namedChildren.find((child) => child.type !== 'identifier') ?? null;
+        fields.push({ ...common, name: name.text, kind: 'field', ...attributeOf(type, initializer, assigned.get(name.text)) });
+      }
+      continue;
+    }
+
+    const member = memberOf(node);
+    if (!member) continue;
+    if (member.kind === 'method') {
+      claimed.push(node);
+      methods.push({ ...common, name: member.name, kind: 'method' });
+      if (node.type === 'method_declaration' || node.type === 'constructor_declaration') {
+        for (const type of signatureTypes(node, typeParameters)) dependsOn.add(type);
+      }
+    } else {
+      fields.push({
+        ...common,
+        name: member.name,
+        kind: 'field',
+        ...attributeOf(member.type, node.childForFieldName('value'), assigned.get(member.name)),
+      });
+    }
+  }
 
   // Attributes before operations, the order a UML class box reads in.
   symbols.push(...fields, ...methods);
-  return claimed;
+  return { claimed, dependsOn: [...dependsOn] };
 }
 
-/** A record's positional parameters are its public attributes, and often its only ones. */
+/**
+ * A record's positional parameters are its public attributes, and often its
+ * only ones — and each arrives through the primary constructor by definition.
+ */
 function collectRecordParameters(declaration: SyntaxNode, owner: string, symbols: ParsedSymbol[]): void {
   const parameters = declaration.namedChildren.find((child) => child.type === 'parameter_list');
   if (!parameters) return;
@@ -544,9 +713,20 @@ function collectRecordParameters(declaration: SyntaxNode, owner: string, symbols
       extends: [],
       implements: [],
       calls: [],
-      ...declaredType(parameter.childForFieldName('type')),
+      ...attributeOf(parameter.childForFieldName('type'), null, { constructed: null, handedIn: true }),
     });
   }
+}
+
+/** The names a declaration's `<T, U>` introduces, which name no class. */
+function typeParametersOf(declaration: SyntaxNode): Set<string> {
+  const names = new Set<string>();
+  const list = declaration.namedChildren.find((child) => child.type === 'type_parameter_list');
+  for (const parameter of list?.namedChildren ?? []) {
+    const name = parameter.childForFieldName('name')?.text;
+    if (parameter.type === 'type_parameter' && name !== undefined) names.add(name);
+  }
+  return names;
 }
 
 /**
@@ -580,7 +760,9 @@ function collectDeclaration(node: SyntaxNode, symbols: ParsedSymbol[]): void {
   // Before the body, so the positional attributes lead the attribute list.
   if (node.type === 'record_declaration') collectRecordParameters(node, name.text, members);
   const body = node.childForFieldName('body');
-  const claimed = body ? collectMembers(body, name.text, members, nested) : [];
+  const { claimed, dependsOn } = body
+    ? collectMembers(body, name.text, members, nested, typeParametersOf(node))
+    : { claimed: [], dependsOn: [] };
 
   // The type is pushed before its members, which is the order the graph layer
   // attaches each one to the type it just saw.
@@ -592,6 +774,7 @@ function collectDeclaration(node: SyntaxNode, symbols: ParsedSymbol[]): void {
     ...heritageOf(node, kind),
     calls: collectCalls(node, claimed),
     ...modifiersOf(node),
+    ...(dependsOn.length === 0 ? {} : { dependsOn }),
   });
   symbols.push(...members);
   for (const child of nested) collectDeclaration(child, symbols);

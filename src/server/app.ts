@@ -36,6 +36,7 @@ import {
   updateGroup,
   writeGroups,
   type GroupColor,
+  type GroupSuggestion,
   type NamedGroup,
 } from '../project/groups.js';
 import { installHook, readHookStatus, type HookStatus } from '../project/hook-install.js';
@@ -50,6 +51,7 @@ import { search } from '../view/search.js';
 import { projectLanguages, selectView } from '../view/select.js';
 import type { LanguageCount, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
+import { registerFlowRoute } from './flow.js';
 import type { AgentCall, ExplainRun, SessionHost, SuggestResult } from './session.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
@@ -269,6 +271,13 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
         error: `edges= takes ${EDGE_KINDS.join(', ')} — not ${unknown.join(', ')}`,
       });
     }
+    // The same refusal for the same reason: `diagram=componets` falling back
+    // to the class diagram is a request answered with a different picture.
+    if (readDiagram(query['diagram']) === null) {
+      return reply.code(400).send({
+        error: `diagram= takes ${DIAGRAMS.join(' or ')} — not ${String(query['diagram'])}`,
+      });
+    }
 
     const spec = toSpec(query);
 
@@ -305,10 +314,21 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       coverage = session.coverage();
     }
 
+    // A component diagram draws the categories, which are this graph's own
+    // clusters wearing the names in groups.json — the commit's clusters under
+    // `at`, exactly as `/api/clusters?at=` answers. The file is re-read first,
+    // because nothing watches `.codemap/`: this is the one moment a name
+    // written by hand since the last save is caught, and it is one small read.
+    let categories: GroupSuggestion[] = [];
+    if (spec.diagram === 'components') {
+      await session.refreshGroups();
+      categories = session.clustersOf(graph).clusters;
+    }
+
     // The view carries the graph's own `fileCount`, so the Repository panel
     // can say the frozen number: "Files 1128" under a commit was the live
     // count, beside a status bar that said 712.
-    return { root: session.root, view: selectView(graph, spec, Date.now(), git, coverage) };
+    return { root: session.root, view: selectView(graph, spec, Date.now(), git, coverage, categories) };
   });
 
   app.get('/api/project', async () => ({ root: host.current().root }));
@@ -364,6 +384,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     }
     return links;
   });
+
+  // The activity diagram of one function. Its own module: the flow is a
+  // detail about a symbol, like /api/symbol, and never graph structure.
+  registerFlowRoute(app, () => host.current());
 
   /**
    * What has been explained, for the ids the panel is showing.
@@ -529,6 +553,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       root,
       applyDecision(await readGroups(root), files, { name, state, id }),
     );
+    // Before the announcement, because the announcement pushes a component
+    // diagram, and a push from the session's previous copy would draw the box
+    // under the name it just lost.
+    await host.current().refreshGroups();
     // This is the route the MCP proxy's name_group takes, and the browser has
     // no other way to learn a name the agent gave: nothing watches .codemap/.
     hub.groupsChanged();
@@ -558,13 +586,15 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       return reply.code(400).send({ error: error instanceof Error ? error.message : String(error) });
     }
     await writeGroups(root, next);
+    // See POST /api/clusters: the session's copy first, then the announcement.
+    const session = host.current();
+    await session.refreshGroups();
     hub.groupsChanged();
 
     // Merged rather than returned raw: `mergeGroups` is what pairs a stored name
     // with the cluster the graph currently finds, and it is the only shape the
     // page has a state setter for. The same `{ clusters, orphans }` as the GET,
     // so a delete of an orphan sees it leave the list it was shown in.
-    const session = host.current();
     return mergeGroups(clusterFiles(session.store.graph), next);
   });
 
@@ -992,7 +1022,24 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     depth: readDepth(raw['depth']),
     filter: toFilter(raw),
     at: readAt(raw['at']),
+    // The route has already refused an unknown one, so the fallback here is
+    // for the socket reader below, which is handed the server's own echo.
+    diagram: readDiagram(raw['diagram']) ?? 'classes',
   };
+}
+
+const DIAGRAMS = ['classes', 'components'] as const;
+
+/**
+ * Which diagram a request asks for: absent is the class diagram, a name is
+ * itself, and anything else is null so the view route can refuse it rather
+ * than draw the default under a URL that asked for something else. Read by
+ * both wire formats under the same key — the page sends back the spec the
+ * server gave it — so neither reader can lose the diagram on the way.
+ */
+function readDiagram(raw: unknown): ViewSpec['diagram'] | null {
+  if (raw === undefined || raw === '') return 'classes';
+  return raw === 'classes' || raw === 'components' ? raw : null;
 }
 
 /**
@@ -1038,6 +1085,9 @@ async function graphFor(session: Session, at: string | null): Promise<Graph | nu
  * `selectView` normalises it, so `src/graph/` and `src/graph` are one question.
  */
 function missingFrom(graph: Graph, spec: ViewSpec): string | null {
+  // A component diagram ignores both, and refusing a scope it will not read
+  // would be a 404 for a picture that can be drawn.
+  if (spec.diagram === 'components') return null;
   if (spec.focus !== null) {
     return graph.nodes.get(spec.focus)?.kind === 'file' ? null : `no such file: ${spec.focus}`;
   }
@@ -1096,6 +1146,7 @@ function toSocketSpec(raw: Record<string, unknown>): ViewSpec {
       hideTests: filter['hideTests'] === true,
     },
     at: readAt(raw['at']),
+    diagram: readDiagram(raw['diagram']) ?? 'classes',
   };
 }
 
@@ -1111,10 +1162,10 @@ function readMembers<T extends string>(raw: unknown, allowed: readonly T[]): T[]
 }
 
 const NODE_KINDS = ['class', 'function', 'interface', 'type', 'method', 'field'] as const;
-const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'associates'] as const;
+const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'associates', 'depends'] as const;
 
 /**
- * The two opt-in edge kinds, each also spellable as a flag of its own.
+ * The three opt-in edge kinds, each also spellable as a flag of its own.
  *
  * `?calls=1` is what CLAUDE.md documents and what everyone typed; only
  * `?edges=imports,calls` worked, and the URL that did not was not refused —
@@ -1123,7 +1174,7 @@ const EDGE_KINDS = ['imports', 'extends', 'implements', 'calls', 'associates'] a
  * project cares about most, so the short form is read rather than dropped.
  * A flag adds to what `edges=` asked for; it never takes anything away.
  */
-const EDGE_FLAGS = ['calls', 'associates'] as const;
+const EDGE_FLAGS = ['calls', 'associates', 'depends'] as const;
 
 /**
  * Names in `edges=` that are not edge kinds. A typo there used to fall back to

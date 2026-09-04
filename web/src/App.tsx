@@ -66,15 +66,20 @@ import {
   type ViewGraph,
   type ViewNode,
   type ViewResponse,
+  type FlowTarget,
+  flowBlocked as flowBlockedBy,
 } from './api';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
+import { Flow } from './Flow';
 import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
-import { Sidebar, symbolKey } from './Sidebar';
+import { Sidebar, symbolKey, type ComponentLink, type ComponentSelection } from './Sidebar';
 import { Categories, type GroupEditor } from './Categories';
 import { BoxNode, type BoxNodeType } from './BoxNode';
+import { RelationEdge, type RelationData } from './RelationEdge';
+import { ComponentNode, type ComponentNodeType } from './ComponentNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { Activity } from './Activity';
 import { Repository } from './Repository';
@@ -111,6 +116,7 @@ import {
   MAX_MEMBERS,
   NODE_WIDTH,
   boxHeight,
+  componentHeight,
   layoutNodes,
   type ClusterBounds,
   type Rect,
@@ -119,9 +125,14 @@ import { matchedAt } from './commands';
 import { CommandPalette } from './CommandPalette';
 import { FindBar } from './FindBar';
 
-const nodeTypes = { box: BoxNode, frame: GroupNode };
+const nodeTypes = { box: BoxNode, frame: GroupNode, component: ComponentNode };
+/** Every line is one component: what a kind adds is a mark at an end. */
+const edgeTypes = { relation: RelationEdge };
 
-type FlowNode = BoxNodeType | GroupNodeType;
+type FlowNode = BoxNodeType | GroupNodeType | ComponentNodeType;
+
+/** What every component box's id begins with; the rest is the category's id. */
+const COMPONENT_PREFIX = 'component:';
 
 const BARS: readonly BarId[] = ['leftbar', 'sidebar'];
 
@@ -251,17 +262,19 @@ function withMeasured(node: FlowNode): FlowNode {
 
 const MAX_DEPTH = 4;
 const PULSE_MS = 2500;
-/** The default edge kinds plus calls; the button is a shortcut for this set. */
 /**
- * The edge kinds a URL asks for. Structure is always drawn; calls and
- * associations are opted into, and each is spelled out in the CSV rather than
- * enumerated as a combination — two flags are four strings, and the next one
- * would be eight.
+ * The edge kinds a URL asks for. Structure is always drawn; calls,
+ * associations and dependencies are opted into, and each is spelled out in
+ * the CSV rather than enumerated as a combination — two flags are four
+ * strings, and three are eight.
  */
 const BASE_EDGES = ['imports', 'extends', 'implements'] as const;
 
-function edgeParam(calls: boolean, associates: boolean): string | null {
-  const extra = [calls ? 'calls' : '', associates ? 'associates' : ''].filter(Boolean);
+/** The three opt-in kinds, each also a `?calls=1`-style flag the server reads. */
+const OPT_IN_EDGES = ['calls', 'associates', 'depends'] as const;
+
+function edgeParam(calls: boolean, associates: boolean, depends: boolean): string | null {
+  const extra = [calls ? 'calls' : '', associates ? 'associates' : '', depends ? 'depends' : ''].filter(Boolean);
   return extra.length === 0 ? null : [...BASE_EDGES, ...extra].join(',');
 }
 
@@ -414,8 +427,8 @@ export function App() {
    * wherever the mouse left it".
    */
   const [findFocus, setFindFocus] = useState(0);
-  /** Where the right-click menu is, and what was under the cursor. */
-  const [contextAt, setContextAt] = useState<{ x: number; y: number; node: string | null } | null>(null);
+  /** Where the right-click menu is, and what was under the cursor: a box, and a member row inside it. */
+  const [contextAt, setContextAt] = useState<{ x: number; y: number; node: string | null; member: string | null } | null>(null);
   /**
    * Lifted out of the panel that used to own it: two panels read this now, and
    * the left one is the reason the data exists.
@@ -563,6 +576,18 @@ export function App() {
   /** The commit log, for the Graph and for naming the commit on screen. */
   const [log, setLog] = useState<LogResponse | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
+  /**
+   * The symbol whose control flow is drawn over the canvas, or null. Nothing
+   * is fetched for it until it is set: the flow is a parse, and a page that
+   * parsed every function it looked at would violate the spirit of decision 1.
+   */
+  const [flowTarget, setFlowTarget] = useState<FlowTarget | null>(null);
+  /**
+   * The symbol the panel has open, reported by the panel, so the View menu
+   * can call it the selection. A box is a file and a file has no flow; the
+   * panel's Declares list is where a function is picked.
+   */
+  const [panelSymbol, setPanelSymbol] = useState<(FlowTarget & { kind: string }) | null>(null);
   const [agentCalls, setAgentCalls] = useState<AgentCall[]>([]);
   /** What the tool cannot read here. Null until the census has come back. */
   const [languageReport, setLanguageReport] = useState<LanguageReport | null>(null);
@@ -988,7 +1013,12 @@ export function App() {
     // propose a category of 258 files nobody looked at, under a name they
     // meant for three boxes. Counted from the view rather than from `picked`,
     // which can still name a box the last update removed.
-    const boxes = chosen.filter((node) => node.kind !== 'bundle');
+    //
+    // A component too: it already is a category, and a category drawn by hand
+    // over two found ones would be no box at all on the component diagram —
+    // the found ones claim its files first — so the gesture would write a
+    // group and draw nothing.
+    const boxes = chosen.filter((node) => node.kind !== 'bundle' && node.kind !== 'component');
     return { boxes: boxes.length, files: [...new Set(boxes.flatMap((node) => node.files))] };
   }, [data?.view, picked]);
 
@@ -1012,6 +1042,7 @@ export function App() {
   // The calls button is one case of the edge filter, not a flag of its own.
   const showCalls = view?.spec.filter.edgeKinds.includes('calls') ?? false;
   const showAssoc = view?.spec.filter.edgeKinds.includes('associates') ?? false;
+  const showDepends = view?.spec.filter.edgeKinds.includes('depends') ?? false;
   const onlyChanged = view?.spec.filter.onlyChanged ?? false;
   /**
    * Tests, fixtures and stories left out. Carried through every navigation
@@ -1027,6 +1058,14 @@ export function App() {
    */
   const at = view?.spec.at ?? null;
   const frozen = at !== null;
+  /**
+   * The categories as boxes, rather than files. A view, carried in the URL as
+   * `diagram=components`; the filters and the commit apply to it as to any
+   * other, and every helper that rebuilds the URL from the live one keeps it.
+   * The ones that build a URL afresh — a focus, a scope — drop it on purpose:
+   * a place in the project is the class diagram's to draw.
+   */
+  const componentsOn = view?.spec.diagram === 'components';
 
   useEffect(() => {
     let cancelled = false;
@@ -1375,7 +1414,11 @@ export function App() {
       .filter(
         (node) =>
           matchedAt(node.label, needle).length > 0 ||
-          node.members.some((member) => matchedAt(member.name, needle).length > 0),
+          node.members.some((member) => matchedAt(member.name, needle).length > 0) ||
+          // A component's rows are what it provides, and they are drawn.
+          (node.component?.provides.symbols ?? []).some(
+            (symbol) => matchedAt(symbol.name, needle).length > 0,
+          ),
       )
       .map((node) => node.id);
     return { boxes, on: new Set(boxes) };
@@ -1435,9 +1478,57 @@ export function App() {
    * more expensive one.
    */
   const selectedFile =
-    selected === null || selectedBox?.kind === 'folder' || selectedBox?.kind === 'bundle'
+    selected === null ||
+    selectedBox?.kind === 'folder' ||
+    selectedBox?.kind === 'bundle' ||
+    selectedBox?.kind === 'component'
       ? null
       : selected;
+
+  /**
+   * The category a component box was drawn from, by the id it was keyed on —
+   * the stored id for a named one, so the join survives membership drift the
+   * way a frame's name does. Null for the no-category box, whose id names
+   * nothing in the list, and for anything that is not a component.
+   */
+  const categoryOf = (boxId: string): GroupSuggestion | null => {
+    if (!boxId.startsWith(COMPONENT_PREFIX)) return null;
+    const key = boxId.slice(COMPONENT_PREFIX.length);
+    return clusters.find((group) => (group.storedId ?? group.id) === key) ?? null;
+  };
+
+  /**
+   * The selected component, with the lines that touch it, for the panel.
+   * Read off the view's own edges, so what the panel lists under "Imported
+   * by" is exactly the arrows on the canvas; null whenever the selection is
+   * anything else. Heaviest line first, which is the one worth reading.
+   */
+  const componentSelection = useMemo((): ComponentSelection | null => {
+    if (view === undefined || selectedBox === null || selectedBox.component === undefined) return null;
+    const labelOf = new Map(view.nodes.map((node) => [node.id, node.label]));
+    const link = (edge: ViewGraph['edges'][number], other: string): ComponentLink => ({
+      id: other,
+      label: labelOf.get(other) ?? other,
+      kind: edge.kind,
+      weight: edge.weight,
+      ...(edge.guessed === true ? { guessed: true as const } : {}),
+    });
+    const heaviest = (a: ComponentLink, b: ComponentLink) => b.weight - a.weight || a.label.localeCompare(b.label);
+    return {
+      id: selectedBox.id,
+      label: selectedBox.label,
+      facts: selectedBox.component,
+      files: selectedBox.files,
+      importedBy: view.edges
+        .filter((edge) => edge.to === selectedBox.id)
+        .map((edge) => link(edge, edge.from))
+        .sort(heaviest),
+      imports: view.edges
+        .filter((edge) => edge.from === selectedBox.id)
+        .map((edge) => link(edge, edge.to))
+        .sort(heaviest),
+    };
+  }, [view, selectedBox]);
 
   /** The held files as rows. The path is also the id they are explained under. */
   const readingFiles = useMemo(
@@ -1579,6 +1670,76 @@ export function App() {
   // arrow on every render would rebuild every box with it.
   const explainFile = useCallback((path: string) => explainOne(path, 'file'), [explainOne]);
   const explainSymbol = useCallback((id: string) => explainOne(id, 'symbol'), [explainOne]);
+
+  /**
+   * Draw the control flow of one symbol over the canvas. This is the only
+   * thing that fetches a flow, and it runs on a press and nothing else.
+   */
+  const openFlow = useCallback((target: FlowTarget) => {
+    // The two cover the same ground; the welcome has no close of its own when
+    // the project is empty, and there is no flow to draw of an empty project.
+    setShowWelcome(false);
+    setFlowTarget(target);
+  }, []);
+
+  /**
+   * Why a flow cannot be asked for a symbol in a file, or null. The language
+   * is the file box's, when the diagram is drawing one; a file collapsed into
+   * a folder has no box to read it off, and then the engine answers instead.
+   */
+  const flowBlocked = useCallback(
+    (kind: string, filePath: string): string | null => {
+      const box = view?.nodes.find((node) => node.kind === 'file' && node.id === filePath);
+      return flowBlockedBy(kind, box?.language ?? null);
+    },
+    [view],
+  );
+
+  /**
+   * What "the selection" is when its flow is asked for: the symbol open in
+   * the panel, else the one symbol being followed. A box is a file, and a
+   * file has no flow, so `selected` on its own is never it — the sentence in
+   * `blocked` is the one the menu greys with, and it says where to pick one.
+   */
+  const flowSelection: { target: FlowTarget; kind: string } | { blocked: string } = (() => {
+    if (panelSymbol !== null) return { target: panelSymbol, kind: panelSymbol.kind };
+    const one = reach.found.length === 1 ? reach.found[0] : undefined;
+    if (one !== undefined) {
+      return { target: { id: one.id, name: one.name, filePath: one.filePath }, kind: one.kind };
+    }
+    if (following.size > 1) return { blocked: 'Several symbols are followed — open one in the panel to pick it' };
+    // A component box is a category and a folder box a pile: neither is a
+    // file, and telling the reader to look for a Declares list the panel does
+    // not show sends them to a row that is not there.
+    const box = view?.nodes.find((node) => node.id === selected);
+    return {
+      blocked:
+        selected === null
+          ? 'Nothing selected — open a function or method in the panel, or follow one'
+          : box?.kind === 'component'
+            ? 'A component is a category; pick a function or method from its Provides list in the panel'
+            : box !== undefined && box.kind !== 'file'
+              ? 'A box standing for several files lists no symbols — open one of its files first'
+              : 'A box is a file; pick a function or method from the Declares list in the panel',
+    };
+  })();
+  const flowItem: MenuItem = {
+    label: 'Control flow of the selection…',
+    ...('blocked' in flowSelection
+      ? { disabledBecause: flowSelection.blocked }
+      : (() => {
+          const why = flowBlocked(flowSelection.kind, flowSelection.target.filePath);
+          const { target } = flowSelection;
+          return why === null ? { run: () => openFlow(target) } : { disabledBecause: why };
+        })()),
+  };
+
+  // Navigating closes it. A link means "show me this", and the overlay would
+  // hide exactly that; a project switch clears the URL and lands here too, so
+  // a flow never outlives the project whose file it was read from.
+  useEffect(() => {
+    setFlowTarget(null);
+  }, [search]);
 
   const cancelExplain = useCallback(() => {
     cancelExplanations().then(
@@ -1775,8 +1936,16 @@ export function App() {
 
     const builtEdges: Edge[] = view.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
+      type: 'relation',
       source: edge.from,
       target: edge.to,
+      // What the marks at either end are drawn from, and nothing the view did
+      // not say: the roles and the diamond arrive decided — see RelationEdge.
+      data: {
+        kind: edge.kind,
+        ...(edge.roles === undefined ? {} : { roles: edge.roles }),
+        ...(edge.ownership === undefined ? {} : { ownership: edge.ownership }),
+      } satisfies RelationData,
       // An edge stays lit only when both ends are in it. One end is not a
       // relationship the followed symbol has any part in.
       //
@@ -1791,7 +1960,11 @@ export function App() {
       ...(edge.weight > 1 ? { label: String(edge.weight) } : {}),
     }));
 
-    const boxes: BoxNodeType[] = view.nodes.map((node) => ({
+    /** A class box is a file, a folder or a bundle; a component is a node type of its own. */
+    const isClassBox = (node: ViewNode): node is ViewNode & { kind: 'file' | 'folder' | 'bundle' } =>
+      node.kind !== 'component';
+
+    const boxes: BoxNodeType[] = view.nodes.filter(isClassBox).map((node) => ({
       id: node.id,
       type: 'box',
       position: { x: 0, y: 0 },
@@ -1859,7 +2032,57 @@ export function App() {
       },
     }));
 
+    // The categories as boxes, under `?diagram=components`. Measured from what
+    // the box draws — a count line and a compartment of what it provides —
+    // the way a file box is measured from its members, so dagre places it at
+    // the size it renders. The colour is the category's own, joined off the
+    // rows the Categories section lists; the box has no way to carry one. A
+    // named category that chose none wears slate, as its frame does; a
+    // category nobody has named, and the no-category box, wear nothing.
+    const components: ComponentNodeType[] = view.nodes.flatMap((node): ComponentNodeType[] => {
+      if (node.kind !== 'component' || node.component === undefined) return [];
+      const { symbols, total } = node.component.provides;
+      const color = categoryOf(node.id)?.color ?? (node.component.name === null ? null : 'slate');
+      return [
+        {
+          id: node.id,
+          type: 'component',
+          position: { x: 0, y: 0 },
+          width: NODE_WIDTH,
+          height: componentHeight(symbols.length, total > symbols.length),
+          selected: picked.has(node.id),
+          ...(picked.has(node.id) ? { style: PICKED_STYLE } : {}),
+          data: {
+            label: node.label,
+            facts: node.component,
+            files: node.files,
+            color,
+            changed: changedBoxIds.has(node.id),
+            queried: queriedBoxIds.has(node.id),
+            gitChanged: node.gitChanged,
+            language: node.language,
+            showLanguage: mixedProject,
+            test: node.test,
+            parseError: node.parseError,
+            unresolved: node.unresolved,
+            aside: dimming && !lit(node.id),
+            asideNote: found === null ? reach.note : null,
+            following,
+            related: relatedIds,
+            onFollow: toggleFollowing,
+          },
+        },
+      ];
+    });
+
+    /** Every box dagre places and keepLayout keeps, whichever diagram this is. */
+    const placed: (BoxNodeType | ComponentNodeType)[] = [...boxes, ...components];
+
     const shown = clusters.filter((group) => group.state !== 'rejected');
+    // No frames on the component diagram: a category is a box there, and a
+    // frame's members are file paths that name no box on it. Passing them
+    // through would draw nothing either way; leaving them out says so.
+    const frameable = componentsOn ? [] : shown;
     // Everything a frame is drawn from, not just which groups exist. Dragging a
     // corner or taking a file out of a hand-drawn group changes no id, so a key
     // of ids alone would hand back the cached bounds and the frame would never
@@ -1896,8 +2119,8 @@ export function App() {
     // Every box already placed, at the same size it had.
     const sameBoxes =
       !fresh &&
-      boxes.length === previous.rects.size &&
-      boxes.every((box) => previous.rects.get(box.id)?.height === box.height);
+      placed.length === previous.rects.size &&
+      placed.every((box) => previous.rects.get(box.id)?.height === box.height);
     const sameShape = sameBoxes && shapeKey === previous.clusterKey;
 
     // Only the contents changed: every box and frame stays exactly where it was.
@@ -1909,12 +2132,12 @@ export function App() {
     // the new one goes beside its most connected neighbour, and the frames
     // are redrawn around where everything now is.
     const laid = fresh
-      ? layoutNodes(boxes, builtEdges, shown, canvasRef.current?.clientHeight ?? 0)
+      ? layoutNodes(placed, builtEdges, frameable, canvasRef.current?.clientHeight ?? 0)
       : sameShape
-        ? { nodes: keepLayout(previous.rects, boxes, []), clusters: previous.clusters }
+        ? { nodes: keepLayout(previous.rects, placed, []), clusters: previous.clusters }
         : (() => {
-            const kept = keepLayout(previous.rects, boxes, view.edges);
-            return { nodes: kept, clusters: frameClusters(kept, shown) };
+            const kept = keepLayout(previous.rects, placed, view.edges);
+            return { nodes: kept, clusters: frameClusters(kept, frameable) };
           })();
 
     layoutRef.current = {
@@ -1931,7 +2154,7 @@ export function App() {
 
     const byId = new Map(shown.map((group) => [group.id, group]));
     /** Where every box actually landed, for asking what a locked frame missed. */
-    const placed = new Map(laid.nodes.map((box) => [box.id, box]));
+    const landed = new Map(laid.nodes.map((box) => [box.id, box]));
     laid.clusters.sort((a, b) => a.depth - b.depth);
     // Frames first, so they render behind the boxes they enclose.
     const frames: GroupNodeType[] = laid.clusters.flatMap((bounds) => {
@@ -1968,7 +2191,7 @@ export function App() {
             outside:
               group.locked === true
                 ? group.files.filter((file) => {
-                    const box = placed.get(file);
+                    const box = landed.get(file);
                     if (!box) return false;
                     return (
                       box.position.x < bounds.x ||
@@ -2026,6 +2249,7 @@ export function App() {
     clusters,
     clustersFor,
     relayoutToken,
+    componentsOn,
     decide,
     editGroup,
     renameGroup,
@@ -2091,13 +2315,18 @@ export function App() {
     // A frame is a node too, and it covers most of the canvas. Falling through
     // to the pane menu rather than returning is what stops a right-click inside
     // a group from being a click that does nothing at all.
-    const box = node !== null && node.type === 'box' ? node : null;
+    const box = node !== null && (node.type === 'box' || node.type === 'component') ? node : null;
     if (box !== null) setSelected((current) => (current === box.id ? current : box.id));
-    setContextAt({ x: event.clientX, y: event.clientY, node: box?.id ?? null });
+    // The member row the click landed on, read off the row itself: the box
+    // stamps `data-member-id` on each one, and React Flow hands this the box,
+    // not the row. A right-click on the title, or on a folder, names none.
+    const row = event.target instanceof Element ? event.target.closest('[data-member-id]') : null;
+    const member = box !== null && box.type === 'box' ? (row?.getAttribute('data-member-id') ?? null) : null;
+    setContextAt({ x: event.clientX, y: event.clientY, node: box?.id ?? null, member });
   }, []);
 
   const handleNodeClick = useCallback((_event: MouseEvent, node: FlowNode) => {
-    if (node.type !== 'box') return;
+    if (node.type === 'frame') return;
     setSelected(node.id);
     setShowSidebar(true);
   }, []);
@@ -2133,8 +2362,11 @@ export function App() {
       // A bundle stands for a pile of neighbours and is not a place in the
       // project: there is no scope to look inside and no file to focus on, so
       // a double click on one does nothing rather than navigating to an id
-      // that names no path.
-      if (kind === 'bundle') return;
+      // that names no path. Nor is a component: a category has no scope to
+      // look inside — its files span directories — and no file to focus on,
+      // so a double click on one is not bound at all, and this refuses the
+      // id for the same reason should anything else hand it one.
+      if (kind === 'bundle' || kind === 'component') return;
       const params = new URLSearchParams();
       if (kind === 'folder') {
         params.set('scope', target);
@@ -2142,14 +2374,14 @@ export function App() {
         params.set('focus', target);
         if (depth !== 1) params.set('depth', String(depth));
       }
-      const edges = edgeParam(showCalls, showAssoc);
+      const edges = edgeParam(showCalls, showAssoc, showDepends);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, depth, showCalls, showAssoc, onlyChanged, hideTests, at],
+    [navigate, depth, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
   );
 
   const handleNodeDoubleClick = useCallback(
@@ -2184,14 +2416,14 @@ export function App() {
     (scope: string) => {
       const params = new URLSearchParams();
       if (scope !== '') params.set('scope', scope);
-      const edges = edgeParam(showCalls, showAssoc);
+      const edges = edgeParam(showCalls, showAssoc, showDepends);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, showCalls, showAssoc, onlyChanged, hideTests, at],
+    [navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
   );
 
   const changeDepth = useCallback(
@@ -2200,14 +2432,14 @@ export function App() {
       const params = new URLSearchParams();
       params.set('focus', focus);
       if (next !== 1) params.set('depth', String(next));
-      const edges = edgeParam(showCalls, showAssoc);
+      const edges = edgeParam(showCalls, showAssoc, showDepends);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [focus, navigate, showCalls, showAssoc, onlyChanged, hideTests, at],
+    [focus, navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -2221,23 +2453,30 @@ export function App() {
 
   /** Built from the live URL so every other part of the view survives the flip. */
   const toggleEdgeKind = useCallback(
-    (calls: boolean, associates: boolean) => {
+    (calls: boolean, associates: boolean, depends: boolean) => {
       const params = new URLSearchParams(window.location.search);
-      const edges = edgeParam(calls, associates);
+      const edges = edgeParam(calls, associates, depends);
       if (edges === null) params.delete('edges');
       else params.set('edges', edges);
+      // The server reads `?calls=1` as well and adds it to whatever `edges=`
+      // said, so a flag left in the URL would put back the kind just taken out.
+      for (const kind of OPT_IN_EDGES) params.delete(kind);
       navigate(params);
     },
     [navigate],
   );
 
   const toggleCalls = useCallback(
-    () => toggleEdgeKind(!showCalls, showAssoc),
-    [toggleEdgeKind, showCalls, showAssoc],
+    () => toggleEdgeKind(!showCalls, showAssoc, showDepends),
+    [toggleEdgeKind, showCalls, showAssoc, showDepends],
   );
   const toggleAssoc = useCallback(
-    () => toggleEdgeKind(showCalls, !showAssoc),
-    [toggleEdgeKind, showCalls, showAssoc],
+    () => toggleEdgeKind(showCalls, !showAssoc, showDepends),
+    [toggleEdgeKind, showCalls, showAssoc, showDepends],
+  );
+  const toggleDepends = useCallback(
+    () => toggleEdgeKind(showCalls, showAssoc, !showDepends),
+    [toggleEdgeKind, showCalls, showAssoc, showDepends],
   );
 
   const toggleChanged = useCallback(() => {
@@ -2246,6 +2485,24 @@ export function App() {
     else params.set('changed', '1');
     navigate(params);
   }, [navigate]);
+
+  /**
+   * Flip between the class diagram and the component diagram. Built from the
+   * live URL so every filter, the edge kinds and the commit survive the flip;
+   * scope, focus and depth do not, because a component diagram is the whole
+   * project and a URL still naming a directory would describe a picture that
+   * is not on screen. The way back lands at the root, and the crumb says so.
+   */
+  const setDiagram = useCallback(
+    (components: boolean) => {
+      const params = new URLSearchParams(window.location.search);
+      for (const key of ['scope', 'focus', 'depth']) params.delete(key);
+      if (components) params.set('diagram', 'components');
+      else params.delete('diagram');
+      navigate(params);
+    },
+    [navigate],
+  );
 
   /**
    * Changing the base publishes a fresh view to every connected client, so a
@@ -2465,15 +2722,20 @@ export function App() {
    *      is ever open: both are an input that swallows every keystroke, and
    *      two of those stacked is two lists arguing over Enter. Opening either
    *      closes the other.
-   *   3. The find bar. *Under* the palettes rather than above them, because
+   *   3. The flow overlay and the welcome screen. Above the find bar, because
+   *      they paint over it: both cover the canvas at z-index 20 and the bar
+   *      is 6, so closing the bar first would spend the press on something
+   *      the reader cannot see. The two are never up together — opening a
+   *      flow closes the welcome — so between them there is no order.
+   *   4. The find bar. *Under* the palettes rather than above them, because
    *      it is the one overlay that is not modal — it has no backdrop, the
    *      canvas stays live behind it, and a palette opened and shut over it
    *      leaves it exactly where it was. That is VS Code's behaviour too.
-   *   4. The page itself: the selection, the following lens, the welcome
-   *      screen, and a view frozen at a commit.
+   *   5. The page itself: the selection, the following lens, and a view
+   *      frozen at a commit.
    *
-   * Returning true means the press was spent here, and layer 4 never sees it.
-   * Layers 1 to 3 each close themselves when the key was pressed inside them,
+   * Returning true means the press was spent here, and layer 5 never sees it.
+   * Layers 1 to 4 each close themselves when the key was pressed inside them,
    * which is the usual case; this is what answers when the focus had wandered
    * off — a click on the canvas with the find bar still up, say — and the key
    * would otherwise fall straight through to the page.
@@ -2487,9 +2749,13 @@ export function App() {
       setCommandsOpen(false);
       return true;
     }
-    // Above the find bar, because it paints over it: `.welcome` is z-index 20
-    // and `.findbar` is 6, so closing the bar first spends the press on
-    // something the reader cannot see and reads as ⎋ doing nothing.
+    // Above the find bar, because they paint over it: `.flow` and `.welcome`
+    // are z-index 20 and `.findbar` is 6, so closing the bar first spends the
+    // press on something the reader cannot see and reads as ⎋ doing nothing.
+    if (flowTarget !== null) {
+      setFlowTarget(null);
+      return true;
+    }
     if (showWelcome) {
       setShowWelcome(false);
       return true;
@@ -2808,10 +3074,14 @@ export function App() {
   // nothing to go back from, so the key does not push a no-op history entry.
   backToNowRef.current = frozen ? backToNow : null;
 
-  const groupOfSelection = useMemo(
-    () => (selected === null ? null : clusters.find((group) => group.files.includes(selected)) ?? null),
-    [clusters, selected],
-  );
+  const groupOfSelection = useMemo(() => {
+    if (selected === null) return null;
+    // A component box is a category: the row it was drawn from is the answer,
+    // and looking for its id among the members would find nothing.
+    if (selectedBox?.kind === 'component') return categoryOf(selected);
+    return clusters.find((group) => group.files.includes(selected)) ?? null;
+    // `categoryOf` reads `clusters` and nothing else, and `clusters` is listed.
+  }, [clusters, selected, selectedBox]);
 
   const goToMissed = useCallback(() => {
     const latest = missed.at(-1);
@@ -2829,8 +3099,14 @@ export function App() {
    * so the only way to find out what had been narrowed was to clear everything
    * and watch what came back.
    */
-  const activeFilters: { key: string; label: string }[] = [
+  const activeFilters: { key: string; label: string; title?: string }[] = [
     params.has('changed') ? { key: 'changed', label: 'changes only' } : null,
+    // The opt-in edge kinds are filters too — `edgeKinds` lives in the
+    // filter — and read off the view's echo rather than the URL, because the
+    // server also honours `?calls=1`. Each chip takes away its own kind.
+    showCalls ? { key: 'calls', label: 'call edges', title: 'Stop drawing call edges' } : null,
+    showAssoc ? { key: 'associates', label: 'associations', title: 'Stop drawing association edges' } : null,
+    showDepends ? { key: 'depends', label: 'dependencies', title: 'Stop drawing dependency edges' } : null,
     params.get('only') ? { key: 'only', label: `only ${params.get('only') ?? ''}` } : null,
     params.get('hide') ? { key: 'hide', label: `hiding ${params.get('hide') ?? ''}` } : null,
     params.get('kinds')
@@ -2842,7 +3118,7 @@ export function App() {
     params.get('tests') === '0'
       ? { key: 'tests', label: `${view?.hiddenTests ?? 0} tests hidden` }
       : null,
-  ].filter((chip): chip is { key: string; label: string } => chip !== null);
+  ].filter((chip): chip is { key: string; label: string; title?: string } => chip !== null);
 
   /**
    * Too many boxes for the page to be quick about, and one hop fewer is the
@@ -2915,6 +3191,11 @@ export function App() {
       : null;
 
   const dropFilter = (key: string) => {
+    // An edge kind is one name inside `edges=`, not a key of its own.
+    if (key === 'calls' || key === 'associates' || key === 'depends') {
+      toggleEdgeKind(showCalls && key !== 'calls', showAssoc && key !== 'associates', showDepends && key !== 'depends');
+      return;
+    }
     const next = new URLSearchParams(window.location.search);
     next.delete(key);
     navigate(next);
@@ -2970,6 +3251,62 @@ export function App() {
     .map((node) => node.id);
   const anyExpanded = expandable.some((id) => expanded.has(id));
 
+  /**
+   * The component diagram, as one item for every place it is offered — the
+   * View menu, the canvas menu, a component box's own menu, and the palette
+   * through the first — so they cannot disagree about its name or whether it
+   * is on. Never greyed: with no categories the engine still draws one box
+   * saying so, which is an answer.
+   */
+  const diagramItem: MenuItem = {
+    label: 'Components',
+    checked: componentsOn,
+    run: () => setDiagram(!componentsOn),
+  };
+  /**
+   * Whether anything on screen could carry a has-a or a dependency line: a
+   * file box listing a class or an interface, or a box standing for a pile —
+   * a folder, a bundle, a component — whose classes it does not list and so
+   * cannot be said to lack. Nothing loaded yet is not "no class" either.
+   */
+  const classifiersInView =
+    view === undefined ||
+    view.nodes.some(
+      (node) =>
+        node.kind !== 'file' ||
+        node.members.some((member) => member.kind === 'class' || member.kind === 'interface'),
+    );
+  /**
+   * The two class-diagram lines, each greyed with the reason when there is
+   * no classifier to draw one from — unless it is already on, when the item
+   * is the way back off. A field's declared type is the has-a UML exists to
+   * show, and an import edge cannot say it: an import means this file
+   * mentions that one. A dependency is weaker still: a type named only in a
+   * signature, dashed with an open head.
+   */
+  const noClassifier = { disabledBecause: 'No class or interface in view to draw one from' };
+  const assocItem: MenuItem = {
+    label: 'Association edges (has-a)',
+    checked: showAssoc,
+    ...(showAssoc || classifiersInView ? { run: toggleAssoc } : noClassifier),
+  };
+  const dependsItem: MenuItem = {
+    label: 'Dependency edges (named in a signature)',
+    checked: showDepends,
+    ...(showDepends || classifiersInView ? { run: toggleDepends } : noClassifier),
+  };
+  /** A component is a category, not a place, and three items need to say so. */
+  const selectedComponent = selectedBox?.kind === 'component';
+  /**
+   * Why "Create category from selection…" cannot run. On the component
+   * diagram the reason is not that too few boxes are picked — a component is
+   * never in the selection a category is drawn from, see `selection` — so the
+   * usual sentence would send the reader shift-clicking boxes that do not count.
+   */
+  const createBlocked = componentsOn
+    ? 'A category is drawn from files; pick boxes on the class diagram'
+    : 'Shift-click two or more boxes first';
+
   const menus: Menu[] = [
     {
       title: 'File',
@@ -2998,19 +3335,28 @@ export function App() {
           shortcut: '⌘C',
           ...(selected === null
             ? { disabledBecause: 'Nothing selected' }
-            : { run: () => void navigator.clipboard.writeText(selected) }),
+            : selectedComponent
+              ? { disabledBecause: 'A component has no path; its files are listed in the panel' }
+              : { run: () => void navigator.clipboard.writeText(selected) }),
         },
         {
           label: 'Open in editor',
           ...(selected === null || data === null
             ? { disabledBecause: 'Nothing selected' }
-            : { run: () => void openInEditor(data.root, selected, 1) }),
+            : selectedComponent
+              ? { disabledBecause: 'A component is many files; pick one of them in the panel' }
+              : { run: () => void openInEditor(data.root, selected, 1) }),
         },
         {
           label: 'Reject this category',
           separatorBefore: true,
           ...(groupOfSelection === null
-            ? { disabledBecause: 'The selection is not in a category' }
+            ? {
+                disabledBecause:
+                  selectedBox?.component?.uncategorised === true
+                    ? 'These files are in no category'
+                    : 'The selection is not in a category',
+              }
             : { run: () => decide(groupOfSelection, groupOfSelection.name ?? '', 'rejected') }),
         },
         {
@@ -3027,7 +3373,11 @@ export function App() {
       items: [
         {
           label: 'Focus the selection',
-          ...(selected === null ? { disabledBecause: 'Nothing selected' } : { run: () => goTo(selected, 'file') }),
+          ...(selected === null
+            ? { disabledBecause: 'Nothing selected' }
+            : selectedComponent
+              ? { disabledBecause: 'A component is a category, not a place; focus one of its files from the panel' }
+              : { run: () => goTo(selected, 'file') }),
         },
         {
           // The third way in, and the one the readers who found none went
@@ -3052,7 +3402,7 @@ export function App() {
           // it would cover are listed: a category is worth seeing before it is
           // worth naming. The section unfolds itself for the form.
           ...(selection.boxes < 2
-            ? { disabledBecause: 'Shift-click two or more boxes first' }
+            ? { disabledBecause: createBlocked }
             : { run: () => setCreating(true) }),
         },
         { label: 'Clear selection', shortcut: '⎋', separatorBefore: true, run: clearSelection },
@@ -3086,10 +3436,15 @@ export function App() {
             ? { disabledBecause: 'Every panel is already at its default size' }
             : { run: () => commit(defaultLayout()) }),
         },
+        // Which diagram, before what is drawn on it. A checked item, so the
+        // palette offers "View: Components" for free.
+        { ...diagramItem, separatorBefore: true },
+        // The third diagram, of one function rather than of the project, and
+        // the one place it can be typed: the palette is built from this bar.
+        flowItem,
         { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
-        // A field's declared type is the has-a UML exists to show, and an import
-        // edge cannot say it: an import means this file mentions that one.
-        { label: 'Association edges (has-a)', checked: showAssoc, run: toggleAssoc },
+        assocItem,
+        dependsItem,
         {
           label: 'Hide type-only files',
           separatorBefore: true,
@@ -3216,13 +3571,66 @@ export function App() {
     const target = contextAt?.node ?? null;
     const box = target === null ? undefined : view?.nodes.find((node) => node.id === target);
 
+    /**
+     * A component box. Not the file menu greyed five times over — a menu
+     * that is mostly grey teaches you to stop opening it — but what a category
+     * can be asked: to be taken out of the architecture, and the way back to
+     * the class diagram. Nothing here opens an editor or a scope, because a
+     * category is neither a file nor a directory.
+     */
+    if (box !== undefined && box.kind === 'component') {
+      const group = categoryOf(box.id);
+      const none = box.component?.uncategorised === true;
+      return [
+        {
+          label: group?.origin === 'manual' ? 'Delete this category' : 'Reject this category',
+          ...(group === null
+            ? { disabledBecause: none ? 'These files are in no category' : 'This category is not in the list on hand' }
+            : group.origin === 'manual'
+              ? { run: () => editGroup({ action: 'delete', id: addressOf(group) }) }
+              : { run: () => decide(group, group.name ?? '', 'rejected') }),
+        },
+        { ...diagramItem, separatorBefore: true },
+        { label: 'Fit to screen', shortcut: '⇧⌘F', run: fitToScreen },
+        { label: 'Re-layout', shortcut: '⇧⌘L', run: relayout },
+        {
+          label: 'Copy link to this view',
+          separatorBefore: true,
+          run: () => void navigator.clipboard.writeText(window.location.href),
+        },
+      ];
+    }
+
     if (box !== undefined) {
       // A bundle is a count of neighbours, not a place: its id names no path,
       // so nothing that takes one may run on it. Greyed with the reason, which
       // is the rule for every item here — an item that quietly did nothing
       // would be the decoration this menu does not have.
       const bundle = box.kind === 'bundle';
+      // The row the click landed on, when it was a member row of a file box.
+      // Its flow is the first item, because a right-click on a function is
+      // about that function; on the title it is about the file, and this
+      // row is left out rather than greyed as "no row here".
+      const member =
+        contextAt?.member === null || contextAt?.member === undefined || box.kind !== 'file'
+          ? undefined
+          : box.members.find((row) => row.id === contextAt.member);
+      const flowOfMember: MenuItem[] =
+        member === undefined
+          ? []
+          : [
+              (() => {
+                const why = flowBlockedBy(member.kind, box.language);
+                return {
+                  label: `Show control flow of ${member.name}`,
+                  ...(why === null
+                    ? { run: () => openFlow({ id: member.id, name: member.name, filePath: box.id }) }
+                    : { disabledBecause: why }),
+                };
+              })(),
+            ];
       return [
+        ...flowOfMember,
         {
           label: box.kind === 'file' ? 'Go here' : 'Look inside',
           ...(bundle
@@ -3246,7 +3654,7 @@ export function App() {
           label: `Create category from selection…`,
           separatorBefore: true,
           ...(selection.boxes < 2
-            ? { disabledBecause: 'Shift-click two or more boxes first' }
+            ? { disabledBecause: createBlocked }
             : { run: () => setCreating(true) }),
         },
         {
@@ -3291,7 +3699,7 @@ export function App() {
             ? 'Create category from selection…'
             : `Create category from ${selection.boxes} boxes…`,
         ...(selection.boxes < 2
-          ? { disabledBecause: 'Shift-click two or more boxes first' }
+          ? { disabledBecause: createBlocked }
           : { run: () => setCreating(true) }),
       },
       {
@@ -3324,8 +3732,10 @@ export function App() {
           ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
           : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) }),
       },
+      { ...diagramItem, separatorBefore: true },
       { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
-      { label: 'Association edges (has-a)', checked: showAssoc, run: toggleAssoc },
+      assocItem,
+      dependsItem,
       {
         label: 'Changes only',
         checked: onlyChanged,
@@ -3444,6 +3854,28 @@ export function App() {
           </span>
         )}
 
+        {/* Which diagram. At the end of the trail because it is a fact about
+            where you are: the component diagram is the whole project seen one
+            level up, and pressing this from inside a directory goes there.
+            Pressed, it is a mode and holds the accent, the way the Changes
+            count does while its filter is on. */}
+        {view !== undefined && (
+          <button
+            type="button"
+            className="diagram-toggle"
+            aria-pressed={componentsOn}
+            onClick={() => setDiagram(!componentsOn)}
+            title={
+              componentsOn
+                ? 'Back to the class diagram, at the root'
+                : 'Draw the categories as components: what each provides, and the imports between them summed onto one line per pair'
+            }
+          >
+            <i className="codicon codicon-package" aria-hidden="true" />
+            Components
+          </button>
+        )}
+
         {/* What is being followed, and — the part that matters — whether the
             answer is "nothing uses this" or "nothing could be resolved". Those
             look identical on the diagram and mean opposite things. */}
@@ -3523,7 +3955,7 @@ export function App() {
             type="button"
             className="filter-chip"
             onClick={() => dropFilter(chip.key)}
-            title={`Stop filtering by ${chip.label}`}
+            title={chip.title ?? `Stop filtering by ${chip.label}`}
           >
             {chip.label} <i className="codicon codicon-close" aria-hidden="true" />
           </button>
@@ -3686,6 +4118,16 @@ export function App() {
             focusToken={findFocus}
           />
         )}
+        {/* Over the canvas, like the welcome: the chrome stays reachable. */}
+        {flowTarget !== null && data !== null && (
+          <Flow
+            target={flowTarget}
+            root={data.root}
+            at={at}
+            revision={revision}
+            onClose={() => setFlowTarget(null)}
+          />
+        )}
         {(showWelcome || emptyProject) && (
           <Welcome
             onOpen={(path) => {
@@ -3716,6 +4158,7 @@ export function App() {
           nodes={viewMissing ? [] : nodes}
           edges={viewMissing ? [] : edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           onPaneContextMenu={(event) => openContext(event as MouseEvent, null)}
           onNodeContextMenu={openContext}
           onNodeDragStop={handleFrameDragStop}
@@ -3817,6 +4260,9 @@ export function App() {
                       : { label: box.label, files: box.files, of: bundleDirection(box.id) };
                   })()
             }
+            // A component's id names no path either; what it holds and what
+            // touches it come from the view, already in hand.
+            component={componentSelection}
             revision={revision}
             at={at}
             onSelect={setSelected}
@@ -3824,6 +4270,9 @@ export function App() {
             symbolIds={selectedSymbolIds}
             onExplainSymbol={explainSymbol}
             onExplainFile={explainFile}
+            onFlow={openFlow}
+            flowBlocked={flowBlocked}
+            onOpenSymbol={setPanelSymbol}
             following={{
               links: reach.found,
               gone: reach.gone,

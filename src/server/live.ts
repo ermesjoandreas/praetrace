@@ -1,6 +1,8 @@
 import type { Coverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import type { GraphStore } from '../graph/store.js';
+import type { Graph } from '../graph/types.js';
+import type { MergedGroups } from '../project/groups.js';
 import type { AgentCall, ExplainRun } from './session.js';
 import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
@@ -15,7 +17,14 @@ export interface LiveSocket {
 const OPEN = 1;
 
 /** What a client is shown when it connects, and after a project switch. */
-export const ROOT_SPEC: ViewSpec = { scope: '', focus: null, depth: 1, filter: NO_FILTER, at: null };
+export const ROOT_SPEC: ViewSpec = {
+  scope: '',
+  focus: null,
+  depth: 1,
+  filter: NO_FILTER,
+  at: null,
+  diagram: 'classes',
+};
 
 export interface LiveHub {
   add(socket: LiveSocket, spec: ViewSpec): void;
@@ -71,6 +80,12 @@ export interface LiveHub {
    * as they are now — so a frame on last week's diagram wears the name it was
    * given today. Its own message rather than a view update: the graph did not
    * change, and the page refetches the clusters itself.
+   *
+   * With one exception: a component box wears the category's name, so a
+   * client drawing components is pushed a fresh view as well, or an accepted
+   * name would sit in the panel while the box beside it still read "8 files
+   * together" until the next save. Not a frozen one — a frozen view is frozen,
+   * and the page refuses `update` frames there.
    */
   groupsChanged(): void;
   clientCount(): number;
@@ -82,6 +97,7 @@ export function createLiveHub(
     store: GraphStore;
     gitStatus(): GitStatus | null;
     coverage(): Coverage | null;
+    clustersOf(graph: Graph): MergedGroups;
   },
 ): LiveHub {
   const clients = new Map<LiveSocket, ViewSpec>();
@@ -94,6 +110,7 @@ export function createLiveHub(
   ): void => {
     if (socket.readyState !== OPEN) return;
     const session = getSession();
+    const graph = session.store.graph;
     socket.send(
       JSON.stringify({
         type,
@@ -102,7 +119,15 @@ export function createLiveHub(
         // meaning five minutes from now rather than five minutes from when it was set.
         // Coverage is taken, not read: this is synchronous by design, and the
         // session has already stamped the report on its way to publishing.
-        view: selectView(session.store.graph, spec, Date.now(), session.gitStatus(), session.coverage()),
+        // The categories the same way, and only for a client that draws them.
+        view: selectView(
+          graph,
+          spec,
+          Date.now(),
+          session.gitStatus(),
+          session.coverage(),
+          spec.diagram === 'components' ? session.clustersOf(graph).clusters : [],
+        ),
         changedFiles,
       }),
     );
@@ -159,6 +184,9 @@ export function createLiveHub(
       const payload = JSON.stringify({ type: 'groups' });
       for (const socket of clients.keys()) {
         if (socket.readyState === OPEN) socket.send(payload);
+      }
+      for (const [socket, spec] of clients) {
+        if (spec.diagram === 'components' && spec.at === null) push(socket, spec, [], 'update');
       }
     },
 

@@ -424,3 +424,69 @@ test('a Java interface gets Java\'s answer, not the one about type positions', (
   assert.doesNotMatch(links?.coverageNote ?? '', /type positions/);
   assert.match(links?.coverageNote ?? '', /Followed by name across the package/);
 });
+
+/**
+ * A class diagram's three has-a lines and its dashed one, as the panel words
+ * them. The diamond on the canvas is drawn from the same roles, so the word
+ * here and the shape there cannot disagree about which the source said.
+ */
+const owning: Graph = {
+  nodes: new Map(
+    [
+      node('tree.ts', 'file', 'tree.ts'),
+      node('tree.ts#Tree', 'class', 'tree.ts'),
+      node('tree.ts#Forest', 'class', 'tree.ts'),
+      node('tree.ts#Grove', 'class', 'tree.ts'),
+      node('tree.ts#Walker', 'class', 'tree.ts'),
+      node('tree.ts#Legacy', 'class', 'tree.ts'),
+      node('node.ts', 'file', 'node.ts'),
+      node('node.ts#Node', 'class', 'node.ts'),
+    ].map((n) => [n.id, n]),
+  ),
+  edges: [
+    { from: 'tree.ts#Tree', to: 'node.ts#Node', kind: 'associates', roles: [{ name: 'root', ownership: 'composition' }] },
+    { from: 'tree.ts#Forest', to: 'node.ts#Node', kind: 'associates', roles: [{ name: 'shared', ownership: 'aggregation' }] },
+    // One field built, one handed in: the source said two things, the line says neither.
+    {
+      from: 'tree.ts#Grove',
+      to: 'node.ts#Node',
+      kind: 'associates',
+      roles: [{ name: 'built', ownership: 'composition' }, { name: 'given', ownership: 'aggregation' }, { name: 'plain' }],
+    },
+    { from: 'tree.ts#Walker', to: 'node.ts#Node', kind: 'depends' },
+    // An association written before roles existed carries none, and is plain.
+    { from: 'tree.ts#Legacy', to: 'node.ts#Node', kind: 'associates' },
+  ],
+};
+
+test('an association says composed of, aggregates or holds — and never owns about a plain one', () => {
+  const phrase = (id: string) => describeSymbol(owning, id)?.uses.map((row) => [row.edge, row.phrase]);
+  assert.deepEqual(phrase('tree.ts#Tree'), [['associates', 'composed of']]);
+  assert.deepEqual(phrase('tree.ts#Forest'), [['associates', 'aggregates']]);
+  // Disagreeing roles, and no roles at all, both get the word that claims least.
+  assert.deepEqual(phrase('tree.ts#Grove'), [['associates', 'holds']]);
+  assert.deepEqual(phrase('tree.ts#Legacy'), [['associates', 'holds']]);
+});
+
+test('a dependency is listed in the panel, both ways, as depends on', () => {
+  assert.deepEqual(
+    describeSymbol(owning, 'tree.ts#Walker')?.uses.map((row) => [row.id, row.edge, row.phrase]),
+    [['node.ts#Node', 'depends', 'depends on']],
+  );
+  const node = describeSymbol(owning, 'node.ts#Node');
+  assert.deepEqual(
+    node?.usedBy.map((row) => [row.name, row.phrase]),
+    [
+      ['Forest', 'aggregates'],
+      ['Grove', 'holds'],
+      ['Legacy', 'holds'],
+      ['Tree', 'composed of'],
+      ['Walker', 'depends on'],
+    ],
+  );
+  // The other kinds keep their one word.
+  assert.deepEqual(
+    describeSymbol(graph, 'command.ts#Command')?.usedBy.map((row) => row.phrase),
+    ['calls'],
+  );
+});

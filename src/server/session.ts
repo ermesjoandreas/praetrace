@@ -4,7 +4,7 @@ import type { Coverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
-import { createParserPool } from '../parser/pool.js';
+import { createParserPool, type ParserPool } from '../parser/pool.js';
 import { coverageStamp, readCoverage } from '../project/coverage.js';
 import {
   explain,
@@ -15,6 +15,7 @@ import {
   type Explanation,
 } from '../project/explain.js';
 import { readGitStatus, resolveCommit } from '../project/git.js';
+import { mergeGroups, readGroups, type MergedGroups, type NamedGroup } from '../project/groups.js';
 import { graphAt as buildGraphAt } from '../project/history.js';
 import { scanProject } from '../project/scan.js';
 import {
@@ -25,6 +26,7 @@ import {
 } from '../project/suggest.js';
 import { createUpdater } from '../project/updater.js';
 import { watchProject, type FileChange } from '../project/watch.js';
+import { clusterFiles } from '../view/cluster.js';
 
 /**
  * One thing the agent asked codemap. Kept beside the change log because the
@@ -148,6 +150,11 @@ const MAX_PAST_GRAPHS = 16;
 export interface Session {
   readonly root: string;
   readonly store: GraphStore;
+  /**
+   * The parser workers, exposed so the flow of one function — a parse — runs
+   * off the main thread like every other parse, through the same queue.
+   */
+  readonly pool: ParserPool;
   /** Queue a change from any source. The hook endpoint uses this. */
   queue(change: FileChange): void;
   /** What has changed since this project was opened, newest last. */
@@ -194,6 +201,21 @@ export interface Session {
    * commit while it is being built share the one build.
    */
   graphAt(sha: string): Promise<Graph | null>;
+  /** The names in .codemap/groups.json, as last read or written. */
+  groups(): readonly NamedGroup[];
+  /**
+   * Re-read them. Nothing watches `.codemap/`, so a name given over MCP or by
+   * hand is invisible until something asks; the routes that write the file ask
+   * on the way out, and a view that draws the names asks on the way in.
+   */
+  refreshGroups(): Promise<void>;
+  /**
+   * What `/api/clusters` answers for a graph: its clusters, wearing the stored
+   * names. Synchronous, because the live push is, and it is the push that
+   * redraws a component diagram after a save. The graph is an argument rather
+   * than assumed live, so a frozen diagram gets its commit's clusters.
+   */
+  clustersOf(graph: Graph): MergedGroups;
   /** Everything this project has had explained, as last read or written. */
   explanations(): readonly Explanation[];
   /** The run in flight, or the last one to end. Null until the first press. */
@@ -291,6 +313,11 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   let explanations = await readExplanations(root);
   let run: ExplainRun | null = null;
 
+  // Held for the same reason coverage is: a component diagram is pushed on
+  // every save, and the push is synchronous. A missing or unparseable file is
+  // an empty list, as it is everywhere else.
+  let groups = await readGroups(root);
+
   let lastSuggest: SuggestResult | null = null;
   let suggesting = false;
 
@@ -342,6 +369,33 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     if (closed) return;
     coverageStampValue = stamp;
     coverage = next;
+  }
+
+  /**
+   * Queued like the other two reads, and the write routes await one before
+   * they announce: two reads landing out of order across a write would keep
+   * the older names under the newer announcement.
+   */
+  let readingGroups: Promise<void> = Promise.resolve();
+
+  function refreshGroups(): Promise<void> {
+    readingGroups = readingGroups.then(async () => {
+      const next = await readGroups(root);
+      if (!closed) groups = next;
+    });
+    return readingGroups;
+  }
+
+  /**
+   * Computed per call and not cached: label propagation over this
+   * repository's 139 files and 3 905 edges measures 0.73 ms, and the merge
+   * 0.10 ms, so a push to every component-diagram client after a save costs
+   * less than the view it draws. A cache keyed on the graph would be correct —
+   * `store.graph` is a fresh object per derivation — and would be paying for
+   * a cost nobody has measured.
+   */
+  function clustersOf(graph: Graph): MergedGroups {
+    return mergeGroups(clusterFiles(graph), groups);
   }
 
   const poll = setInterval(() => {
@@ -462,6 +516,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   return {
     root,
     store,
+    pool,
     queue: (change) => updater.queue(change),
     history: () => history,
     agentCalls: () => agent,
@@ -485,6 +540,9 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     coverage: () => coverage,
     refreshCoverage,
     graphAt,
+    groups: () => groups,
+    refreshGroups,
+    clustersOf,
 
     explanations: () => explanations,
     explainRun: () => run,

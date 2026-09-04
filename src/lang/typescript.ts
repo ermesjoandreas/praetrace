@@ -529,12 +529,12 @@ export function classScope(declaration: SyntaxNode, owner: string, outer: Scope)
       const type = written(member.childForFieldName('type')) ?? constructedTypeOf(member.childForFieldName('value'));
       const name = nameOf(named);
       if (name !== null) bind(fields, name, type);
-    } else if (member.type === 'method_definition' && nameOf(member.childForFieldName('name')) === 'constructor') {
+    } else if (isConstructor(member)) {
       const parameters = member.childForFieldName('parameters');
       for (const parameter of parameters?.namedChildren ?? []) {
         // `constructor(private log: Logger)` declares the field and takes it
         // in one line; the modifier is what makes it a field.
-        if (!parameter.children.some((child) => child.type === 'accessibility_modifier')) continue;
+        if (!isParameterProperty(parameter)) continue;
         const name = nameOf(parameter.childForFieldName('pattern'));
         if (name !== null) bind(fields, name, written(parameter.childForFieldName('type')));
       }
@@ -550,6 +550,89 @@ export function classScope(declaration: SyntaxNode, owner: string, outer: Scope)
   const known = new Map<string, string>();
   for (const [name, type] of fields) if (type !== null) known.set(name, type);
   return { owner, fields: known, bindings: outer.bindings, locals: outer.locals, typeParameters };
+}
+
+/** The class's constructor, which both grammars spell as a method of that name. */
+function isConstructor(member: SyntaxNode): boolean {
+  return member.type === 'method_definition' && nameOf(member.childForFieldName('name')) === 'constructor';
+}
+
+/**
+ * `constructor(private log: Logger)`, `readonly repo: Repo`, `override x: X`
+ * — a parameter that declares a field. Any of the three modifiers makes it
+ * one; `readonly` alone used to be missed, and a `this.repo.save()` under it
+ * had no receiver.
+ */
+export function isParameterProperty(parameter: SyntaxNode): boolean {
+  return parameter.children.some(
+    (child) => child.type === 'accessibility_modifier' || child.type === 'readonly' || child.type === 'override_modifier',
+  );
+}
+
+/** What a constructor did to one field; see `constructorAssignments`. */
+export interface Assigned {
+  /** The one class it was built as, `this.x = new T()`; null when none or two. */
+  constructed: string | null;
+  /** `this.x = param`, for a `param` the constructor took. */
+  handedIn: boolean;
+}
+
+/**
+ * Field -> what the constructor assigned to it: `this.x = new T()` says the
+ * class builds the part, `this.x = param` says it was handed in. Read across
+ * the whole constructor body, `if` branches and all, but not inside a nested
+ * `function` or class, whose `this` is its own. An arrow keeps the class's
+ * `this` and is read through. Nothing else on the right-hand side says
+ * anything — `this.x = opts.x`, `this.x = make()` — and is recorded as nothing.
+ */
+export function constructorAssignments(declaration: SyntaxNode): Map<string, Assigned> {
+  const assigned = new Map<string, Assigned>();
+  const body = declaration.childForFieldName('body');
+  const constructor = body?.namedChildren.find(isConstructor);
+  if (!constructor) return assigned;
+
+  const parameters = new Set<string>();
+  for (const parameter of constructor.childForFieldName('parameters')?.namedChildren ?? []) {
+    const pattern = parameter.childForFieldName('pattern') ?? parameter;
+    for (const [name] of patternBindings(pattern, null)) parameters.add(name);
+  }
+  const rebinders = constructor
+    .descendantsOfType(THIS_REBINDERS)
+    .filter((fn) => fn.startIndex > constructor.startIndex || fn.endIndex < constructor.endIndex);
+
+  // A parameter the body assigns to — `config = new Config()` before
+  // `this.config = config` — is no longer the thing that was handed in.
+  // Anywhere in the body, order aside: saying neither about it is never
+  // wrong, and saying "handed in" about a part the class built was.
+  const rebound = new Set<string>();
+  for (const assignment of constructor.descendantsOfType('assignment_expression')) {
+    const left = assignment.childForFieldName('left');
+    if (left?.type === 'identifier' && parameters.has(left.text)) rebound.add(left.text);
+  }
+
+  /** Field -> every type it was built as; two is not either, the rule `bind` applies. */
+  const built = new Map<string, Set<string>>();
+  const handedIn = new Set<string>();
+  for (const assignment of constructor.descendantsOfType('assignment_expression')) {
+    const left = assignment.childForFieldName('left');
+    if (left?.type !== 'member_expression' || left.childForFieldName('object')?.type !== 'this') continue;
+    if (within(assignment, rebinders)) continue;
+    const field = nameOf(left.childForFieldName('property'));
+    const right = assignment.childForFieldName('right');
+    if (field === null || !right) continue;
+
+    const constructed = constructedTypeOf(right);
+    if (constructed !== null) built.set(field, new Set(built.get(field)).add(constructed));
+    else if (right.type === 'identifier' && parameters.has(right.text) && !rebound.has(right.text)) handedIn.add(field);
+  }
+  for (const field of new Set([...built.keys(), ...handedIn])) {
+    const types = built.get(field);
+    assigned.set(field, {
+      constructed: types !== undefined && types.size === 1 ? [...types][0] ?? null : null,
+      handedIn: handedIn.has(field),
+    });
+  }
+  return assigned;
 }
 
 /** Whether `node` lies inside one of `ranges`. */
@@ -1300,14 +1383,18 @@ function modifiersOf(member: SyntaxNode): Pick<ParsedSymbol, 'visibility' | 'isS
   };
 }
 
+/** What a field's declaration says about the association it spells. */
+type Attribute = Pick<ParsedSymbol, 'typeName' | 'many' | 'optional' | 'composed' | 'handedIn'>;
+
 /**
  * The declared type of a field, reduced to the one name an association can be
  * drawn to. `Logger[]` and `Array<Logger>` both name Logger and both mean many
- * of them, which is the cardinality on the edge.
+ * of them, which is the cardinality on the edge; `Logger | null` and
+ * `Logger | undefined` name Logger and mean it may be absent, which is the
+ * other end of the same cardinality. A union of two real types names neither.
  */
-function typeOf(member: SyntaxNode, typeParameters: ReadonlySet<string>): { typeName?: string; many?: boolean } {
-  const annotation = member.childForFieldName('type');
-  const declared = annotation?.namedChildren[0] ?? null;
+function typeOf(annotation: SyntaxNode | null, typeParameters: ReadonlySet<string>): Attribute {
+  let declared = annotation?.namedChildren[0] ?? null;
   if (!declared) return {};
   // `items: Item[]` inside `Box<Item>` holds whatever the caller supplies, and
   // an association to the Item the file imported is a has-a the class never
@@ -1317,9 +1404,20 @@ function typeOf(member: SyntaxNode, typeParameters: ReadonlySet<string>): { type
     return name !== null && typeParameters.has(name) ? null : name;
   };
 
+  let optional: { optional?: true } = {};
+  if (declared.type === 'union_type') {
+    const members = declared.namedChildren.filter(
+      (member) => !(member.type === 'literal_type' && /^(null|undefined)$/.test(member.text)),
+    );
+    if (members.length < declared.namedChildren.length) optional = { optional: true };
+    if (members.length !== 1) return optional;
+    declared = members[0] ?? null;
+    if (!declared) return optional;
+  }
+
   if (declared.type === 'array_type') {
     const name = classifier(declared.namedChildren[0] ?? null);
-    return name === null ? { many: true } : { typeName: name, many: true };
+    return { ...optional, ...(name === null ? {} : { typeName: name }), many: true };
   }
   if (declared.type === 'generic_type') {
     const base = classifier(declared.childForFieldName('name'));
@@ -1327,34 +1425,135 @@ function typeOf(member: SyntaxNode, typeParameters: ReadonlySet<string>): { type
     if (base === 'Array' || base === 'Set' || base === 'ReadonlyArray') {
       const args = declared.childForFieldName('type_arguments');
       const inner = classifier(args?.namedChildren[0] ?? null);
-      return inner === null ? { many: true } : { typeName: inner, many: true };
+      return { ...optional, ...(inner === null ? {} : { typeName: inner }), many: true };
     }
-    return base === null ? {} : { typeName: base };
+    return { ...optional, ...(base === null ? {} : { typeName: base }) };
   }
 
   const name = classifier(declared);
-  return name === null ? {} : { typeName: name };
+  return { ...optional, ...(name === null ? {} : { typeName: name }) };
+}
+
+/**
+ * Everything a field's declaration and its class's constructor say about the
+ * part it holds: the type, how many, whether it may be absent, and whether the
+ * class builds it or is handed it.
+ *
+ * The type is the annotation, or, when none was written, what `= new T()`
+ * constructed — the same reading `declaredTypeOf` gives a local, and the only
+ * one a JavaScript field can have. `composed` is written only when what was
+ * built is the field's own type: `items: Item[] = []` and `log: Logger = new
+ * ConsoleLogger()` build a container and a subclass, and neither is the part
+ * without a resolution this file cannot do. `optional` reads the `?` on the
+ * name as well as the type, because `x?: T` puts it there.
+ */
+export function attributeOf(
+  member: SyntaxNode,
+  typeParameters: ReadonlySet<string>,
+  assigned: Assigned | undefined,
+): Attribute {
+  const value = member.childForFieldName('value');
+  const inline = constructedTypeOf(value);
+  const declared = typeOf(member.childForFieldName('type'), typeParameters);
+  const built = inline ?? assigned?.constructed ?? null;
+  const unannotated = member.childForFieldName('type') === null;
+  const typeName =
+    declared.typeName ?? (unannotated && built !== null && !typeParameters.has(built) ? built : undefined);
+  const composed = typeName !== undefined && (inline === typeName || assigned?.constructed === typeName);
+  const optional = declared.optional === true || member.children.some((child) => child.type === '?');
+
+  return {
+    ...(typeName === undefined ? {} : { typeName }),
+    ...(declared.many === true ? { many: true } : {}),
+    ...(optional ? { optional: true as const } : {}),
+    ...(composed ? { composed: true as const } : {}),
+    ...(assigned?.handedIn === true ? { handedIn: true as const } : {}),
+  };
+}
+
+/**
+ * Every classifier a type expression names, qualifier kept: `Map<string,
+ * Foo>` names Map and Foo, `(x: Foo) => Bar` names Foo and Bar. Nothing is
+ * reduced to one name here, unlike `typeOf`, because a dependency is "uses"
+ * and an operation that takes a `Promise<Foo>` uses Foo. A predefined type,
+ * a literal and `typeof x` name no classifier.
+ */
+function typeNamesIn(node: SyntaxNode, out: string[]): void {
+  switch (node.type) {
+    case 'type_identifier':
+      out.push(node.text);
+      return;
+    case 'nested_type_identifier': {
+      const name = nameOf(node);
+      if (name !== null) out.push(name);
+      return;
+    }
+    case 'generic_type': {
+      const name = nameOf(node.childForFieldName('name'));
+      if (name !== null) out.push(name);
+      const args = node.childForFieldName('type_arguments');
+      if (args) typeNamesIn(args, out);
+      return;
+    }
+    case 'predefined_type':
+    case 'literal_type':
+    case 'this_type':
+    case 'type_query':
+      return;
+    default:
+      for (const child of node.namedChildren) typeNamesIn(child, out);
+  }
+}
+
+/**
+ * The type names an operation's signature writes — its parameters and its
+ * return type — less the `<T>` it or its class declared. See
+ * `ParsedSymbol.dependsOn`; the class collects these off every method and
+ * the graph draws a dependency for whichever it reaches no other way.
+ */
+function signatureTypes(operation: SyntaxNode, typeParameters: ReadonlySet<string>): string[] {
+  const generic = new Set([...typeParameters, ...typeParametersOf(operation)]);
+  const names: string[] = [];
+  for (const parameter of operation.childForFieldName('parameters')?.namedChildren ?? []) {
+    const annotation = parameter.childForFieldName('type');
+    if (annotation) typeNamesIn(annotation, names);
+  }
+  const returned = operation.childForFieldName('return_type');
+  if (returned) typeNamesIn(returned, names);
+  return names.filter((name) => !generic.has(name));
+}
+
+/** What `collectMembers` hands back about the class itself. */
+interface Members {
+  /** The method bodies, which the class must not claim the calls of. */
+  bodies: SyntaxNode[];
+  /** See `ParsedSymbol.dependsOn`. */
+  dependsOn: string[];
 }
 
 /**
  * A class's members, as symbols of their own.
  *
  * A field holding an arrow function is a method in everything but syntax, so it
- * counts as one. Returns the method bodies, which the class must not claim the
- * calls of.
+ * counts as one. A constructor's parameter property is a field in everything
+ * but position — `constructor(private log: Logger)` declares one — so it is
+ * one here, listed where the constructor is written, and marked as handed in
+ * because that is what a parameter property is.
  */
 function collectMembers(
   declaration: SyntaxNode,
   owner: string,
   symbols: ParsedSymbol[],
   scope: Scope,
-): SyntaxNode[] {
+): Members {
   const body = declaration.childForFieldName('body');
-  if (!body) return [];
+  if (!body) return { bodies: [], dependsOn: [] };
 
   const bodies: SyntaxNode[] = [];
   const fields: ParsedSymbol[] = [];
   const methods: ParsedSymbol[] = [];
+  const assigned = constructorAssignments(declaration);
+  const dependsOn = new Set<string>();
 
   for (const member of body.namedChildren) {
     const named = member.childForFieldName('name');
@@ -1388,6 +1587,37 @@ function collectMembers(
     if (isMethod) {
       bodies.push(member);
       methods.push({ ...common, kind: 'method', calls: collectCalls(member, [], scopeOf(member, scope)) });
+      // The signature is on the arrow when the method is a field holding one.
+      const operation = member.type === 'public_field_definition' ? member.childForFieldName('value') : member;
+      for (const type of signatureTypes(operation ?? member, scope.typeParameters)) dependsOn.add(type);
+      if (isConstructor(member)) {
+        for (const parameter of member.childForFieldName('parameters')?.namedChildren ?? []) {
+          if (!isParameterProperty(parameter)) continue;
+          const property = nameOf(parameter.childForFieldName('pattern'));
+          if (property === null) continue;
+          fields.push({
+            name: property,
+            kind: 'field',
+            owner,
+            startLine: parameter.startPosition.row + 1,
+            endLine: parameter.endPosition.row + 1,
+            extends: [],
+            implements: [],
+            // A default it constructs is the constructor's call already.
+            calls: [],
+            ...modifiersOf(parameter),
+            // Handed in by the parameter — and, when the body also does
+            // `this.log = new Logger()`, built as well; both is neither, and
+            // reading only the parameter drew a hollow diamond on a part the
+            // class constructs.
+            ...attributeOf(parameter, scope.typeParameters, {
+              constructed: assigned.get(property)?.constructed ?? null,
+              handedIn: true,
+            }),
+            ...(parameter.type === 'optional_parameter' ? { optional: true as const } : {}),
+          });
+        }
+      }
     } else {
       // A field initialiser can call things, and those calls are the class's
       // doing rather than any method's, so they are collected here too.
@@ -1395,7 +1625,7 @@ function collectMembers(
         ...common,
         kind: 'field',
         calls: collectCalls(member, [], scopeOf(member, scope)),
-        ...typeOf(member, scope.typeParameters),
+        ...attributeOf(member, scope.typeParameters, assigned.get(name)),
       });
     }
   }
@@ -1403,7 +1633,7 @@ function collectMembers(
   // Attributes before operations, which is the order a UML class box reads in
   // and, not by accident, the order the declarations usually appear in anyway.
   symbols.push(...fields, ...methods);
-  return bodies;
+  return { bodies, dependsOn: [...dependsOn] };
 }
 
 function makeSymbol(
@@ -1594,9 +1824,13 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
     const members: ParsedSymbol[] = [];
     const scope =
       kind === 'class' || kind === 'interface' ? classScope(node, name, out.scope) : scopeOf(node, out.scope);
-    const bodies =
-      kind === 'class' || kind === 'interface' ? collectMembers(node, name, members, scope) : [];
-    const symbol = { ...makeSymbol(node, name, kind, bodies, scope), ...modifiersOf(node) };
+    const { bodies, dependsOn } =
+      kind === 'class' || kind === 'interface' ? collectMembers(node, name, members, scope) : { bodies: [], dependsOn: [] };
+    const symbol = {
+      ...makeSymbol(node, name, kind, bodies, scope),
+      ...modifiersOf(node),
+      ...(dependsOn.length === 0 ? {} : { dependsOn }),
+    };
     out.symbols.push(symbol);
     if (node.type === 'function_signature') out.signatures.add(symbol);
     out.symbols.push(...members);
@@ -1616,8 +1850,11 @@ function collectTopLevel(node: SyntaxNode, out: Collected): void {
       if (value.type === 'class') {
         const members: ParsedSymbol[] = [];
         const scope = classScope(value, name, out.scope);
-        const bodies = collectMembers(value, name, members, scope);
-        out.symbols.push(makeSymbol(value, name, 'class', bodies, scope));
+        const { bodies, dependsOn } = collectMembers(value, name, members, scope);
+        out.symbols.push({
+          ...makeSymbol(value, name, 'class', bodies, scope),
+          ...(dependsOn.length === 0 ? {} : { dependsOn }),
+        });
         out.symbols.push(...members);
         out.claimed.push(declarator);
         continue;

@@ -144,6 +144,7 @@ code { font-size: var(--vsc-font-size-status); }
 .panel-toggle,
 .depth button,
 .welcome-close,
+.flow-close,
 .group-editor-close,
 .group-palette-close,
 .findbar button {
@@ -161,6 +162,7 @@ code { font-size: var(--vsc-font-size-status); }
 .panel-toggle:hover,
 .depth button:hover:not(:disabled),
 .welcome-close:hover,
+.flow-close:hover,
 .group-editor-close:hover,
 .group-palette-close:hover,
 .findbar button:hover:not(:disabled) {
@@ -400,6 +402,24 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .clear { margin-left: 4px; }
 
+/* Which diagram the boxes make. A crumb-shaped button at the end of the trail,
+   because it is a fact about where you are — the component diagram is the
+   whole project, seen one level up — and pressed it is a mode, so it holds
+   the accent the way the Changes count does when its filter is on. */
+.diagram-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  height: 22px;
+  padding: 0 6px 0 4px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-muted);
+}
+.diagram-toggle:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+.diagram-toggle[aria-pressed='true'] { background: var(--vsc-accent); color: var(--vsc-fg-strong); }
+.diagram-toggle[aria-pressed='true']:hover { background: var(--vsc-accent-hover); }
+
 /* Chips. Following is a mode, and wears the accent like every other mode here;
    a filter is a count of what was left out, and wears the badge grey. */
 .symbol-chip, .filter-chip, .missed, .depth-chip {
@@ -547,6 +567,47 @@ main { display: flex; flex: 1; min-height: 0; }
    relationship rather than a second line on the same path. */
 .react-flow__edge.edge-calls .react-flow__edge-path { stroke: var(--vsc-sym-function); stroke-width: 1.6; }
 .react-flow__edge.edge-associates .react-flow__edge-path { stroke: var(--vsc-sym-field); stroke-width: 1.6; }
+/* A dependency is a type named in a signature and nothing more, so it takes
+   the type colour and stays thin. Dashed, as UML draws it, and told from
+   `implements` — dashed in the same hue — by UML's own means: the open
+   arrowhead at the far end, which `.edge-head` draws, and a longer dash. */
+.react-flow__edge.edge-depends .react-flow__edge-path {
+  stroke: var(--vsc-sym-type);
+  stroke-width: 1.2;
+  stroke-dasharray: 6 4;
+}
+.react-flow__edge .edge-head {
+  fill: none;
+  stroke: var(--vsc-sym-type);
+  stroke-width: 1.2;
+  pointer-events: none;
+}
+
+/* UML's diamond at the holder's end of an association. Filled when the class
+   builds the part, hollow — the canvas showing through — when the part is
+   handed in. Drawn only when the view decided one; a plain association
+   wears none, because absent means the source said nothing. */
+.react-flow__edge .edge-diamond {
+  stroke: var(--vsc-sym-field);
+  stroke-width: 1.2;
+  pointer-events: none;
+}
+.react-flow__edge .edge-diamond-composition { fill: var(--vsc-sym-field); }
+.react-flow__edge .edge-diamond-aggregation { fill: var(--vsc-editor-bg); }
+
+/* The role name and multiplicity at the far end: the field's own name and
+   `1`, `0..1` or `*`, in the panel's font and muted, the way a weight label
+   is. The stroke is a knockout in the canvas colour so the words survive
+   crossing the line, not a glow. */
+.react-flow__edge .edge-roles {
+  fill: var(--vsc-fg-muted);
+  font: var(--vsc-font-size-sm) var(--vsc-font-ui);
+  paint-order: stroke;
+  stroke: var(--vsc-editor-bg);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
 
 /* Every reference behind this line was resolved by something weaker than a
    binding — a name matched against a table nothing in the referring file
@@ -565,7 +626,11 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .box {
   width: 240px;
-  border: 1px solid var(--vsc-border);
+  /* A variable with the plain line as its fallback, so a component box can
+     carry its category's colour on the edge without outranking the signals
+     below: every one of them sets border-color outright, and a shorthand loses
+     to that whatever a variable inside it says. */
+  border: 1px solid var(--box-line, var(--vsc-border));
   border-radius: var(--vsc-radius);
   background: var(--vsc-widget-bg);
   overflow: hidden;
@@ -574,7 +639,8 @@ main { display: flex; flex: 1; min-height: 0; }
 }
 .box:hover { border-color: var(--vsc-border-menu); }
 /* Selection is the accent on the edge, never a fill over the members. */
-.react-flow__node-box.selected .box { border-color: var(--vsc-accent); }
+.react-flow__node-box.selected .box,
+.react-flow__node-component.selected .box { border-color: var(--vsc-accent); }
 
 /* Every box is a tab stop — React Flow makes its nodes focusable and there are
    two dozen of them on a scope view — and React Flow's own stylesheet takes
@@ -738,6 +804,45 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .box-meta { padding: 5px 10px; font-size: var(--vsc-font-size-sm); color: var(--vsc-fg-muted); }
 
+/* --- component boxes ------------------------------------------------------- */
+
+/* A category as a UML component. The name is bold the way a folder's is —
+   it stands for many files — and led by the component icon, 16px inside the
+   18px title line like the warning is. A named one wears its category's
+   colour the way its frame does: on the name, on the icon, and at 40% on the
+   edge. The edge goes through `--box-line` so amber, blue and the picked ring
+   still win, each of which sets border-color outright. */
+.box-component .box-kind { flex: none; font-size: 16px; line-height: 18px; color: var(--vsc-fg-muted); }
+.box-component .box-title-text { font-weight: 600; direction: ltr; }
+/* META_HEIGHT in layout.ts: 5 + 17 + 5. Pinned, or a font that renders a
+   line taller moves every box the layout placed under this one. */
+.box-component .box-meta { line-height: 17px; }
+.box-component[data-color] { --box-line: rgba(var(--group-color), 0.4); }
+.box-component[data-color]:hover { border-color: rgba(var(--group-color), 0.7); }
+.box-component[data-color] .box-title-text,
+.box-component[data-color] .box-kind { color: rgb(var(--group-color)); }
+
+/* Files no category holds. Dimmed, and solid: dashed is `.box-external`,
+   which means outside the scope, and these are as much of the project as any
+   category. Written before `.box-aside` in the file so following still wins. */
+.box-uncategorised { opacity: 0.6; }
+
+/* The count of files outside that reach a provided symbol. Sized and muted
+   like the rest of the row's furniture, tabular so the column lines up; every
+   reach behind a guessed row was a name match, so its number is faded the
+   way a guessed line is dotted. */
+.member-reach {
+  flex: none;
+  padding: 0 4px;
+  color: var(--vsc-fg-disabled);
+  font-size: var(--vsc-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+.member-guessed .member-reach { opacity: 0.55; }
+/* A row here is a follow control, not an editor link, so the whole row lights
+   under the cursor the way its mark does. */
+.box-provides .member-name:hover { color: var(--vsc-fg); }
+
 /* Git is a coloured letter beside the name, the way an explorer decorates a
    file: never a box, never a tint over the surface. */
 .box-git {
@@ -852,7 +957,8 @@ main { display: flex; flex: 1; min-height: 0; }
 .member-aside { opacity: 0.35; }
 .box-aside { opacity: 0.28; }
 .react-flow__edge.edge-aside { opacity: 0.15; }
-.react-flow__edge.edge-aside .react-flow__edge-text { opacity: 0; }
+.react-flow__edge.edge-aside .react-flow__edge-text,
+.react-flow__edge.edge-aside .edge-roles { opacity: 0; }
 
 /* A method sits under the class that holds it, indented, with a rule down the
    left so a run of them reads as one class's contents. */
@@ -1894,6 +2000,16 @@ li.group-nested .group-files .group-row > button { padding-left: 40px; }
 .sym-function, .sym-method { color: var(--vsc-sym-function); }
 .sym-field { color: var(--vsc-sym-field); }
 .sym-line { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+/* The rows a component provides past the dozen the server sent: a sentence
+   where a row would be, indented like one and muted like a note, because it
+   is a count and not a way in — the page never holds the rest. */
+.panel-more {
+  display: block;
+  padding: 2px 8px 2px 16px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 1.5;
+}
 /* Muted and next to the name, not out at the line number: it belongs to the
    name it qualifies. Says the row is a second name for the body above rather
    than a second function that happens to start on the same line. */
@@ -2551,6 +2667,196 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .welcome-list kbd, .welcome-path { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
 .welcome-list code { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 .welcome-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- the flow of one function ---------------------------------------------- */
+
+/* Over the canvas and not over the window, at the welcome screen's z-index and
+   for the welcome screen's reason: the chrome around it stays reachable, and
+   the find bar under it (6) is covered rather than argued with. */
+.flow {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--vsc-editor-bg);
+}
+
+/* A section header's shape — 22px, 11px bold title, chrome behind it — with
+   the status beside the title the way a section's is: information, never a
+   control. The close is the one control, at the right edge. */
+.flow-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: var(--vsc-row-h);
+  padding: 0 2px 0 8px;
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+}
+.flow-head > .codicon { flex: none; color: var(--vsc-fg-muted); }
+.flow-title {
+  flex: none;
+  margin: 0;
+  color: var(--vsc-fg);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 600;
+  line-height: var(--vsc-row-h);
+  white-space: nowrap;
+}
+.flow-status {
+  flex: none;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  white-space: nowrap;
+}
+.flow-close { margin-left: auto; }
+
+.flow-body { position: relative; flex: 1; min-height: 0; }
+.flow-body .react-flow { width: 100%; height: 100%; }
+
+/* A sentence where the diagram would be: reading, gone, a reason. The same
+   corner and the same muted text as the canvas's own "Nothing to show here". */
+.flow-word {
+  position: absolute;
+  z-index: 5;
+  top: 8px;
+  left: 8px;
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+}
+.flow-failed { color: var(--vsc-error); }
+
+/* Too many boxes to draw without asking. The warning colour, because this is
+   the page telling on itself — the depth chip's meaning exactly — and a
+   secondary button, because drawing it anyway is the override, not the
+   recommendation. */
+.flow-big {
+  position: absolute;
+  z-index: 5;
+  top: 8px;
+  left: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.flow-big .flow-word {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vsc-warning);
+}
+.flow-draw {
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg);
+  white-space: nowrap;
+}
+.flow-draw:hover { background: var(--vsc-toolbar-hover); }
+
+/* The boxes. Set in the monospace the member rows use, because a label is a
+   line of the source; the page never highlights it. An action's corners are
+   UML's, and 6px is the most a corner here may be. */
+.flow-body .react-flow__node { cursor: default; }
+.flow-box {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  height: 100%;
+  padding: 0 10px;
+  border: 1px solid var(--vsc-border-menu);
+  border-radius: 6px;
+  background: var(--vsc-widget-bg);
+  color: var(--vsc-fg);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 14px;
+}
+.flow-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The `+N more` and the note under a label: the UI face, muted, because they
+   are the page's words about the box and not the source's. */
+.flow-aside {
+  display: block;
+  overflow: hidden;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* A return, a throw, a break: the way out, in the muted text, on a plain line. */
+.flow-exit { border-color: var(--vsc-border); color: var(--vsc-fg-muted); }
+/* try, catch, finally: the dashed line an interruptible region wears. */
+.flow-try {
+  align-items: center;
+  border-style: dashed;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-ui);
+}
+
+/* A decision — and a loop, which is a decision with its way back. The diamond
+   is an SVG the size of the box; the label sits in its middle band. */
+.flow-decision {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--vsc-fg);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 14px;
+  text-align: center;
+}
+.flow-diamond {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: var(--vsc-widget-bg);
+  stroke: var(--vsc-border-menu);
+  stroke-width: 1;
+}
+.flow-decision .flow-label,
+.flow-decision .flow-aside { position: relative; max-width: calc(100% - 48px); }
+
+/* Start and end: UML's dot and bullseye, in the body text colour. */
+.flow-start, .flow-end { display: block; line-height: 0; }
+.flow-dot { fill: var(--vsc-fg); }
+.flow-ring { fill: none; stroke: var(--vsc-fg); stroke-width: 1.5; }
+
+/* The lines, and the closed head every one ends in. */
+.flow-body .react-flow__edge .flow-way { stroke: var(--vsc-fg-muted); stroke-width: 1.2; }
+.flow-body .react-flow__edge .flow-arrow { fill: var(--vsc-fg-muted); stroke: none; }
+
+/* What the picture leaves out, in the engine's sentences. Under the diagram,
+   small and muted, and it scrolls past a third of the height. */
+.flow-foot {
+  flex: none;
+  max-height: 30%;
+  overflow-y: auto;
+  padding: 4px 8px 6px;
+  border-top: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 16px;
+}
+.flow-foot-title { font-weight: 600; }
+.flow-foot ul { margin: 0; padding: 0 0 0 14px; }
 
 /* --- the side panel toggle -------------------------------------------------- */
 

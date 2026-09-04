@@ -1,8 +1,9 @@
 import type { Coverage, FileCoverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
-import type { Graph } from '../graph/types.js';
+import type { AssociationRole, Graph } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
 import type { LanguageId, LanguageSupport } from '../lang/types.js';
+import { partitionByCategory, type ComponentSource } from './components.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
 import { isTestFile } from './tests.js';
 import type { LanguageCount, ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
@@ -54,6 +55,12 @@ const DIRECTIONS: readonly Direction[] = ['dependencies', 'dependents'];
  * Coverage arrives the same way and for the same reason — it is read off a file
  * CI left behind — and null is again the ordinary case: most projects have no
  * report, and one that has none is not one where nothing ran.
+ *
+ * The categories arrive as an argument too, and only a component diagram reads
+ * them: they are the graph's own clusters wearing names read off a file, and
+ * the caller that can draw one — the view route, the live hub — hands over
+ * what `/api/clusters` answers. Left empty under `diagram: 'components'`, the
+ * whole project is honestly one box of files in no category.
  */
 export function selectView(
   graph: Graph,
@@ -61,6 +68,7 @@ export function selectView(
   now: number,
   git: GitStatus | null = null,
   coverage: Coverage | null = null,
+  categories: readonly ComponentSource[] = [],
 ): ViewGraph {
   // One set, built once and threaded down: every lookup below is a membership
   // test, and Object.keys on each file would be the whole cost of the view.
@@ -73,9 +81,11 @@ export function selectView(
   );
 
   const slice =
-    spec.focus !== null && files.has(spec.focus)
-      ? focusView(spec, files, edges, git, changed)
-      : scopeView(spec, files, edges, git, changed);
+    spec.diagram === 'components'
+      ? componentView(graph, spec, files, edges, git, changed, categories)
+      : spec.focus !== null && files.has(spec.focus)
+        ? focusView(spec, files, edges, git, changed)
+        : scopeView(spec, files, edges, git, changed);
 
   // After the slice, because "visible" is a question about what got drawn.
   markLinkedMembers(graph, spec.filter, slice);
@@ -150,9 +160,58 @@ function unresolvedOf(
  * line drawn as uncertain over a certain reference overstates the doubt just
  * as badly as dropping the flag would understate it.
  */
-function absorb(edge: { weight: number; guessed?: true }, weight: number, guessed: boolean): void {
+function absorb(
+  edge: { weight: number; guessed?: true; roles?: AssociationRole[] },
+  weight: number,
+  guessed: boolean,
+  roles?: readonly AssociationRole[],
+): void {
   edge.weight += weight;
   if (!guessed) delete edge.guessed;
+  // A role is a fact about one field; a line that stands for several keeps
+  // all of them. Keeping the first and dropping the rest would be a count
+  // wrong in the safe-looking direction.
+  if (roles !== undefined && roles.length > 0) edge.roles = [...(edge.roles ?? []), ...roles];
+}
+
+/**
+ * What the fields behind a line agree about who owns the part, or nothing.
+ *
+ * A field that states no ownership does not vote: absent means the source
+ * said nothing, never that it said the opposite, so one built field beside
+ * two silent ones is still a composition. Two fields that state different
+ * things are a source that said two things, and the line says neither — the
+ * rule `roleOf` in the store already applies to one field that is both built
+ * and handed in, applied again over a line. Exported because the panel's
+ * word for the line is decided by the same rule; see `detail.ts`.
+ */
+export function ownershipOf(
+  roles: readonly AssociationRole[] | undefined,
+): 'composition' | 'aggregation' | undefined {
+  let agreed: 'composition' | 'aggregation' | undefined;
+  for (const role of roles ?? []) {
+    if (role.ownership === undefined) continue;
+    if (agreed !== undefined && agreed !== role.ownership) return undefined;
+    agreed = role.ownership;
+  }
+  return agreed;
+}
+
+/** The lines as drawn, each association wearing whatever diamond its roles agree on. */
+function withOwnership(edges: Iterable<ViewEdge>): ViewEdge[] {
+  return [...edges].map((edge) => {
+    const ownership = ownershipOf(edge.roles);
+    return ownership === undefined ? edge : { ...edge, ownership };
+  });
+}
+
+/**
+ * The roles an edge carries, copied, as a spread — or nothing. Copied because
+ * a view is serialised and handed around, and an array shared with the graph
+ * would let a consumer edit the single source of truth through it.
+ */
+function rolesOf(edge: { roles?: readonly AssociationRole[] }): { roles?: AssociationRole[] } {
+  return edge.roles === undefined ? {} : { roles: edge.roles.map((role) => ({ ...role })) };
 }
 
 function countFiles(graph: Graph): number {
@@ -289,6 +348,7 @@ interface FileEdge {
   kind: ViewEdge['kind'];
   weight: number;
   guessed?: true;
+  roles?: AssociationRole[];
 }
 
 /** File path -> the symbols it declares, in declaration order. */
@@ -389,11 +449,12 @@ function markLinkedMembers(graph: Graph, filter: ViewFilter, slice: Slice): void
 /**
  * Collapse symbol-level edges onto the files that hold them.
  *
- * `contains` is structural and never drawn. `calls` and `associates` are
- * drawn only when asked for, and each then *replaces* the import between the
- * same pair: two edges would take the same path on screen, and "calls twelve
- * things in here", or "holds one of those", says more than "imported a type
- * from here", which is all an import on its own tells you.
+ * `contains` is structural and never drawn. `calls`, `associates` and
+ * `depends` are drawn only when asked for, and each then *replaces* the
+ * import between the same pair: two edges would take the same path on
+ * screen, and "calls twelve things in here", "holds one of those", or "names
+ * one in a signature", says more than "imported a type from here", which is
+ * all an import on its own tells you.
  */
 function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
   const byKey = new Map<string, FileEdge>();
@@ -407,7 +468,7 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
 
     const key = `${from} ${edge.kind} ${to}`;
     const existing = byKey.get(key);
-    if (existing) absorb(existing, 1, edge.guessed === true);
+    if (existing) absorb(existing, 1, edge.guessed === true, edge.roles);
     else {
       byKey.set(key, {
         from,
@@ -415,13 +476,16 @@ function liftEdgesToFiles(graph: Graph, filter: ViewFilter): FileEdge[] {
         kind: edge.kind,
         weight: 1,
         ...(edge.guessed === true ? { guessed: true as const } : {}),
+        ...rolesOf(edge),
       });
     }
   }
 
   const lifted = [...byKey.values()];
   // Whichever detail edges the filter let through; each hides the import that
-  // runs the same way, and neither is on by default.
+  // runs the same way, and none is on by default. A dependency does not: it is
+  // the weakest line UML has, and standing in for the import it would read as
+  // "merely depends on" between two files one of which holds the other.
   const detail = new Set(
     lifted
       .filter((edge) => edge.kind === 'calls' || edge.kind === 'associates')
@@ -551,7 +615,7 @@ function focusView(
 
     const key = `${from} ${edge.kind} ${to}`;
     const existing = aggregated.get(key);
-    if (existing) absorb(existing, edge.weight, edge.guessed === true);
+    if (existing) absorb(existing, edge.weight, edge.guessed === true, edge.roles);
     else {
       aggregated.set(key, {
         from,
@@ -559,13 +623,14 @@ function focusView(
         kind: edge.kind,
         weight: edge.weight,
         ...(edge.guessed === true ? { guessed: true as const } : {}),
+        ...rolesOf(edge),
       });
     }
   }
 
   return {
     nodes,
-    edges: [...aggregated.values()],
+    edges: withOwnership(aggregated.values()),
     spec: { ...spec, focus },
     trail: trailFor(''),
     // Every file in the slice, bundled ones included. The status bar reads it
@@ -617,6 +682,92 @@ function setIn(map: Map<string, Set<string>>, key: string): Set<string> {
   const created = new Set<string>();
   map.set(key, created);
   return created;
+}
+
+// --- component diagram ----------------------------------------------------
+
+/**
+ * The categories as boxes, and the imports between them as lines.
+ *
+ * `components.ts` decides who belongs where and what each box provides; this
+ * turns that into the same boxes and lines the other two modes make, through
+ * the same helpers, so a weight here means what a weight means everywhere: a
+ * file edge counts once per pair it crosses, `guessed` survives only while
+ * every reference behind the line was a guess, and a call edge asked for
+ * replaces the import beside it — `edges` arrived with all three already
+ * applied. Two files in one component are a coupling entirely inside a box
+ * that stands for both, so there is nothing to draw it between, as for a
+ * bundle.
+ *
+ * Scope and focus are ignored, and the echoed spec says so: a category is a
+ * fact about the whole project, and a slice of one would be a component with
+ * half its members missing. The filter is honoured, the same way it is for
+ * every view — `files` arrived with it applied.
+ */
+function componentView(
+  graph: Graph,
+  spec: ViewSpec,
+  files: ReadonlyMap<string, FileFacts>,
+  edges: readonly FileEdge[],
+  git: GitStatus | null,
+  changed: ReadonlySet<string> | null,
+  categories: readonly ComponentSource[],
+): Slice {
+  const { boxOf, boxes } = partitionByCategory(graph, categories, new Set(files.keys()), spec.filter);
+
+  // The pile questions, answered the way a bundle answers them and for the
+  // same reasons: no members, no coverage, and a language only when the files
+  // share one. The uncategorised box is not `external` — it is as much of the
+  // project as any category, and `scoped` must count its files — so the page
+  // dims it off `component.uncategorised` instead.
+  const nodes: ViewNode[] = boxes.map((box) => ({
+    id: box.id,
+    kind: 'component',
+    label: box.label,
+    members: [],
+    files: box.files,
+    external: false,
+    focused: false,
+    gitStatus: null,
+    gitChanged: changed === null ? 0 : box.files.filter((file) => changed.has(file)).length,
+    language: soleLanguage(box.files),
+    test: box.files.every(isTestFile),
+    parseError: box.files.some((file) => files.get(file)?.parseError === true),
+    ...unresolvedOf(box.files, files),
+    component: box.component,
+  }));
+
+  const aggregated = new Map<string, ViewEdge>();
+  for (const edge of edges) {
+    const from = boxOf.get(edge.from);
+    const to = boxOf.get(edge.to);
+    if (from === undefined || to === undefined || from === to) continue;
+
+    const key = `${from} ${edge.kind} ${to}`;
+    const existing = aggregated.get(key);
+    if (existing) absorb(existing, edge.weight, edge.guessed === true, edge.roles);
+    else {
+      aggregated.set(key, {
+        from,
+        to,
+        kind: edge.kind,
+        weight: edge.weight,
+        ...(edge.guessed === true ? { guessed: true as const } : {}),
+        ...rolesOf(edge),
+      });
+    }
+  }
+
+  return {
+    nodes,
+    edges: withOwnership(aggregated.values()),
+    spec: { ...spec, scope: '', focus: null },
+    trail: trailFor(''),
+    totalFiles: files.size,
+    // No box here stands for a directory.
+    grouped: false,
+    git: gitSummary(git),
+  };
 }
 
 // --- scope mode ---------------------------------------------------------
@@ -694,7 +845,7 @@ function scopeView(
 
     const key = `${from.id} ${edge.kind} ${to.id}`;
     const existing = aggregated.get(key);
-    if (existing) absorb(existing, edge.weight, edge.guessed === true);
+    if (existing) absorb(existing, edge.weight, edge.guessed === true, edge.roles);
     else {
       aggregated.set(key, {
         from: from.id,
@@ -702,6 +853,7 @@ function scopeView(
         kind: edge.kind,
         weight: edge.weight,
         ...(edge.guessed === true ? { guessed: true as const } : {}),
+        ...rolesOf(edge),
       });
     }
   }
@@ -722,8 +874,8 @@ function scopeView(
 
   return {
     nodes: boxes,
-    edges: [...aggregated.values()],
-    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter, at: spec.at },
+    edges: withOwnership(aggregated.values()),
+    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter, at: spec.at, diagram: spec.diagram },
     trail: trailFor(scope),
     totalFiles: inScope.length,
     // Whether grouping actually happened, not whether it was attempted. A flat

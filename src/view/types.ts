@@ -1,6 +1,6 @@
 import type { FileCoverage, SymbolCoverage } from '../report/types.js';
 import type { GitFileStatus } from '../git/types.js';
-import type { EdgeKind, NodeKind } from '../graph/types.js';
+import type { AssociationRole, EdgeKind, NodeKind } from '../graph/types.js';
 import type { LanguageId } from '../lang/types.js';
 import type { ViewFilter } from './filter.js';
 
@@ -46,6 +46,93 @@ export interface ViewSpec {
    * cannot tell one commit's from another's.
    */
   at: string | null;
+  /**
+   * Which UML diagram the boxes make. `classes` is the one drawn so far — a
+   * class box per file, packages once a scope holds too many — and
+   * `components` draws the categories instead: one box per group, listing
+   * what files outside it reach, with the imports between groups summed onto
+   * one line per pair.
+   *
+   * Navigation and not a filter, which is why it sits beside `scope` and
+   * `focus` rather than inside `filter`: a filter changes what is worth
+   * drawing wherever you are, and this changes what a box stands for. A word
+   * rather than a flag so a third diagram has somewhere to go without a third
+   * key. `scope` and `focus` are ignored under `components` — a category is a
+   * fact about the whole project, and a slice of one would be a component
+   * with half its members missing.
+   */
+  diagram: 'classes' | 'components';
+}
+
+/**
+ * One symbol a component box lists as its interface: declared inside the
+ * component, reached by a file outside it.
+ *
+ * Reached and not imported: an `imports` edge runs file to file and names no
+ * symbol, so what a component provides is read off the edges that do — calls,
+ * extends, implements, associates — and off all four whatever `edgeKinds` the
+ * view is drawing, or the default diagram, which draws imports only, would
+ * list nothing under every box and be a package diagram again. A symbol
+ * nothing outside reaches is not listed, and the list is a floor for the
+ * reason every count here is: a call through an untyped receiver is not
+ * tracked, so a component may provide more than it can show.
+ */
+export interface ProvidedSymbol {
+  /** The graph id, so the page can ask about this exact symbol. */
+  id: string;
+  name: string;
+  kind: NodeKind;
+  /** The class this is a member of, so `init` can be spelled `App.init`. */
+  owner: string | null;
+  /**
+   * Distinct files outside the component that reach it. What the list is
+   * sorted by: the symbol reached from the most places is the one that says
+   * what the component is for.
+   */
+  reachedFrom: number;
+  /**
+   * Every one of those reaches was resolved by something weaker than a
+   * binding — see `ViewEdge.guessed`, and the same rule: one found reach makes
+   * the fact certain, and the mark is dropped.
+   */
+  guessed?: true;
+}
+
+/**
+ * What a `component` box knows about the category it stands for. The
+ * membership itself is `ViewNode.files`, as it is for every box.
+ */
+export interface ComponentFacts {
+  /**
+   * The category's name, or null while nobody has given it one. Null too on
+   * the box for files in no category, which has nothing to be named.
+   */
+  name: string | null;
+  /**
+   * The id the name is recorded under, when it is recorded at all. What an
+   * edit addresses — never the cluster id, which embeds the member count and
+   * changes the moment a file joins or leaves.
+   */
+  storedId?: string;
+  /**
+   * The share of the category's edges that stay inside it, 0..1, as the
+   * clustering measured it. Absent for a hand-drawn category, which the
+   * imports were never asked to find and which has no number to report; a 0
+   * there would read as a terrible group rather than as a drawn one.
+   */
+  cohesion?: number;
+  /** A person drew this category; the import graph did not find it. */
+  origin?: 'manual';
+  /**
+   * This box stands for every file no category holds, so the picture never
+   * claims they do not exist. Drawn dimmed, and only when there are any.
+   */
+  uncategorised?: true;
+  /**
+   * The symbols files outside reach, most reached first, cut at a box's worth
+   * of rows; `total` is how many there were before the cut.
+   */
+  provides: { symbols: ProvidedSymbol[]; total: number };
 }
 
 export interface ViewMember {
@@ -124,10 +211,21 @@ export interface ViewNode {
    * over the pile it holds — `gitChanged`, `language`, `test`, `parseError`,
    * `unresolved` — a bundle answers the same way, and both leave `members` and
    * `coverage` alone for the same reasons.
+   *
+   * A `component` is a category drawn as a box, under `spec.diagram ===
+   * 'components'`: it stands for the group's files the way a folder stands for
+   * a directory's, answers the same pile questions the same way, and carries
+   * what only it can — the name, the cohesion and what it provides — in
+   * `component`.
    */
-  kind: 'file' | 'folder' | 'bundle';
+  kind: 'file' | 'folder' | 'bundle' | 'component';
   label: string;
-  /** Symbols the file declares; empty on a folder and on a bundle. */
+  /**
+   * Symbols the file declares; empty on a folder, a bundle and a component.
+   * A component's interface is `component.provides`, and it is deliberately
+   * not here: these rows are what a file *declares*, and a component declares
+   * hundreds of symbols of which a dozen are reached from outside.
+   */
   members: ViewMember[];
   /** The files this box stands for; just itself for a file node. */
   files: string[];
@@ -184,6 +282,8 @@ export interface ViewNode {
    * a sum claims nothing that was not counted. Absent when both are zero.
    */
   unresolved?: { imports: number; calls: number };
+  /** Present on a `component` box and on nothing else. */
+  component?: ComponentFacts;
 }
 
 export interface ViewEdge {
@@ -203,6 +303,23 @@ export interface ViewEdge {
    * prevent, in the other direction.
    */
   guessed?: true;
+  /**
+   * `associates` only: every field behind this line — see `GraphEdge.roles`.
+   * A line between two file boxes may stand for several class pairs, so this
+   * is their roles concatenated in graph order, and a folder or bundle box
+   * concatenates again. Absent on every other kind, and never empty.
+   */
+  roles?: AssociationRole[];
+  /**
+   * The diamond at the holder's end, decided over `roles` by `ownershipOf`:
+   * composition when every field that states an ownership builds the part,
+   * aggregation when every one is handed it, and absent when none says or
+   * they disagree — a line that stands for one built field and one given
+   * field says neither, the same rule the graph applies to a single field
+   * that is both. Decided here and not on the page, so the panel's word and
+   * the canvas's shape are one rule and cannot drift apart.
+   */
+  ownership?: 'composition' | 'aggregation';
 }
 
 /** How much of a project one language accounts for. */

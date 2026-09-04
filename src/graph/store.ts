@@ -1,9 +1,9 @@
 import path from 'node:path';
 import { languageById } from '../lang/registry.js';
 import type { ProjectFacts } from '../lang/types.js';
-import { QUALIFIED_SEPARATOR, type ParsedFile, type Reexport } from '../parser/types.js';
+import { QUALIFIED_SEPARATOR, type ParsedFile, type ParsedSymbol, type Reexport } from '../parser/types.js';
 import { looksInternal } from './resolve.js';
-import type { Graph, GraphDelta, GraphEdge, GraphNode, NodeKind } from './types.js';
+import type { AssociationRole, Graph, GraphDelta, GraphEdge, GraphNode, NodeKind } from './types.js';
 
 /**
  * Holds the graph and the per-file parse results it is derived from.
@@ -186,6 +186,26 @@ function exportTables(
   return tables;
 }
 
+/**
+ * What one field says about the association it spells; see AssociationRole.
+ *
+ * Ownership is written only when the parser saw exactly one of the two ways
+ * a part can arrive. Both — a class that builds a default and also accepts
+ * one — is a source that said two things, and the graph says neither.
+ */
+function roleOf(symbol: ParsedSymbol): AssociationRole {
+  const ownership =
+    symbol.composed === true && symbol.handedIn !== true ? 'composition'
+    : symbol.handedIn === true && symbol.composed !== true ? 'aggregation'
+    : undefined;
+  return {
+    name: symbol.name,
+    ...(symbol.many === true ? { many: true as const } : {}),
+    ...(symbol.optional === true ? { optional: true as const } : {}),
+    ...(ownership === undefined ? {} : { ownership }),
+  };
+}
+
 function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Graph {
   const nodes = new Map<string, GraphNode>();
   const knownFiles = new Set(files.keys());
@@ -283,10 +303,16 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         ...(symbol.isStatic === undefined ? {} : { isStatic: symbol.isStatic }),
         ...(symbol.isAbstract === undefined ? {} : { isAbstract: symbol.isAbstract }),
         ...(symbol.many === undefined ? {} : { many: symbol.many }),
+        ...(symbol.optional === undefined ? {} : { optional: symbol.optional }),
         ...(symbol.aliasOf === undefined ? {} : { aliasOf: symbol.aliasOf }),
       });
       ids.push(id);
-      if (symbol.kind === 'class') owners.set(symbol.name, id);
+      // An interface owns its members the way a class does: `memberOf` already
+      // reaches them through it, and a property declared `members: ViewMember[]`
+      // is the has-a an association exists to draw. While only a class was an
+      // owner, an interface's properties hung off the file and 205 of this
+      // repository's 209 typed fields drew nothing.
+      if (symbol.kind === 'class' || symbol.kind === 'interface') owners.set(symbol.name, id);
       // Methods stay out of the name table on purpose. A bare name is resolved
       // against it, and `x.map(...)` arrives here as just `map` — so admitting
       // members would invent a call edge to every class that happens to declare
@@ -408,7 +434,8 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
 
   // Pass 2: edges.
   const edges: GraphEdge[] = [];
-  const seen = new Set<string>();
+  /** `from kind to` -> the one edge written for it; see `addEdge`. */
+  const written = new Map<string, GraphEdge>();
 
   /**
    * The first reference to reach a pair writes the edge, and how it was found
@@ -416,15 +443,22 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
    * first because nothing can disagree yet: the one branch that guesses reads
    * an imported file's table, and every exact branch answers with either this
    * file's own declaration or the file a binding named.
+   *
+   * Answers with the edge, new or already written, so a second field of the
+   * same type can add its role to the association the first one drew; null
+   * for a self-edge, which is never written.
    */
-  function addEdge(from: string, to: string, kind: GraphEdge['kind'], guessed = false): void {
+  function addEdge(from: string, to: string, kind: GraphEdge['kind'], guessed = false): GraphEdge | null {
     // Self-edges (recursion, a file importing itself) carry no structural
     // information and only clutter the diagram.
-    if (from === to) return;
+    if (from === to) return null;
     const key = `${from} ${kind} ${to}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    edges.push({ from, to, kind, ...(guessed ? { guessed: true as const } : {}) });
+    const existing = written.get(key);
+    if (existing) return existing;
+    const edge: GraphEdge = { from, to, kind, ...(guessed ? { guessed: true as const } : {}) };
+    written.set(key, edge);
+    edges.push(edge);
+    return edge;
   }
 
   for (const parsed of files.values()) {
@@ -661,6 +695,12 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
     };
 
     const ids = idsByFile.get(parsed.filePath) ?? [];
+    /**
+     * Class id -> the names its operations wrote, resolved after every
+     * symbol in the file: a class is pushed before its fields, and whether a
+     * dependency is drawn turns on whether a field already reaches the target.
+     */
+    const dependencies: [string, readonly string[]][] = [];
     parsed.symbols.forEach((symbol, index) => {
       const id = ids[index];
       if (!id) return;
@@ -683,12 +723,31 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
       }
       // UML draws an association between the two classifiers, not from the
       // attribute that holds it: the field is how the relationship is spelled,
-      // the class is what has it.
+      // the class is what has it — and the field's name is the role written
+      // at the far end of the line, so it rides on the edge.
       if (symbol.typeName !== undefined && owner) {
         const target = lookup(symbol.typeName);
-        if (target) addEdge(owner, target.id, 'associates', target.guessed);
+        const edge = target ? addEdge(owner, target.id, 'associates', target.guessed) : null;
+        if (edge) (edge.roles ??= []).push(roleOf(symbol));
       }
+      if (symbol.dependsOn !== undefined && symbol.dependsOn.length > 0) dependencies.push([id, symbol.dependsOn]);
     });
+
+    // A dependency is drawn only for a name the class reaches no other way.
+    // Its fields and its supertypes were resolved above through the same
+    // `lookup`, so what they reached is exactly what `written` holds, and a
+    // dashed line beside a solid one to the same box would say less than
+    // the solid one already does.
+    for (const [id, names] of dependencies) {
+      for (const name of names) {
+        const target = lookup(name);
+        if (target === null) continue;
+        const stronger = (['associates', 'extends', 'implements'] as const).some((kind) =>
+          written.has(`${id} ${kind} ${target.id}`),
+        );
+        if (!stronger) addEdge(id, target.id, 'depends', target.guessed);
+      }
+    }
 
     // A call written outside every function, class and method is the file's
     // own: there is no symbol to hang it on, so until now the graph had no

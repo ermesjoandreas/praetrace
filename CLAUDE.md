@@ -50,6 +50,14 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
   over any repository and `src/oracle/checker.test.ts` over a pinned fixture
 - Python, the seventh language, and a baseline that pins what the graph draws
   for express, zod, cobra and flask at four commits
+- The UML notation, as far as a syntax tree can say it: role names and
+  multiplicity on an association, a composition or aggregation diamond where the
+  source states who owns the part, and `depends` — a class that names another
+  only in a signature — as its own dashed line
+- Two diagrams beside the class diagram: the categories as UML components
+  (`?diagram=components`), and the activity diagram of one function
+  (`GET /api/flow`), read off its syntax tree alone. The sequence diagram was
+  measured and refused — see "Not built, and deliberately"
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
@@ -61,12 +69,13 @@ something in the last round of work argued for it:
    an imported class from a namespace object without the bindings it now records —
    it can, so do it.
 
-2. **A corpus regression test.** Half of it exists: `src/oracle/checker.test.ts`
-   pins our graph against the TypeScript checker's over a fixture, which is what
-   catches a composition that lies while every function in it is right. What is
-   left is a baseline over a real clone — `scripts/corpus.mjs` and
-   `scripts/oracle.mjs` both print the numbers; nothing yet compares them to a
-   checked-in expected file.
+2. **Re-accept the corpus baseline.** `scripts/baseline.mjs` now records
+   `depends`, interfaces own their members, and fields carry `optional` — so
+   associates, `field` counts and a new key all move, every one in the direction
+   the comparison passes. The four clones were not fetched in the round that made
+   the change, so `src/oracle/baseline.json` still describes the graph before it:
+   `--fetch`, `--check`, read what moved, `--accept`. The oracle fixture in the
+   same file reads "every count as recorded" today.
 
 3. **Structural session diff** — VISION.md phase 1. Today the tool knows which
    *files* differ from a base, and since time travel it can build a commit's whole
@@ -91,7 +100,7 @@ language — is answered by the rule below rather than dismissed.
 
 **The graph model did not change, and that is why this was affordable.** File,
 class, interface, method, field, and extends / implements / calls / contains /
-associates are UML, not TypeScript. A language supplies two things and nothing
+associates / depends are UML, not TypeScript. A language supplies two things and nothing
 else: how to read symbols out of a syntax tree, and how to turn a reference into a
 file. The contract is `src/lang/types.ts`; a language is one file in `src/lang/`.
 
@@ -217,7 +226,7 @@ Keep the node/edge shape stable and explicit:
 
 ```ts
 type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
-type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates';
+type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates' | 'depends';
 
 interface GraphNode {
   id: string;          // stable: `${filePath}#${symbolName}`
@@ -232,6 +241,15 @@ interface GraphEdge {
   from: string;        // GraphNode id
   to: string;
   kind: EdgeKind;
+  guessed?: true;      // resolved by something weaker than a binding; absent means found
+  roles?: AssociationRole[]; // associates only: one per field that spells it
+}
+
+interface AssociationRole {
+  name: string;        // the field's own name — UML's role name at the far end
+  many?: true;         // `T[]`, `List<T>`; the page writes `*`
+  optional?: true;     // `x?: T`, `T | null`, `T?`, `Optional<T>`; the page writes `0..1`
+  ownership?: 'composition' | 'aggregation'; // absent: the source did not say
 }
 ```
 
@@ -250,8 +268,64 @@ operations, which is the order a UML class box reads in.
 `Store ──has──> Logger`; an import only says this file mentions that one.
 The edge runs between the two classifiers, not from the attribute holding it —
 the field is how the relationship is spelled, the class is what has it. Like
-`calls`, it is opt-in (`?edges=…,associates`) and *replaces* the import between the
-same pair rather than being drawn beside it. `Logger[]` sets `many`, for 1..*.
+`calls`, it is opt-in (`?edges=…,associates`, or `?associates=1`) and *replaces*
+the import between the same pair rather than being drawn beside it. An interface
+owns its members the way a class does, and its typed property draws the
+association — on a TypeScript project that is nearly all of them. A parameter
+property is a field, listed where the constructor is written.
+
+The edge is one per pair of classifiers and carries `roles`, one per field that
+spells it, each holding what that field's declaration wrote and nothing more.
+`many` is `Logger[]` or `List<Logger>`, and the page writes `*` rather than
+`1..*`, because an array says nothing about being non-empty. `optional` is
+`x?: T`, `T | null`, `T | undefined`, C#'s `T?`, Java's `Optional<T>` or
+`@Nullable`, and the page writes `0..1`. `ownership` is `composition` when the
+class builds the part — `= new T()` where the field is declared, or
+`this.x = new T()` in a constructor, and only when `T` is the field's own declared
+type: `items: Item[] = []` builds a container and `log: Logger = new
+ConsoleLogger()` builds something the parser cannot say is a Logger, and both
+stay plain — and `aggregation` when the part is handed in: a parameter property, a
+record component, `this.x = param` for a constructor parameter. The parser reports
+`composed` and `handedIn` separately; a field that is both is a source that said
+two things, and the edge carries neither. Absent means the source did not say —
+never false. The page draws UML's diamond at the holder's end from what a line's
+roles agree on — `ownershipOf` in `view/select.ts`, which also decides the
+panel's word (`composed of`, `aggregates`, `holds`), so the shape and the word
+cannot drift — and the role name and multiplicity at the far end. The near end's
+multiplicity is not in the source and is not drawn.
+
+**A dependency is the weakest line UML draws, and it is its own kind.** `depends`
+runs from a class or interface to a type it names only in a parameter or return
+type of its own operations — `ParsedSymbol.dependsOn`, every type identifier in
+the signatures, type parameters excluded — and the store draws it only for a name
+the class reaches no other way: not a field's type, not a supertype. A kind rather
+than a flag on `associates`, because `edges.ts` counts `associates` as reaching
+and a dependency must not be — a class that takes a Store as a parameter does not
+hold it, and the hook's sentence must not say it does; `edges.test.ts` pins that.
+The panel is the one surface that widens past `REACHES`: it lists a dependency
+under uses and used by, as `depends on`. Opt-in (`?edges=…,depends` or
+`?depends=1`), dashed with an open head on the page, drawn **beside** the import
+and never instead of it — `calls` and `associates` replace the import between
+the same pair, a dependency is too weak to stand in for one: "merely depends
+on" between two files one of which holds the other was the picture that rule
+drew. Resolved through the same `lookup`, so it wears `guessed` under the same
+rule. TypeScript, Java and C# record it; JavaScript writes no types and records
+none. A dependency that resolves to nothing is not counted in `unresolved`,
+and **a dependency does not vote in the clustering**: a type named only in a
+signature is not the coupling label propagation measures, and letting it vote
+moved every stored name on every typed project the day the kind arrived.
+
+**Ownership is written only when the source said one thing.** `composed` when
+the class builds the part (`= new T()` inline, `this.x = new T()` in the
+constructor), `handedIn` when the constructor stored a parameter in it; the
+store's `roleOf` draws a diamond for exactly one of them and none for both or
+neither. Two readings that were lies until measured: a parameter property the
+body also builds says both (a hollow diamond on a part the class constructs),
+and a parameter the body reassigns — `cfg = new Config()` before `this.cfg =
+cfg` — is no longer what was handed in, and says neither. The far end's
+multiplicity is `*` for an array and `0..1` for `?`, and **nothing** when the
+field said neither: `1` is a claim of exactly one, and a Java reference field
+is nullable by default.
 
 **Every edge says how we know, and what did not resolve is counted.**
 `GraphEdge.guessed?: true` marks an edge resolved by something weaker than a
@@ -329,12 +403,32 @@ list means unknown, not none), for a dotted top-level name like `app.init` (call
 through the object it hangs off), and for an interface or type (uses in type
 positions are not tracked); `full` for a function or class, whose note still says
 a function passed by value is not tracked. The panel, the chip and the explain
-prompt all show `coverageNote`, and a method never reads "0 in".
+prompt all show `coverageNote`, and a method never reads "0 in". The class
+sentence names the one exception to "written only in a type": a class that names
+this in its own methods' signatures is listed as depending on it.
 
-**Not built, and deliberately.** Sequence diagrams need call *order*, which
-`collectCalls` discards into a Set, and receiver resolution on top of that. State
-and activity diagrams are not derivable from static structure at all. ER
-diagrams are out of scope. A package diagram is the root view, and exists.
+**Not built, and deliberately.** Sequence diagrams are refused, on a number. One
+is calls in order, and the parser can name the receiver of a method call only
+when its type was written down (`x: T`, `this` inside `T`, `new T()`): measured,
+that is 13% of method-call sites on this repository and 27% on a Java project, so
+a sequence diagram would draw one message in eight and read as complete — the
+exact lie this project exists not to tell. `collectCalls` also discards order
+into a Set. Nothing may drift towards one. State diagrams are not derivable from
+static structure, and an activity diagram across files is not either — but inside
+one function body it is, completely: an `if` is an `if` in the tree, a loop is a
+loop, a return is a return, and none of it needs a receiver typed.
+`src/parser/flow.ts` draws that one, for TypeScript, JavaScript, Java and Go,
+through the worker and the pool (decision 1); it is a detail about one symbol —
+`GET /api/flow` — and never graph structure (decision 3). Two rules it learned
+from a review: a function handed to a call is never the symbol's own body
+(`items = xs.map((x) => …)` puts an arrow on the field's line, and the route
+served that arrow's flow as the flow of `items`), and a `finally` that exits
+on its own replaces every exit it was carrying — an edge out of the finally box
+for the try's `return` was a path no run takes. ER diagrams are out of
+scope. A package diagram is the root view, and exists; a component diagram is
+`?diagram=components` — the categories as boxes, each listing what files outside
+it reach — and it is honest for the reason the package diagram is: the same
+import data, summed one level up.
 
 **A cluster id is not a stable identity.** It embeds the member count
 (`src/cli/index.ts~8`), so it changes the moment a file joins or leaves the group,
@@ -357,12 +451,9 @@ npm run codemap -- <dir> --json   # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
 node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
 node scripts/oracle.mjs <dir>     # where the TypeScript checker says we are wrong
-node scripts/baseline.mjs --fetch # clone the four pinned corpus repositories
+node scripts/baseline.mjs --fetch # clone the four pinned corpus repositories, once
 node scripts/baseline.mjs --check # what the graph draws for them, against the pin
 node scripts/baseline.mjs --accept # record today's numbers as the new baseline
-node scripts/baseline.mjs --fetch # clone the four pinned repositories, once
-node scripts/baseline.mjs --check # measure them: did the graph get worse?
-node scripts/baseline.mjs --accept  # ... and write down what it measured
 
 node scripts/prepare-sidecar.mjs  # once: builds the Node sidecar binary
 npm run tauri dev                 # the desktop app
@@ -378,7 +469,8 @@ A server left running from an earlier session will happily serve code from befor
 src/
   graph/          the graph engine — pure, no I/O
     types.ts      GraphNode / GraphEdge / Graph / GraphDelta
-    edges.ts      which edge kinds mean "reaches" — one home, two readers
+    edges.ts      which edge kinds mean "reaches" — one home, two readers; its
+                  test pins that `depends` does not
     resolve.ts    module specifier -> file, given the set of known files
     store.ts      holds parse results, derives the graph, emits deltas
   git/
@@ -407,9 +499,15 @@ src/
     baseline.test.ts runs scripts/baseline.mjs; skips a clone it does not have
   parser/         everything that knows about ASTs
     types.ts      ParsedFile / ParsedSymbol + worker message shapes
-    extract.ts    tree-sitter -> ParsedFile (the only module using createRequire)
-    worker.ts     worker_threads entry: reads a file, parses it, replies
-    pool.ts       fixed pool of parser workers, one file at a time each
+    extract.ts    tree-sitter -> ParsedFile
+    flow.ts       the activity diagram of one function: a walk over one
+                  tree-sitter node, a table per language for TS/JS, Java and
+                  Go, null with a reason for the rest; FlowRequest/FlowResponse
+                  beside it. Pure; the worker hands it the node
+    worker.ts     worker_threads entry: reads a file, parses it, replies — or
+                  answers a FlowRequest with a parser of its own
+    pool.ts       fixed pool of parser workers, one file at a time each;
+                  `flow()` queues beside `parse()`
   project/        the project on disk, and everything that changes it
     walk.ts       boot scan + the ignore/source predicates everything shares,
                   and the census of what no language claims (countUnreadable)
@@ -432,7 +530,9 @@ src/
   view/           which slice of the graph to draw — pure
     types.ts      ViewSpec / ViewGraph
     filter.ts     what to leave out; filtering is not navigating
-    select.ts     selectView(graph, spec, now, git) -> ViewGraph
+    select.ts     selectView(graph, spec, now, git, coverage, categories) -> ViewGraph
+    components.ts the categories as components: which file is whose, and what
+                  each provides (partitionByCategory); select.ts draws it
     cluster.ts    label propagation over the import graph
     detail.ts     one node's dependents and dependencies, for the panel
     search.ts     subsequence search over the whole graph
@@ -444,15 +544,29 @@ src/
   cli/
     index.ts      arg handling + text/JSON output
   server/
-    session.ts    one project: store, pool, watcher, updater, git, an LRU of
-                  16 past commits' graphs, and the last suggest run. Swapped whole
+    session.ts    one project: store, pool (exposed, for the flow), watcher,
+                  updater, git, an LRU of 16 past commits' graphs, the stored
+                  group names (groups, refreshGroups, clustersOf — held in
+                  memory like coverage, re-read by the view route for a
+                  component diagram and by the two routes that write
+                  groups.json), and the last suggest run. Swapped whole
     app.ts        Fastify: static web build, and the API below
+    flow.ts       GET /api/flow, registered from app.ts; asks the session for
+                  root, store and pool
     live.ts       connected clients and their view specs; pushes per client,
-                  and `groups` to every client after a groups.json write
+                  and `groups` to every client after a groups.json write, then
+                  a fresh view to each live client drawing components
     main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus, depth, selection
   src/BoxNode.tsx one box: a file with its symbols, or a folder
+  src/ComponentNode.tsx  one component box: a category's name, count and
+                       cohesion, and what it provides
+  src/RelationEdge.tsx   every line on the class diagram: the path, and the
+                       diamond, role text and open head a kind adds
+  src/Flow.tsx    the flow of one function, over the canvas: its own
+                  ReactFlowProvider, dagre top-to-bottom, the engine's notDrawn
+                  under it
   src/GroupNode.tsx a group frame: name, colour, size, membership
   src/Sidebar.tsx the right side bar: Following (with its readings) and Detail
   src/Categories.tsx   the left bar's third section: every group with its
@@ -483,8 +597,12 @@ web/              the browser page (Vite, built into dist/web)
   src/Sash.tsx    one draggable border, reporting a size in pixels
   src/panes.ts    how wide the bars are and how the sections divide them — pure
   src/AgentStatus.tsx  what the agent is doing, and how long ago
-  src/layout.ts   dagre for a view's first layout, keepLayout for every save after
-  src/api.ts      fetch + the shared types, imported from src/
+  src/layout.ts   dagre for a view's first layout, keepLayout for every save after;
+                  componentHeight, and layoutFlow / flowBoxSize for the flow
+                  (tested in flow.test.ts)
+  src/api.ts      fetch + the shared types, imported from src/ — and one value,
+                  flow.ts's language table, which bundles because it reads a
+                  tree and nothing else
 .claude/
   settings.json   the PostToolUse hook, committed so the repo dogfoods itself
 .codemap/
@@ -500,7 +618,18 @@ GET  /api/view          the slice for a ViewSpec, given as a query string.
                         an unknown one, never the live graph under its name.
                         404 too for a focus or scope the graph has not got —
                         never the root view under a bogus name. The view carries
-                        fileCount, hiddenTests and parseErrors for the whole graph
+                        fileCount, hiddenTests and parseErrors for the whole graph.
+                        ?diagram=classes|components picks the diagram: 400 for
+                        anything else, and under components scope and focus are
+                        ignored and echoed cleared rather than 404'd
+GET  /api/flow          the activity diagram of one function or method, ?id=.
+                        404 for an id the graph has not got; 200 with
+                        { flow: null, reason } for one it has but cannot draw —
+                        a language without a table (C#, Rust, Python), a symbol
+                        without a body, a file, class, interface or type; `boxes`
+                        counts start and end so the page can warn before it
+                        draws. Read off the working tree: ?at= is 400, because a
+                        commit's files are not on disk
 GET  /api/project       the current root
 POST /api/project       switch to another root
 GET  /api/detail        one node's dependents and dependencies       (?at=)
@@ -542,7 +671,9 @@ GET  /api/coverage      what the test suite executed, or { coverage: null }
                         `explain`, `explain-delta`, and `{ type: 'groups' }` after
                         every groups.json write — to every client, frozen ones
                         too, because a name lives outside the commit; the page
-                        refetches /api/clusters on it
+                        refetches /api/clusters on it, and a live client drawing
+                        components is pushed an `update` right after, so the box
+                        wears the name the panel just got
 ```
 
 ---
@@ -598,6 +729,10 @@ back button works and a view is shareable.
 /?changed=1                  only what differs from the git base
 /?at=<sha>                   the whole diagram as of that commit — not a highlight
 /?tests=0                    without tests, fixtures and stories; hiddenTests says how many
+/?calls=1 ?associates=1 ?depends=1   the three opt-in edge kinds; `?edges=` spells them too
+/?diagram=components         the categories as UML components: one box per leaf
+                             category listing what files outside it reach, the
+                             imports between categories summed onto one line per pair
 ```
 
 **What a test is** is decided from the path alone, by `isTestFile` in
@@ -615,6 +750,24 @@ describes the diagram (`/api/detail`, `/api/symbol`, `/api/clusters`) takes the 
 `at`, so a frame or a panel on a diagram of last week is what last week's imports
 produced. `changed` and `since` are dropped on freeze: a commit has no working tree
 or clock to filter by. Escape leaves the commit, unless a menu took the key first.
+
+**The component diagram is a view, and it rides the URL beside `at`.** The way in
+is the `Components` crumb at the end of the breadcrumb row, View › Components
+(checked, so the palette has it) and the canvas menu. Filters, edge kinds and the
+commit survive the flip; scope, focus and depth are dropped, because a category
+is a fact about the whole project and a URL still naming a directory would
+describe a picture that is not on screen. A navigation into a place — a focus, a
+scope, a ⌘K pick, a double-click on a relation row — leaves it: a place is the
+class diagram's to draw. The server builds it from `session.clustersOf(graph)`,
+the same clusters `/api/clusters` answers with, so a frozen component diagram is
+the commit's categories under today's names. A component box is its own React
+Flow node type, never a BoxNode: it lists what it provides, not members, and has
+no scope, so double-click is not bound. Click opens the panel on Provides (the
+server's twelve, `≥ total`), the lines that touch it, and its files. A named box
+wears its category's colour, joined off `/api/clusters` by stored id — slate when
+none was chosen; an unnamed one is plain; the no-category box is dimmed. No
+frames are drawn on it: an outer category's leaves are the boxes, and its name is
+only in the Categories section.
 
 - Above 40 files in scope, boxes stand for directories, and edges between them are
   aggregated with a weight. In a *focus* view, neighbours past a threshold collapse
@@ -636,7 +789,11 @@ or clock to filter by. Escape leaves the commit, unless a menu took the key firs
 (`changed`, `edges`, `since`, `tests`); the websocket carries a `ViewSpec` object
 with its filter nested (`onlyChanged`, `edgeKinds`, `sinceMs`, `hideTests`). Reading one with the other's
 parser silently yields the default filter — no error, just a diagram that quietly
-widens back to everything. Keep `toSpec` and `toSocketSpec` apart.
+widens back to everything. Keep `toSpec` and `toSocketSpec` apart. `diagram` is
+the one key both read under the same name, because the page sends the socket
+the spec the server echoed; a socket that sent it was pushed component boxes,
+and a reader that dropped it would push the class diagram to a page drawing
+components.
 
 ## Git status
 
@@ -726,7 +883,14 @@ governs membership.
   tooltip rather than silently doing nothing. View › "Hide tests" is a checked item
   that drives `tests=0`; View › "Re-layout" (⇧⌘L) is the only way after the first
   layout to run dagre again. Above 150 boxes in focus mode a chip in the breadcrumb
-  row says "N boxes — depth 1 is quicker" and sets depth 1.
+  row says "N boxes — depth 1 is quicker" and sets depth 1. View › "Components"
+  is checked while the component diagram is on; "Control flow of the selection…"
+  opens the flow overlay, greyed with where to pick a symbol when the selection
+  is a box; "Association edges (has-a)" and "Dependency edges (named in a
+  signature)" are checked items greyed with "No class or interface in view to
+  draw one from" when every box is a file box without one — unless already on,
+  when the item is the way back off. The breadcrumb row ends in the `Components`
+  crumb, which holds the accent while on.
 - **The welcome screen.** Shown from Help, and when there is genuinely nothing to
   draw. **Not** when a filter emptied the view. It covers the canvas, not the
   window — it used to position against the viewport and painted over the menu bar,
@@ -752,12 +916,28 @@ governs membership.
   button. Before it, getting past Source Control meant 300 presses. The stop
   follows the *focused row* and not a remembered index, or a file arriving above
   it on an agent's save would move the stop to its neighbour.
-- **Call edges** are off by default (`?calls=1`). When on, a call edge *replaces* the
-  import between the same pair rather than being drawn beside it.
+- **Call, association and dependency edges** are off by default (`?calls=1`,
+  `?associates=1`, `?depends=1`). A call or an association *replaces* the import
+  between the same pair rather than being drawn beside it; a dependency is drawn
+  beside it, being too weak to stand in for one. Each is a chip in the
+  breadcrumb row that removes only itself.
 - **The side panel.** A followed method or field prints the graph's coverage
-  sentence and "known used by N", never "0 in". Click inspects, double-click navigates. `zoomOnDoubleClick` is
+  sentence and "known used by N", never "0 in". A relation row prints the graph's
+  phrase, never the kind — `composed of`, `aggregates` or `holds` for an
+  association by the rule that draws its diamond, `depends on` for a dependency,
+  which the panel lists under uses and used by although the hook does not say it.
+  Click inspects, double-click navigates. `zoomOnDoubleClick` is
   off and must stay off: d3-zoom handles a double click on the pane and stops it
   bubbling, so `onNodeDoubleClick` never fires and the view silently zooms instead.
+- **The flow overlay** covers the canvas, not the window, like the welcome screen.
+  A flow is fetched only on a press — a member row's menu, the panel's button,
+  View › Control flow of the selection… — because it is a parse; while open it is
+  re-read on every save, because the file may have changed; above 40 boxes it is
+  refused until "Draw anyway"; and it closes on navigation, since a link means
+  "show me this" and the overlay would hide exactly that. Escape's layers, topmost
+  first: a menu, a palette (⌘K or ⇧⌘P, never both), the flow overlay or the
+  welcome screen (both cover the canvas at z-index 20, never together), the find
+  bar, then the page — the selection, the following lens, a frozen commit.
 - **The change feed** is the session's own history, the last 200 batches in memory,
   discarded with the session. It is *not* session history — that is VISION.md phase 1
   and it gets a schema designed for it rather than a ring buffer promoted into one.
@@ -777,7 +957,10 @@ Every connected client is sent a view **computed for its own spec**. The behavio
   `frameClusters` around wherever the boxes now are. The one existing box that
   moves is the column under a box that expanded, by its growth. Five reviewers
   named the shuffle-on-save as the thing that broke "mark, do not move"; do not
-  bring back a layout key that re-runs dagre when the box set changes.
+  bring back a layout key that re-runs dagre when the box set changes. The
+  component diagram keeps the same rule: a named box is keyed on `storedId` and
+  stays put; an unnamed one is keyed on the cluster id, which embeds the member
+  count and shifts when membership drifts, exactly as a frame does.
 - **Dragging a frame locks it**, the way pulling a corner does; the lock button only
   releases. A frame that had to be locked before it could be moved was the wrong
   order, and it was reported as such.
@@ -1101,6 +1284,67 @@ the graph can be trusted at a glance on a project that is not this one:
   them: the panel asked a person to name one architecture twice, ripgrep as
   twelve rows for ten pieces and serilog as three for two. A nesting that says
   something — zustand's 23 as 10 + 10 + 3 — is untouched.
+- **The UML marks stop where the source does.** The near-end multiplicity is
+  never drawn; role text stops at three roles and counts the rest, and a folder
+  or bundle line concatenates every file line's roles, so two fields named `run`
+  on two interface pairs print twice; a line standing for several fields wears a
+  diamond only when every stated ownership agrees; a `guessed` line keeps its
+  diamond and roles, because they are facts about the field's declaration and the
+  dots are about the target. On a TypeScript project nearly every association is
+  an interface property with no constructor, so ownership is almost always
+  unknown there — 1 of 159 roles on this repository — and a diamond is a Java, C#
+  or class-heavy TypeScript thing. An association between two classes in one
+  file is in the graph and the panel but never on the canvas: the same-file rule.
+  Go, Rust and Python record none of `optional`, `composed`, `handedIn` or
+  `dependsOn` — Rust's `Option<T>` and Python's `Optional[T]` could give 0..1 and
+  do not, and Go has no field initialiser to read composition from; JavaScript
+  records no `dependsOn`, and a JS field handed in but never built
+  (`this.#view = repo`) has no `typeName`, so no line. `handedIn` needs a bare
+  constructor parameter on the right: `this.x = Objects.requireNonNull(x)`,
+  `this.x = x ?? new X()` and `this.x = opts.x` say nothing. `dependsOn` names
+  `Promise`, `Map` and `String` too, which resolve to nothing outside the project
+  and draw nothing, silently. Java's `Optional` and `@Nullable` are matched by
+  simple name; C# 12 primary-constructor parameters on a class are not fields.
+- **The component diagram draws leaves, and every test is in "no category".** A
+  category with categories inside it is not a box; its leaves are, and its name
+  is only in the Categories section. Tests do not vote in the clustering, so they
+  are always uncategorised: on this repository with tests shown that box is 64
+  files, 49 of them tests, carrying a 72-pair import line into the engine; with
+  `tests=0` it is 15 files and the line is gone, and the label does not say how
+  many of its files are tests. A drawn category entirely inside a found one is no
+  box at all — this repository's "Lang decoder", 7 files inside "Prog.lang
+  decoder"'s 12, the same call the overlapping-frame rule makes — and a partial
+  overlap shrinks the later box while its cohesion still describes the whole
+  cluster. Provides is a floor, read off calls, extends, implements and
+  associates: a call through an untyped receiver is not an edge, and an import
+  names no symbol, so a type used only in type positions is not listed. The list
+  is the server's twelve, and "+N more" is a count with no way in; the panel
+  holds the same twelve. A pair can carry both an imports line and a calls line,
+  because a call replaces the import between the same two *files*. A frozen
+  component diagram keeps the name it was drawn with until reload; a hand edit
+  of groups.json is seen by the next `/api/view` and by the two write routes, not
+  by the socket push after a save. The clustering itself can flip on an unrelated
+  edit (DECISIONS.md has the one that was watched); the leaves held still across
+  it, the outer level did not. The status bar still says "7 boxes", not
+  components, and a component has no Explain: a category is not a graph node.
+- **The flow of one function draws what the tree says and names the rest.** A
+  callback's or nested function's body is one box with a note, so
+  `items.forEach(x => { if … })` shows no branch; `await` is not a branch; an
+  exception thrown by a call is not an edge, only a written `throw` is; a ternary
+  or arrow-switch inside a larger expression is counted, not drawn; a throw
+  inside a try with several catch clauses goes to end, because the clause is
+  chosen by type and the walker knows no types; Go's `goto` is not followed and
+  `defer` is drawn where written; an unreachable statement after a return is
+  drawn with nothing into it. Node ids are per answer (`n<index>`, `start`,
+  `end`) and not stable across edits, so a re-read on a save re-lays out the
+  whole diagram, and while the overlay is open every save costs one flow parse
+  through the pool. The size warning gates the drawing, not the parse, which has
+  already run. `derive` at 116 boxes is legible only zoomed in, and its back
+  edges cross the body where a loop is wide. The overlay's "selection" is the
+  panel's open symbol or one followed symbol, never a box — a box is a file, and
+  the greyed item says where to pick one; the canvas way in depends on BoxNode
+  stamping `data-member-id` on each row. C#, Rust and Python get a greyed item or
+  the engine's sentence, never a diagram.
 - Grouping keys off the directory tree only. There is no filtering by name, kind or
   path glob, and a flat directory above the threshold cannot be grouped at all (it
   reports `grouped: false` honestly rather than claiming otherwise).

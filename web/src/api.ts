@@ -13,14 +13,37 @@ import type {
   SuggestResponse,
 } from '../../src/server/app.js';
 import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
-import type { Tracking, ViewGraph } from '../../src/view/types.js';
+import type { FlowEdge, FlowGraph, FlowNode } from '../../src/parser/flow.js';
+import type { FlowReply } from '../../src/server/flow.js';
+// A value, and the one value import from src/ on this page. flow.ts reads a
+// syntax tree and nothing else — no grammar, no fs — so it bundles; and the
+// table of languages that have a flow lives there, where the walker is, rather
+// than being copied here and drifting the day a fifth one is added.
+import { FLOW_LANGUAGES, hasFlowSyntax } from '../../src/parser/flow.js';
+import type { AssociationRole, EdgeKind } from '../../src/graph/types.js';
+import type { ComponentFacts, ProvidedSymbol, Tracking, ViewGraph } from '../../src/view/types.js';
 
 // Types only. `groups.ts` reaches for node:fs and `git.ts` for child_process,
 // so nothing may import a value from either here — the import disappears at
 // compile time, the module never does.
-export type { Commit, GitFileStatus, GitStatus, GroupColor, LanguageId, RemoteStatus, Tracking, ViewGraph };
+export type {
+  AssociationRole,
+  Commit,
+  ComponentFacts,
+  EdgeKind,
+  GitFileStatus,
+  GitStatus,
+  GroupColor,
+  LanguageId,
+  ProvidedSymbol,
+  RemoteStatus,
+  Tracking,
+  ViewGraph,
+};
 export type ViewNode = ViewGraph['nodes'][number];
 export type ViewMember = ViewNode['members'][number];
+/** Which UML diagram the boxes make. Absent from a URL is `classes`. */
+export type Diagram = ViewGraph['spec']['diagram'];
 
 /**
  * References that landed nowhere, always both halves — never `{ imports: 0,
@@ -363,7 +386,19 @@ export interface SymbolRelation {
   kind: 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
   filePath: string;
   line: number;
-  edge: 'calls' | 'extends' | 'implements' | 'associates';
+  /**
+   * `depends` is listed here and nowhere else the graph speaks: the hook
+   * stays with the reaching kinds. See `SymbolRelation.edge` in
+   * src/view/detail.ts.
+   */
+  edge: 'calls' | 'extends' | 'implements' | 'associates' | 'depends';
+  /**
+   * The relationship in the graph's own words — `composed of`, `aggregates`
+   * or `holds` for an association, by the same rule that draws its diamond;
+   * `depends on`; and the kind itself for the rest. The row prints this and
+   * never the kind, so a plain association is never called owned.
+   */
+  phrase: string;
 }
 
 export interface SymbolLinks {
@@ -415,6 +450,80 @@ export async function fetchSymbol(id: string, at: string | null = null): Promise
   if (response.status === 404) return null;
   if (!response.ok) throw new Error(`symbol failed: HTTP ${response.status}`);
   return (await response.json()) as SymbolLinks;
+}
+
+export type { FlowEdge, FlowGraph, FlowNode, FlowReply };
+export { hasFlowSyntax };
+
+/**
+ * The symbol a flow is asked for, with the two things the page needs beyond
+ * its id: the name for the title, and the file for the editor link a box
+ * opens on double-click. The file is carried rather than cut from the id,
+ * because `#` is legal in a filename — `openInEditor` already has to allow
+ * for it — so the id cannot be split with confidence.
+ */
+export interface FlowTarget {
+  id: string;
+  name: string;
+  filePath: string;
+}
+
+/**
+ * The language's own name, for the sentence that says a flow cannot be drawn
+ * of it. Keyed by every id, so a language added to the engine without a name
+ * here is a typecheck failure and not a menu item reading "undefined".
+ */
+const LANGUAGE_LABEL: Record<LanguageId, string> = {
+  typescript: 'TypeScript',
+  javascript: 'JavaScript',
+  java: 'Java',
+  go: 'Go',
+  csharp: 'C#',
+  rust: 'Rust',
+  python: 'Python',
+};
+
+/**
+ * Why a flow cannot be drawn of a symbol, or null when it can be asked for.
+ *
+ * The page knows two things without asking the server: the kind — a class, an
+ * interface or a type has no body of statements — and, when the symbol's box
+ * is on screen, the language, which is the engine's own table read through
+ * `hasFlowSyntax`. Both are said in the menu rather than found out in the
+ * panel: a greyed item teaches why, a sentence after a press only says no.
+ * Anything the page cannot tell — a field that may or may not hold a
+ * function, a file whose box is not drawn — is offered, and the engine
+ * answers with its own sentence.
+ */
+export function flowBlocked(kind: string, language: LanguageId | null): string | null {
+  if (kind === 'class') return 'A class has no flow — pick one of its methods';
+  if (kind === 'interface') return 'An interface has no flow — its methods have no body';
+  if (kind === 'type') return 'A type has no flow';
+  if (kind === 'file') return 'A file has no flow — pick one of its functions';
+  if (language !== null && !hasFlowSyntax(language)) {
+    const reads = FLOW_LANGUAGES.map((id) => LANGUAGE_LABEL[id]);
+    const last = reads.pop();
+    return `Control flow is not read for ${LANGUAGE_LABEL[language]} yet — ${reads.join(', ')} and ${last} are`;
+  }
+  return null;
+}
+
+/**
+ * The activity diagram of one symbol. Null on 404 — the id has left the
+ * graph, which is the same silence `fetchSymbol` answers with — and a reply
+ * with `flow: null` for a symbol the graph has but cannot draw, whose
+ * `reason` is a sentence to print where the diagram would go.
+ *
+ * Never with `at`: the flow is read off the file as it is on disk, and the
+ * route refuses a commit rather than drawing today's body under its name.
+ * A frozen view says so in the overlay's own header instead.
+ */
+export async function fetchFlow(id: string): Promise<FlowReply | null> {
+  const server = await serverOrigin();
+  const response = await fetch(`${server}/api/flow?id=${encodeURIComponent(id)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`flow failed: HTTP ${response.status}`);
+  return (await response.json()) as FlowReply;
 }
 
 export interface ChangeEntry {

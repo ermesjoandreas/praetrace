@@ -856,3 +856,114 @@ test('a file that recorded no top-level calls draws none', () => {
 
   assert.deepEqual(edges(graph, 'calls'), ['app.ts#build -> core/schemas.ts#ZodType']);
 });
+
+// --- what an association says -----------------------------------------------
+
+test('an association carries every field that spells it: role, multiplicity, and who builds the part', () => {
+  const graph = graphOf(
+    file('node.ts', { symbols: [symbol('Node', 'class', { exported: true })] }),
+    file('tree.ts', {
+      imports: ['./node'],
+      bindings: [{ local: 'Node', specifier: './node', imported: 'Node' }],
+      symbols: [
+        symbol('Tree', 'class'),
+        symbol('left', 'field', { owner: 'Tree', typeName: 'Node', composed: true }),
+        symbol('right', 'field', { owner: 'Tree', typeName: 'Node', optional: true }),
+        symbol('children', 'field', { owner: 'Tree', typeName: 'Node', many: true }),
+        symbol('parent', 'field', { owner: 'Tree', typeName: 'Node', handedIn: true }),
+        // Built and accepted: the source said two things, and the edge says neither.
+        symbol('any', 'field', { owner: 'Tree', typeName: 'Node', composed: true, handedIn: true }),
+      ],
+    }),
+  );
+
+  const [edge, ...rest] = graph.edges.filter((candidate) => candidate.kind === 'associates');
+  assert.deepEqual(rest, []);
+  assert.equal(edge?.from, 'tree.ts#Tree');
+  assert.equal(edge?.to, 'node.ts#Node');
+  assert.deepEqual(edge?.roles, [
+    { name: 'left', ownership: 'composition' },
+    { name: 'right', optional: true },
+    { name: 'children', many: true },
+    { name: 'parent', ownership: 'aggregation' },
+    { name: 'any' },
+  ]);
+  assert.equal(graph.nodes.get('tree.ts#Tree.right')?.optional, true);
+  assert.equal('optional' in (graph.nodes.get('tree.ts#Tree.left') ?? {}), false);
+});
+
+test('a dependency is drawn for a name the class reaches no other way', () => {
+  const graph = graphOf(
+    file('store.ts', { symbols: [symbol('Store', 'class', { exported: true })] }),
+    file('base.ts', { symbols: [symbol('Base', 'class', { exported: true })] }),
+    file('shape.ts', { symbols: [symbol('Shape', 'interface', { exported: true })] }),
+    file('event.ts', { symbols: [symbol('Event', 'class', { exported: true })] }),
+    file('app.ts', {
+      imports: ['./store', './base', './shape', './event'],
+      bindings: [
+        { local: 'Store', specifier: './store', imported: 'Store' },
+        { local: 'Base', specifier: './base', imported: 'Base' },
+        { local: 'Shape', specifier: './shape', imported: 'Shape' },
+        { local: 'Event', specifier: './event', imported: 'Event' },
+      ],
+      symbols: [
+        symbol('App', 'class', {
+          extends: ['Base'],
+          implements: ['Shape'],
+          // The field's type and both supertypes are named in signatures too,
+          // and each is already reached by something a dashed line says less than.
+          dependsOn: ['Store', 'Base', 'Shape', 'Event', 'App', 'Nobody'],
+        }),
+        symbol('store', 'field', { owner: 'App', typeName: 'Store' }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'depends'), ['app.ts#App -> event.ts#Event']);
+  assert.deepEqual(edges(graph, 'associates'), ['app.ts#App -> store.ts#Store']);
+});
+
+test('a dependency resolves through the same lookup, and wears guessed under the same rule', () => {
+  const event = file('event.ts', { symbols: [symbol('Event', 'class', { exported: true })] });
+  const graph = graphOf(
+    event,
+    file('legacy.ts', { imports: ['./event'], symbols: [symbol('Legacy', 'class', { dependsOn: ['Event'] })] }),
+    file('bound.ts', {
+      imports: ['./event'],
+      bindings: [{ local: 'Event', specifier: './event', imported: 'Event' }],
+      symbols: [symbol('Bound', 'class', { dependsOn: ['Event'] })],
+    }),
+    file('blind.ts', {
+      imports: ['./event'],
+      bindings: [],
+      symbols: [symbol('Blind', 'class', { dependsOn: ['Event'] })],
+    }),
+  );
+
+  assert.deepEqual(marked(graph, 'depends'), [
+    'bound.ts#Bound -> event.ts#Event',
+    'legacy.ts#Legacy ~> event.ts#Event',
+  ]);
+  // Nothing stands in for a name the class could not reach: no edge, no count.
+  assert.equal('unresolved' in (graph.nodes.get('blind.ts') ?? {}), false);
+});
+
+test('an interface owns its members, and its typed property is an association from it', () => {
+  const graph = graphOf(
+    file('member.ts', { symbols: [symbol('ViewMember', 'interface', { exported: true })] }),
+    file('node.ts', {
+      imports: ['./member'],
+      bindings: [{ local: 'ViewMember', specifier: './member', imported: 'ViewMember' }],
+      symbols: [
+        symbol('ViewNode', 'interface'),
+        symbol('members', 'field', { owner: 'ViewNode', typeName: 'ViewMember', many: true }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(edges(graph, 'contains').filter((edge) => edge.startsWith('node.ts')), [
+    'node.ts -> node.ts#ViewNode',
+    'node.ts#ViewNode -> node.ts#ViewNode.members',
+  ]);
+  assert.deepEqual(edges(graph, 'associates'), ['node.ts#ViewNode -> member.ts#ViewMember']);
+});

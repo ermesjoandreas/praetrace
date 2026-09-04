@@ -1,19 +1,30 @@
 import os from 'node:os';
 import { Worker } from 'node:worker_threads';
+import type { FlowAnswer, FlowRange, FlowRequest, FlowResponse } from './flow.js';
 import type { ParsedFile, ParseRequest, ParseResponse } from './types.js';
 
 // Resolved relative to this module, so it points at the compiled worker whether
 // the pool runs from dist/ or from a linked install.
 const WORKER_URL = new URL('./worker.js', import.meta.url);
 
+type WorkerRequest = ParseRequest | FlowRequest;
+type WorkerResponse = ParseResponse | FlowResponse;
+
 interface Job {
-  request: ParseRequest;
-  resolve: (parsed: ParsedFile) => void;
+  request: WorkerRequest;
+  /** Given whatever the worker answered; the method that queued the job reads its own shape out. */
+  resolve: (response: WorkerResponse) => void;
   reject: (error: Error) => void;
 }
 
 export interface ParserPool {
   parse(filePath: string, absolutePath: string, source?: string): Promise<ParsedFile>;
+  /**
+   * The activity diagram of the function at `range`, read off the file as it
+   * is on disk. A parse like any other, so it goes to a worker like any other
+   * — decision 1 — and queues behind whatever is being parsed.
+   */
+  flow(filePath: string, absolutePath: string, range: FlowRange): Promise<FlowAnswer>;
   close(): Promise<void>;
 }
 
@@ -54,11 +65,11 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
   function spawn(): Worker {
     const worker = new Worker(WORKER_URL);
 
-    worker.on('message', (response: ParseResponse) => {
+    worker.on('message', (response: WorkerResponse) => {
       // Reaching here at all means the worker loaded and ran.
       consecutiveFailures = 0;
       settle(worker, (job) => {
-        if (response.ok) job.resolve(response.parsed);
+        if (response.ok) job.resolve(response);
         else job.reject(new Error(`${job.request.filePath}: ${response.error}`));
       });
       idle.push(worker);
@@ -102,19 +113,29 @@ export function createParserPool(size: number = defaultSize()): ParserPool {
     }
   }
 
+  function enqueue(request: WorkerRequest): Promise<WorkerResponse> {
+    if (closed) return Promise.reject(new Error('parser pool is closed'));
+    return new Promise<WorkerResponse>((resolve, reject) => {
+      queue.push({ request, resolve, reject });
+      pump();
+    });
+  }
+
   for (let i = 0; i < size; i += 1) idle.push(spawn());
 
   return {
-    parse(filePath, absolutePath, source) {
-      if (closed) return Promise.reject(new Error('parser pool is closed'));
-      return new Promise<ParsedFile>((resolve, reject) => {
-        queue.push({
-          request: { id: nextId++, filePath, absolutePath, source: source ?? null },
-          resolve,
-          reject,
-        });
-        pump();
-      });
+    async parse(filePath, absolutePath, source) {
+      const response = await enqueue({ id: nextId++, filePath, absolutePath, source: source ?? null });
+      // The worker answers a parse with a parse; anything else is a bug in the
+      // worker, not a file that failed.
+      if (response.ok && 'parsed' in response) return response.parsed;
+      throw new Error(`${filePath}: the worker answered a parse with something else`);
+    },
+
+    async flow(filePath, absolutePath, range) {
+      const response = await enqueue({ id: nextId++, kind: 'flow', filePath, absolutePath, range });
+      if (response.ok && 'answer' in response) return response.answer;
+      throw new Error(`${filePath}: the worker answered a flow with something else`);
     },
 
     async close() {

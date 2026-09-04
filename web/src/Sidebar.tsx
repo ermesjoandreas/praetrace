@@ -4,14 +4,64 @@ import { Section } from './Section';
 import { FLOOR, money, fetchDetail,
   fetchSymbol,
   openInEditor,
+  type ComponentFacts,
   type Detail,
+  type EdgeKind,
+  type ProvidedSymbol,
   type SymbolDetail,
   type ExplainFailure,
   type ExplainState,
+  type FlowTarget,
   type StoredExplanation,
   type SymbolLinks,
   type SymbolRelation,
 } from './api';
+
+/** One line on the component diagram, seen from one of its ends. */
+export interface ComponentLink {
+  /** The other component's box id, so a click can select it. */
+  id: string;
+  label: string;
+  kind: EdgeKind;
+  /** How many file pairs the line stands for. */
+  weight: number;
+  /** Every one of those was resolved by something weaker than a binding. */
+  guessed?: true;
+}
+
+/**
+ * The box that was clicked, when it was a component: a category drawn as a
+ * box, under `?diagram=components`.
+ *
+ * Passed in rather than fetched, for the reason a bundle is — the id names no
+ * path — and because the view is the only thing that knows the lines: what
+ * the panel lists under "Imported by" and "Imports" is exactly the arrows on
+ * the canvas, read off the same edges, so the two cannot disagree.
+ */
+export interface ComponentSelection {
+  id: string;
+  label: string;
+  facts: ComponentFacts;
+  files: string[];
+  /** The lines that end here, and the ones that start here. */
+  importedBy: ComponentLink[];
+  imports: ComponentLink[];
+}
+
+/**
+ * A symbol the panel has opened: what the header can draw before the graph
+ * has answered. A Declares row knows its line; a provided symbol on a
+ * component knows only its id, its name and its kind, so the line is null
+ * there and the header says the kind alone.
+ */
+interface OpenSymbol {
+  id: string;
+  name: string;
+  /** The graph's kinds — `file` is among them in the type, and the engine never lists one as provided. */
+  kind: ProvidedSymbol['kind'];
+  line: number | null;
+  aliasOf?: string;
+}
 
 export interface Following {
   /** One entry per followed symbol the graph still knows, in pick order. */
@@ -99,6 +149,8 @@ interface SidebarProps {
    * says "258 dependents", and the panel is where those 258 have names.
    */
   bundle?: { label: string; files: string[]; of: 'dependents' | 'dependencies' | null } | null;
+  /** The box that was clicked, when it was a component. See `ComponentSelection`. */
+  component?: ComponentSelection | null;
   /**
    * The graph id of each symbol the selected file declares, by name and start
    * line.
@@ -122,6 +174,25 @@ interface SidebarProps {
    */
   onExplainFile: (path: string) => void;
   following: Following;
+  /**
+   * Open the activity diagram of one symbol — the control flow of its body,
+   * over the canvas. Offered on the symbol the panel has open and on every
+   * followed one, because those are the two places a function is in hand.
+   */
+  onFlow: (symbol: FlowTarget) => void;
+  /**
+   * Why that cannot be asked for a symbol, or null when it can. The page
+   * answers, because the page knows the language of the file's box; the
+   * reason goes in the greyed button's title, where a menu puts its own.
+   */
+  flowBlocked: (kind: string, filePath: string) => string | null;
+  /**
+   * The symbol the panel has open, whenever that changes — so the View menu
+   * can offer its flow as "the selection", which a box, being a file, cannot
+   * be. Null when the panel is on a file or a folder, and while the file of a
+   * symbol opened from a component's Provides list is not yet known.
+   */
+  onOpenSymbol: (symbol: (FlowTarget & { kind: string }) | null) => void;
 }
 
 /** The key both halves of that join agree on. A file has one symbol per line and name. */
@@ -143,19 +214,24 @@ export function Sidebar({
   onSelect,
   onFocus,
   bundle = null,
+  component = null,
   symbolIds,
   onExplainSymbol,
   onExplainFile,
   following,
+  onFlow,
+  flowBlocked,
+  onOpenSymbol,
 }: SidebarProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
   /**
-   * The row of the Declares list that is open, with everything the header can
-   * draw before the graph has answered: a fetch takes a moment, and a panel
-   * that goes blank in it reads as the click having done nothing — which is
-   * what this whole view exists to stop.
+   * The row of the Declares list — or of a component's Provides list — that
+   * is open, with everything the header can draw before the graph has
+   * answered: a fetch takes a moment, and a panel that goes blank in it reads
+   * as the click having done nothing — which is what this whole view exists
+   * to stop.
    */
-  const [openSymbol, setOpenSymbol] = useState<(SymbolDetail & { id: string }) | null>(null);
+  const [openSymbol, setOpenSymbol] = useState<OpenSymbol | null>(null);
   /** What that symbol reaches and what reaches it. 'gone' is the graph's 404. */
   const [symbolLinks, setSymbolLinks] = useState<SymbolLinks | 'gone' | null>(null);
 
@@ -186,9 +262,31 @@ export function Sidebar({
     };
   }, [openSymbol, revision, at]);
 
+  /**
+   * Where the open symbol lives: the file on the panel, or — opened from a
+   * component's list, which knows no file — wherever the graph answered.
+   */
+  const openFile =
+    openSymbol === null
+      ? null
+      : detail?.kind === 'file'
+        ? detail.path
+        : symbolLinks !== null && symbolLinks !== 'gone'
+          ? symbolLinks.filePath
+          : null;
+
+  useEffect(() => {
+    onOpenSymbol(
+      openSymbol === null || openFile === null
+        ? null
+        : { id: openSymbol.id, name: openSymbol.name, kind: openSymbol.kind, filePath: openFile },
+    );
+  }, [openSymbol, openFile, onOpenSymbol]);
+
   useEffect(() => {
     // A bundle id names no file, so asking about it can only be answered 404.
-    if (selected === null || bundle !== null) {
+    // A component's id names none either, and it arrives with its own answer.
+    if (selected === null || bundle !== null || component !== null) {
       setDetail(null);
       return;
     }
@@ -204,7 +302,7 @@ export function Sidebar({
     return () => {
       cancelled = true;
     };
-  }, [selected, revision, root, at, bundle]);
+  }, [selected, revision, root, at, bundle, component]);
 
   // The header's actions are what the panel head used to spell out as words:
   // go to it on the diagram, ask what it is for, open it in the editor. Only a
@@ -215,9 +313,30 @@ export function Sidebar({
   // editor opens on its own line. The way back is not here, because a section
   // action is hidden until the section is hovered and the way out of a view
   // must not be; it is in the view's own header, where it is always drawn.
+  //
+  // A symbol opened from a component's Provides list has a reading to be had
+  // — its id is a graph id — and no line in hand, so the editor is not offered.
+  const flowWhy = openSymbol === null || openFile === null ? null : flowBlocked(openSymbol.kind, openFile);
   const actions =
-    openSymbol !== null && detail?.kind === 'file' ? (
+    openSymbol !== null && (detail?.kind === 'file' || component !== null) ? (
       <>
+        {/* The one behavioural diagram the tree can give completely: the
+            branches of this body, and nothing across files. Greyed with the
+            reason on a class or a language the engine has no table for, the
+            way a menu item is, rather than answering with a sentence after
+            the press. Absent until the file is known, because the overlay
+            needs it for the editor link. */}
+        {openFile !== null && (
+          <button
+            type="button"
+            title={flowWhy ?? `Show the control flow of ${openSymbol.name} — an activity diagram of its body`}
+            aria-label="Show control flow"
+            disabled={flowWhy !== null}
+            onClick={() => onFlow({ id: openSymbol.id, name: openSymbol.name, filePath: openFile })}
+          >
+            <i className="codicon codicon-type-hierarchy" aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
           title={`Ask Claude what ${openSymbol.name} is for — it spends your Claude quota`}
@@ -226,14 +345,16 @@ export function Sidebar({
         >
           <i className="codicon codicon-sparkle" aria-hidden="true" />
         </button>
-        <button
-          type="button"
-          title={`Open ${detail.path} at line ${openSymbol.line}`}
-          aria-label="Open in editor"
-          onClick={() => void openInEditor(root, detail.path, openSymbol.line)}
-        >
-          <i className="codicon codicon-go-to-file" aria-hidden="true" />
-        </button>
+        {detail?.kind === 'file' && openSymbol.line !== null && (
+          <button
+            type="button"
+            title={`Open ${detail.path} at line ${openSymbol.line}`}
+            aria-label="Open in editor"
+            onClick={() => void openInEditor(root, detail.path, openSymbol.line ?? 1)}
+          >
+            <i className="codicon codicon-go-to-file" aria-hidden="true" />
+          </button>
+        )}
       </>
     ) : detail === null ? null : (
       <>
@@ -275,17 +396,39 @@ export function Sidebar({
 
   return (
     <aside className="sidebar">
-      <Followed following={following} onSelect={onSelect} onFocus={onFocus} />
+      <Followed
+        following={following}
+        onSelect={onSelect}
+        onFocus={onFocus}
+        onFlow={onFlow}
+        flowBlocked={flowBlocked}
+      />
 
       <Section title="Detail" className="panel" actions={actions}>
         {bundle !== null ? (
           <BundleView bundle={bundle} onSelect={onSelect} />
+        ) : component !== null && openSymbol !== null ? (
+          <SymbolView
+            symbol={openSymbol}
+            back={component.label}
+            links={symbolLinks}
+            onBack={() => setOpenSymbol(null)}
+            onSelect={onSelect}
+            onFocus={onFocus}
+          />
+        ) : component !== null ? (
+          <ComponentView
+            component={component}
+            onSelect={onSelect}
+            onExplainSymbol={onExplainSymbol}
+            onOpenSymbol={setOpenSymbol}
+          />
         ) : detail === null ? (
           <p className="panel-empty">Click a box to see what it holds, and what depends on it.</p>
         ) : openSymbol !== null && detail.kind === 'file' ? (
           <SymbolView
             symbol={openSymbol}
-            filePath={detail.path}
+            back={detail.path}
             links={symbolLinks}
             onBack={() => setOpenSymbol(null)}
             onSelect={onSelect}
@@ -465,20 +608,30 @@ function FileView({
  */
 function SymbolView({
   symbol,
-  filePath,
+  back,
   links,
   onBack,
   onSelect,
   onFocus,
 }: {
-  symbol: SymbolDetail;
-  filePath: string;
+  symbol: OpenSymbol;
+  /** What the view replaced: the file's path, or the component's name. */
+  back: string;
   /** null while the graph is being asked; 'gone' when it answered 404. */
   links: SymbolLinks | 'gone' | null;
   onBack: () => void;
   onSelect: (target: string) => void;
   onFocus: (target: string, kind: 'file' | 'folder') => void;
 }) {
+  // Opened from a component, the header has no line to name; once the graph
+  // has answered it names the file instead, which is the thing the reader
+  // does not yet know about a symbol reached from the box's interface.
+  const where =
+    symbol.line !== null
+      ? `line ${symbol.line}`
+      : links !== null && links !== 'gone'
+        ? links.filePath
+        : null;
   return (
     <>
       <header className="panel-head">
@@ -488,12 +641,13 @@ function SymbolView({
               replaced the file's, so the file has to stay one press away and
               visibly so. It also says where the symbol lives, which is the
               other thing the header would otherwise have to spend a line on. */}
-          <button type="button" className="symbol-back" onClick={onBack} title={`Back to ${filePath}`}>
+          <button type="button" className="symbol-back" onClick={onBack} title={`Back to ${back}`}>
             <i className="codicon codicon-arrow-left" aria-hidden="true" />
-            {filePath}
+            {back}
           </button>
           <span className="symbol-where">
-            {symbol.kind} · line {symbol.line}
+            {symbol.kind}
+            {where === null ? '' : ` · ${where}`}
           </span>
         </p>
       </header>
@@ -582,6 +736,158 @@ function BundleView({
 
       <PathList title="Files" paths={bundle.files} onSelect={onSelect} />
     </>
+  );
+}
+
+/** `App.init` for a member, `init` for anything at the top level. */
+function spellProvided(symbol: ProvidedSymbol): string {
+  const name = symbol.owner === null ? symbol.name : `${symbol.owner}.${symbol.name}`;
+  return symbol.kind === 'function' || symbol.kind === 'method' ? `${name}()` : name;
+}
+
+/**
+ * The line under a component's name: how many files, and the number the
+ * clustering measured — or why there is none. The same words the box draws.
+ */
+function describeComponent(facts: ComponentFacts, files: number): string {
+  const count = `${files} ${files === 1 ? 'file' : 'files'}`;
+  if (facts.uncategorised === true) return `${count} · no category`;
+  if (facts.origin === 'manual' || facts.cohesion === undefined) return `${count} · drawn by hand`;
+  return `${count} · ${Math.round(facts.cohesion * 100)}% of their edges stay inside`;
+}
+
+/**
+ * What one component box stands for, and what it is coupled to.
+ *
+ * Provides first, because it is the answer the diagram exists to give and the
+ * box has room for a dozen rows of it; then the lines, read off the same
+ * edges the canvas draws so the two say the same thing; then the files, which
+ * can be sixty rows and are the least of what a reader came for. A provided
+ * row opens the symbol — what reaches it and what it uses — which is the
+ * question a component's interface raises: who, outside, depends on this.
+ */
+function ComponentView({
+  component,
+  onSelect,
+  onExplainSymbol,
+  onOpenSymbol,
+}: {
+  component: ComponentSelection;
+  onSelect: (target: string) => void;
+  onExplainSymbol: (id: string) => void;
+  onOpenSymbol: (symbol: OpenSymbol) => void;
+}) {
+  const { facts, files } = component;
+  const { symbols, total } = facts.provides;
+  const more = total - symbols.length;
+  return (
+    <>
+      <header className="panel-head">
+        <h2 title={component.label}>{component.label}</h2>
+        <p className="panel-meta">{describeComponent(facts, files.length)}</p>
+      </header>
+
+      {/* A floor, and the heading wears the ≥ for it: a call through an
+          untyped receiver is not an edge, and an import names no symbol, so a
+          type used only in type positions is not here. The note says so in
+          the graph's own words, the way every other floor on this panel does. */}
+      <PanelList
+        title={`Provides (${FLOOR}${total})`}
+        note={
+          total === 0
+            ? 'Nothing in here is reached by name from a file outside it. A floor: a call through an untyped receiver is not tracked, and an import names no symbol.'
+            : 'Symbols in here that a file outside reaches — by a call, an extends, an implements or a field type. A floor: a call through an untyped receiver is not tracked, and an import names no symbol.'
+        }
+      >
+        {symbols.map((symbol) => (
+          <li key={symbol.id}>
+            <button
+              type="button"
+              {...LIST_ROW}
+              className={`sym sym-${symbol.kind}`}
+              onClick={() => onOpenSymbol({ id: symbol.id, name: symbol.name, kind: symbol.kind, line: null })}
+              title={`What reaches ${symbol.name} from outside, and what it uses${
+                symbol.guessed === true
+                  ? ' — every reach here was resolved by a name match nothing in the referring file asked for'
+                  : ''
+              }`}
+            >
+              {spellProvided(symbol)}
+              {/* The count of files outside that reach it, where a Declares row
+                  puts its line: it is the number the list is sorted by. */}
+              <span className="sym-line" title={`reached from ${symbol.reachedFrom} files outside this category`}>
+                {symbol.reachedFrom} {symbol.reachedFrom === 1 ? 'file' : 'files'}
+              </span>
+            </button>
+            <span className="row-actions">
+              <button
+                type="button"
+                title={`Follow ${symbol.name} and ask Claude what it is for — it spends your Claude quota`}
+                aria-label={`Explain ${symbol.name}`}
+                onClick={() => onExplainSymbol(symbol.id)}
+              >
+                <i className="codicon codicon-sparkle" aria-hidden="true" />
+              </button>
+            </span>
+          </li>
+        ))}
+        {/* The server cut the list at a box's worth; the rest are counted,
+            not held, so this is a sentence and not a way in. */}
+        {more > 0 && (
+          <li>
+            <span className="panel-more">
+              +{more} more — these {symbols.length} are the ones reached from the most files
+            </span>
+          </li>
+        )}
+      </PanelList>
+
+      <ComponentLinks title="Imported by" rows={component.importedBy} onSelect={onSelect} />
+      <ComponentLinks title="Imports" rows={component.imports} onSelect={onSelect} />
+
+      <PathList title="Files" paths={files} onSelect={onSelect} />
+    </>
+  );
+}
+
+/**
+ * The lines on the canvas that touch one component, as rows: the other box's
+ * name, what kind of line, and how many file pairs it stands for. Clicking a
+ * row selects that component. Hidden when there are none, like a PathList.
+ */
+function ComponentLinks({
+  title,
+  rows,
+  onSelect,
+}: {
+  title: string;
+  rows: ComponentLink[];
+  onSelect: (target: string) => void;
+}) {
+  if (rows.length === 0) return null;
+  return (
+    <PanelList title={`${title} (${rows.length})`}>
+      {rows.map((row) => (
+        <li key={`${row.id}|${row.kind}`}>
+          <button
+            type="button"
+            {...LIST_ROW}
+            className="path"
+            onClick={() => onSelect(row.id)}
+            title={`${row.label} — ${row.weight} ${row.weight === 1 ? 'file pair' : 'file pairs'} ${row.kind === 'imports' ? 'import across' : `${row.kind} across`} this line${
+              row.guessed === true
+                ? ', every one of them resolved by a name match nothing in the referring file asked for'
+                : ''
+            }`}
+          >
+            {row.label}
+            <span className="sym-line">
+              {row.kind} ×{row.weight}
+            </span>
+          </button>
+        </li>
+      ))}
+    </PanelList>
   );
 }
 
@@ -696,10 +1002,14 @@ function Followed({
   following,
   onSelect,
   onFocus,
+  onFlow,
+  flowBlocked,
 }: {
   following: Following;
   onSelect: (target: string) => void;
   onFocus: (target: string, kind: 'file' | 'folder') => void;
+  onFlow: (symbol: FlowTarget) => void;
+  flowBlocked: (kind: string, filePath: string) => string | null;
 }) {
   const { links, gone, files, explanations, running, runningIds, lastRun, failure, streamed } = following;
   const { consent, onAcceptStore } = following;
@@ -808,6 +1118,23 @@ function Followed({
             </span>
             <StateChip state={explanations.get(symbol.id)?.state} />
             <span className="row-actions">
+              {/* The flow of this one, greyed with the reason when it has none
+                  — a followed class, a language without a table. */}
+              {(() => {
+                const why = flowBlocked(symbol.kind, symbol.filePath);
+                return (
+                  <button
+                    type="button"
+                    className="followed-drop"
+                    title={why ?? `Show the control flow of ${symbol.name}`}
+                    aria-label="Show control flow"
+                    disabled={why !== null}
+                    onClick={() => onFlow({ id: symbol.id, name: symbol.name, filePath: symbol.filePath })}
+                  >
+                    <i className="codicon codicon-type-hierarchy" aria-hidden="true" />
+                  </button>
+                );
+              })()}
               {explanations.has(symbol.id) && (
                 <button
                   type="button"
@@ -1130,8 +1457,8 @@ function Relations({
                 // so rather than pointing at line 1 as though it were a
                 // declaration.
                 row.kind === 'file'
-                  ? `${row.filePath} — ${row.edge} this from a statement outside every symbol in it`
-                  : `${row.filePath}:${row.line} — ${row.edge}`
+                  ? `${row.filePath} — ${row.phrase} this from a statement outside every symbol in it`
+                  : `${row.filePath}:${row.line} — ${row.phrase}`
               }
               onClick={() => onSelect(row.filePath)}
               onDoubleClick={() => onFocus(row.filePath, 'file')}
@@ -1143,7 +1470,10 @@ function Relations({
                 <i className="codicon codicon-symbol-file followed-icon" aria-hidden="true" />
               )}
               <span className="followed-symbol">{row.name}</span>
-              <span className="followed-edge">{row.edge}</span>
+              {/* The graph's phrase, not the kind: an association reads
+                  "composed of", "aggregates" or "holds" by what the source
+                  said, and a dependency "depends on". */}
+              <span className="followed-edge">{row.phrase}</span>
               <span className="followed-file">{row.filePath}</span>
             </button>
           </li>

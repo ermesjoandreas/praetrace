@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import type Parser from 'tree-sitter';
 import { applyBatch, createStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
-import type { ParsedFile } from '../parser/types.js';
+import type { ParsedFile, ParsedSymbol } from '../parser/types.js';
 import { csharp } from './csharp.js';
 
 // The grammar is a native addon; the test parses real trees rather than
@@ -188,4 +188,66 @@ test('a type the file named lands on the file the namespaces chose, not on the f
     'src/LoggerConfiguration.cs#LoggerConfiguration.CreateLogger -> src/Core/Logger.cs#Logger',
   ]);
   assert.deepEqual(edges(graph, 'associates'), []);
+});
+
+/** The five things a field says about the part it holds, and nothing else. */
+const attribute = (symbols: readonly ParsedSymbol[], name: string) => {
+  const symbol = symbols.find((candidate) => candidate.name === name);
+  assert.ok(symbol, `no symbol named ${name} in ${symbols.map((s) => s.name).join(', ')}`);
+  return {
+    ...(symbol.typeName === undefined ? {} : { typeName: symbol.typeName }),
+    ...(symbol.many === undefined ? {} : { many: symbol.many }),
+    ...(symbol.optional === undefined ? {} : { optional: symbol.optional }),
+    ...(symbol.composed === undefined ? {} : { composed: symbol.composed }),
+    ...(symbol.handedIn === undefined ? {} : { handedIn: symbol.handedIn }),
+  };
+};
+
+test('a field or property says whether the part may be absent and who builds it', () => {
+  const { symbols } = parse(`
+    namespace N;
+    public class Engine<T>
+    {
+        private readonly Store _store = new Store();
+        private Config _config;
+        private Logger _log;
+        private Cache? _cache;
+        private List<Item> _items = new List<Item>();
+        public Sink Sink { get; } = new Sink();
+        public Peer? Peer { get; set; }
+        public Widget Widget { get; init; }
+        public Engine(Config config, Logger logger, Widget w) { _config = config; this._log = logger; _cache = new Cache(); this.Widget = w; }
+        public Engine() { _config = new Config(); }
+        public Result Run(Event e, List<Task> tasks, T t) => null;
+        public U Gen<U>(U u, Store s) => u;
+    }
+    public record Pair(Left left, Right? right);
+  `);
+  assert.deepEqual(attribute(symbols, '_store'), { typeName: 'Store', composed: true });
+  // Handed in by one constructor and built by the other: both, and the graph decides.
+  assert.deepEqual(attribute(symbols, '_config'), { typeName: 'Config', composed: true, handedIn: true });
+  assert.deepEqual(attribute(symbols, '_log'), { typeName: 'Logger', handedIn: true });
+  assert.deepEqual(attribute(symbols, '_cache'), { typeName: 'Cache', optional: true, composed: true });
+  // `new List<Item>()` builds the list, not an Item.
+  assert.deepEqual(attribute(symbols, '_items'), { typeName: 'Item', many: true });
+  assert.deepEqual(attribute(symbols, 'Sink'), { typeName: 'Sink', composed: true });
+  assert.deepEqual(attribute(symbols, 'Peer'), { typeName: 'Peer', optional: true });
+  assert.deepEqual(attribute(symbols, 'Widget'), { typeName: 'Widget', handedIn: true });
+  const engine = symbols.find((symbol) => symbol.name === 'Engine');
+  assert.deepEqual([...(engine?.dependsOn ?? [])].sort(), [
+    'Config', 'Event', 'List', 'Logger', 'Result', 'Store', 'Task', 'Widget',
+  ]);
+  // A record's positional parameters arrive through its constructor by definition.
+  assert.deepEqual(attribute(symbols, 'left'), { typeName: 'Left', handedIn: true });
+  assert.deepEqual(attribute(symbols, 'right'), { typeName: 'Right', optional: true, handedIn: true });
+});
+
+test('a parameter the constructor reassigns is no longer what was handed in', () => {
+  const { symbols } = parse(`class E {
+  private Config config;
+  public E(Config config) { config = new Config(); this.config = config; }
+}`);
+  const config = symbols.find((symbol) => symbol.name === 'config');
+  assert.ok(config);
+  assert.equal(config.handedIn, undefined);
 });

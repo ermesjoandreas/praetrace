@@ -80,6 +80,43 @@ export interface ParsedSymbol {
   /** `Logger[]` rather than `Logger`, so the association can carry 1..*. */
   many?: boolean;
   /**
+   * The far end may be absent: `x?: T`, `T | undefined`, `T | null`, C#'s
+   * `T?`, Java's `Optional<T>` or `@Nullable T`. The association's 0..1, where
+   * `many` is its 1..*. Absent means the source did not say — never false.
+   */
+  optional?: true;
+  /**
+   * The owning class builds this part itself: `= new T()` where the field is
+   * declared, or `this.x = new T()` in its constructor, and T is the field's
+   * own declared type. `items: Item[] = []` and `List<G> gs = new ArrayList<>()`
+   * build a container and not the part, and `log: Logger = new ConsoleLogger()`
+   * builds something the parser cannot say is a Logger without resolving it —
+   * both stay absent. This is UML's composition, and the graph draws the
+   * filled diamond from it, so it is written only when the source spells it.
+   */
+  composed?: true;
+  /**
+   * The part arrives through the constructor: a TypeScript parameter property
+   * (`constructor(private log: Logger)`), a record's component, or
+   * `this.x = param` where `param` is a constructor parameter. UML's
+   * aggregation — the whole holds a part that exists on its own. A field the
+   * source both builds and accepts carries both flags, and the graph, which
+   * is what decides, then claims neither.
+   */
+  handedIn?: true;
+  /**
+   * Bare type names this class or interface writes in the signatures of its
+   * own operations — a parameter or a return type — deduplicated, unresolved,
+   * and including the ones it also holds a field of. UML's dependency: the
+   * weakest relationship it draws, dashed, and the graph draws it only for a
+   * name the class reaches no other way — not a field's type, not a
+   * supertype. Only on a class or an interface; a type parameter is never
+   * one, because it names whatever the caller supplies. Absent when the
+   * language records none (Go, Rust, Python and JavaScript today, which
+   * writes no types) and when there are none.
+   */
+  dependsOn?: string[];
+  /**
    * Whether the file exports this under its own name — `export function f`,
    * `export { f }`, `exports.f =`, `module.exports.f =` — so that the graph's
    * export table for the file admits only what another file can actually

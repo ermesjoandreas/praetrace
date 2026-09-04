@@ -240,3 +240,164 @@ read false by one pixel in every state. The status bar is 22px *including* its
 and the document scrolled by one. `.status-item` and `.agent-status` are 21px
 now, the same sum the breadcrumb row's search box already makes. Measured true in
 all four fold states of the left bar afterwards.
+
+
+## Which UML diagrams the tree can carry (2026-09-04)
+
+The question was what other UML diagrams could sit on top of the class diagram.
+It was measured before it was decided, and the measurement is what decided it.
+
+**The sequence diagram was refused, on a number.** A sequence diagram is calls
+in order, and the parser can name the receiver of a method call only when its
+type was written down — `x: T`, `this` inside `T`, `= new T()`. Counted over
+every method-call site: **13% on this repository, 27% on a Java first-year
+tree** (~/IdeaProjects). A diagram drawn from that shows one message in eight
+and reads as complete, which is the exact lie the project exists not to tell.
+`collectCalls` discarding order into a Set is the smaller reason. Nothing was
+built towards one, and CLAUDE.md says nothing may drift towards one. Do not
+re-derive this: the number is the decision.
+
+Three things can be drawn honestly from the tree, and were:
+
+### The class diagram, finished
+
+Four marks were missing that need no resolution at all — they are in the
+declaration. Measured on this repository before the work: 890 TypeScript
+fields, 206 with a type the parser could name, 217 optional (`x?: T`,
+`T | undefined`), 146 arrays, 1 built inline with `new`; and **1 association
+edge**, because only a class was an owner and 205 of the 209 typed fields were
+interface properties. Once an interface owns its members the way a class does
+the same tree drew 142 associations carrying 152 roles (27 optional, 71 many,
+10 edges spelled by several fields) and 28 `depends` edges, 0 guessed.
+Re-measured on 2026-09-04 with the tree a little larger: 143 files, 969 fields
+(225 optional, 153 many), **148 associations, 159 roles** — 30 optional, 77
+many, 1 composition, 0 aggregation, 11 edges with several roles — and **28
+dependencies, 0 guessed**. On ~/IdeaProjects (199 Java files): 223 fields, 133
+handed in through the constructor, 8 built with `new`, 0 both; 9 association
+edges — 2 composition, 8 aggregation — and 10 dependencies, 0 guessed. So a
+diamond is a Java, C# or class-heavy TypeScript thing: on a TypeScript project
+almost every association is an interface property with no constructor to say
+who owns the part, and the graph says nothing rather than guessing.
+
+The decisions:
+
+- **One `ownership` field with absence as the third state**, not two booleans.
+  Composition and aggregation are exclusive by definition, so two flags would
+  admit a state that means nothing. The parser reports `composed` and `handedIn`
+  separately — it saw what it saw — and the store decides: **both marks mean
+  neither**, because `x = new T()` beside `if (t) this.x = t` is a source that
+  said two things, and a half-true diamond reads as authoritative. `ownershipOf`
+  in `view/select.ts` applies the same rule again over a line that stands for
+  several fields, and it is also what picks the panel's word, so the shape and
+  the phrase cannot disagree.
+- **`composed` only when the constructed type is the field's own declared type.**
+  `items: Item[] = []` builds a container; `log: Logger = new ConsoleLogger()`
+  builds something the file cannot say is a Logger without a resolution it
+  cannot do. Both stay plain.
+- **`*`, not `1..*`, for an array.** `Node[]` says nothing about being
+  non-empty. The old CLAUDE.md sentence "for 1..*" was the one line this
+  contradicted, and it was corrected.
+- **`depends` is a kind, not a flag on `associates`.** `edges.ts` counts
+  `associates` as reaching — the hook's sentence and the panel's "used by" read
+  that set — and a class that takes a Store as a parameter must not be told it
+  holds one. A kind is what `?edges=` and the socket spec already switch on, and
+  the compiler tells every exhaustive switch. `edges.test.ts` pins that
+  `depends` does not reach. The panel lists it anyway, marked as its own
+  widening; the hook does not.
+- **A dependency is drawn only for a name the class reaches no other way.** A
+  dashed line beside a solid one to the same box would say less than the solid
+  one already does.
+- **No oracle fixture was added.** The TypeScript checker cannot vouch for a
+  diamond or a dashed line, and a file under `src/oracle/fixtures/` would move
+  the pinned file count in `checker.test.ts`. The corpus baseline is where this
+  lands: `scripts/baseline.mjs` lists `depends`, and the four clones' records
+  have to be re-accepted after a fetch.
+
+Verified on the page: no real box in reach carried all three line kinds to
+distinct files, so the three were checked on three Java boxes — Program.java,
+Ansatt.java, Operations.java — rather than one. Three of the interactions (the
+follow mark, the menu bar) did not receive OS keystrokes mid-session and were
+dispatched onto the page's own listeners instead, and were labelled so.
+
+### The component diagram
+
+The categories as boxes, the imports between categories summed onto one line per
+pair, and each box listing what it *provides* — the symbols in it that files
+outside it actually reach, read off the four reaching edge kinds and never off
+imports, which name no symbol. It is honest for the reason the package diagram
+is: the same import data, summed one level up.
+
+- **No cache of the clusters.** `clusterFiles` measures 0.73 ms on this
+  repository's 139 files and 3 905 edges and 0.34 ms on 204 Java files; the merge
+  with the stored names 0.10 ms. A push to every component-diagram client after
+  a save costs less than the view it draws, so `Session.clustersOf(graph)` is
+  computed per call. A cache keyed on the graph object would be correct and
+  would be paying for a cost nobody has measured.
+- **Leaves, not the outer level.** On one graph of this repository the engine
+  found three peers of 61, 11 and 3 files; on the next — one unrelated edit
+  later — one 75-file outer group at 97% holding six. Drawn at the outer level
+  that was one box with three lines, and the one category a person had named
+  ("Prog.lang decoder") was folded inside it; drawn at the leaves it is six boxes
+  and twenty lines either way. The leaves are the level a whiteboard shows, and
+  they were the level that held still.
+- **The partition's first-listed rule and the page's overlapping-frame rule
+  agree** about a hand-drawn group inside a found one: the derived groups come
+  first, largest first, so a drawn category entirely inside a found one claims
+  no file and is no box — which is the call `frameClusters` already makes when
+  two frames overlap and the more cohesive keeps its frame. This repository's
+  "Lang decoder" (7 files by hand) inside "Prog.lang decoder" (12 files found)
+  is that case on both diagrams.
+- **`diagram` rides both wire formats under one key.** Probed: a socket that
+  sent `diagram: 'components'` was pushed component boxes; before `toSocketSpec`
+  read it, the same socket was pushed the class diagram under a page drawing
+  components — the silent widening CLAUDE.md warns about, in a new key.
+- **The pulse works through it.** A hook landing on a file inside a component
+  pulsed the component box 208 ms after the POST.
+- **The stored names live in the session** (`groups`, `refreshGroups`), read on
+  the way in by a component view and on the way out by the two routes that write
+  groups.json, before they announce — a push from the session's previous copy
+  would draw the box under the name it just lost.
+
+Verified on the page: three component edges, two diamonds and one flow were
+checked by hand against the graph the CLI prints, which is the scratch script
+for this round.
+
+### The activity diagram of one function
+
+CLAUDE.md said activity diagrams are "not derivable from static structure at
+all". Across files that is true. Inside one function body it is false — an `if`
+is an `if` in the tree, a loop is a loop — so this is the one behavioural diagram
+that can be complete rather than a sample, and the only reason it was built.
+
+- **Through the pool, never on the main thread** (decision 1). The flow is a
+  parse: the worker re-reads the file, because a worker keeps no source, parses
+  it with a parser of its own, finds the function in the symbol's range and walks
+  it. Measured 1.65 ms a request end to end over every function and method of
+  this repository (1.8 ms in the round that built it). `createRequire` is no
+  longer confined to `extract.ts`: `worker.ts` builds its parser with it, and
+  `src/lang/*` load their grammars.
+- **Never in the graph** (decision 3). It is computed per request from the
+  working tree and answered by `GET /api/flow` as a detail about one symbol,
+  like `/api/symbol`. That is also why there is no `?at=`: a commit's files are
+  unpacked, scanned and removed by `history.ts`, so there is nothing on disk to
+  read them from, and a live flow under a commit's name would be the wrong
+  picture that looks right.
+- **Measured over this repository on 2026-09-04:** 998 functions and methods
+  asked, 919 drawn (the rest have no body — overloads, interface methods), 607
+  with control flow, median 7 boxes, 18 over 40, largest `web/src/App.tsx#App`
+  at 194 boxes over 3 966 lines. `src/graph/store.ts#derive`: **116 boxes, 158
+  edges** — 27 decisions, 16 loops, 67 actions, 4 exits — with 14 function
+  bodies inside it not walked and 19 ternaries inside larger expressions
+  counted, not drawn. Over ~/IdeaProjects: 519 Java methods, 505 drawn, the
+  largest 19 boxes, 0.28 ms each. Hence the 40-box gate: the size is said
+  before it is drawn.
+- **In the browser:** derive is 6.6 ms server-side and 26.5 ms to lay out and
+  mount; `applyBatch` 11 boxes / 14 edges / 2.5 ms; `git` 7 boxes,
+  `readSettings` 12. The whole diagram is rebuilt on every read, because the
+  engine's ids (`n<index>`) are not stable across edits; the page draws nothing
+  the engine did not send and adds no branch.
+- **Two bugs found by running every symbol of both trees, fixed before it
+  landed, both pinned in `flow.test.ts`:** a `finally` box with nothing into it
+  when every path in the try returned (`history.ts#graphAt`), and an empty box
+  drawn from the statement tree-sitter invents to recover from `if (a || b)`
+  with nothing after it (a broken student file).

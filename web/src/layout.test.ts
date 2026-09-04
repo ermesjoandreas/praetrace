@@ -4,7 +4,7 @@ import { test } from 'node:test';
 // bundled by vite and never compiled into dist/, so there is no layout.js for
 // `node --test` to find. `allowImportingTsExtensions` in web/tsconfig.json is
 // what lets typecheck accept it. `npm test` runs it beside the dist/ tests.
-import { GRID, keepLayout, layoutNodes, NODE_WIDTH, type Rect } from './layout.ts';
+import { componentHeight, GRID, keepLayout, layoutNodes, NODE_WIDTH, type Rect } from './layout.ts';
 
 const box = (id: string, height = 80) => ({ id, width: NODE_WIDTH, height });
 const at = (x: number, y: number, height = 80): Rect => ({ x, y, width: NODE_WIDTH, height });
@@ -253,4 +253,13 @@ test('a frame still encloses its members after the rank they were in folded', ()
       `${file} landed outside its own frame`,
     );
   }
+});
+
+test('a component box is measured from the rows it draws, and one that provides nothing still has a row', () => {
+  // 38 header + 27 count line + rows × 17 + 5: measured in the browser at
+  // 291px for twelve rows and a "+N more", 87px for one.
+  assert.equal(componentHeight(12, true), 291);
+  assert.equal(componentHeight(1, false), 87);
+  assert.equal(componentHeight(0, false), componentHeight(1, false));
+  assert.equal(componentHeight(4, false) - componentHeight(3, false), 17);
 });

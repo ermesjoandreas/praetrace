@@ -5,7 +5,24 @@
 
 export type NodeKind = 'file' | 'class' | 'function' | 'interface' | 'type' | 'method' | 'field';
 
-export type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates';
+/**
+ * `depends` is UML's dependency — a class that names another only as a
+ * parameter or return type of its own operations, and holds no field of it.
+ *
+ * A kind of its own rather than a flag on `associates`, for two reasons that
+ * are the same reason. `edges.ts` says which kinds mean one symbol *reaches*
+ * another, `associates` is one of them, and a dependency must not be: a class
+ * that takes a Store as a parameter does not hold, run or extend it, and a
+ * flag would have put it in the hook's sentence. The panel lists a dependency
+ * by a choice of its own, marked as such on `SymbolRelation.edge` in
+ * view/detail.ts; the hook reads REACHES and stays narrow. And a kind is what
+ * the `?edges=` filter and the socket spec
+ * already switch on, so it is opt-in the way `associates` is, with nothing
+ * downstream growing a second test for a flag. The kind list is meant to stay
+ * stable; adding to it is the one change that is — everything that switches
+ * over EdgeKind exhaustively is told by the compiler, which is the point.
+ */
+export type EdgeKind = 'imports' | 'extends' | 'implements' | 'calls' | 'contains' | 'associates' | 'depends';
 
 export interface GraphNode {
   /**
@@ -54,6 +71,12 @@ export interface GraphNode {
   /** Fields only: `Logger[]` rather than `Logger`, for the association's 1..*. */
   many?: boolean;
   /**
+   * Fields only: `x?: T`, `T | null`, C#'s `T?`, Java's `Optional<T>` — the
+   * far end may be absent, which is the association's 0..1. Present rather
+   * than false, like the flags above.
+   */
+  optional?: true;
+  /**
    * The sibling symbol whose body this is another name for, when the source
    * bound one function to several names — express writes `res.contentType =
    * res.type = function`, and both are real names a reader looks up.
@@ -79,6 +102,33 @@ export interface GraphNode {
    * prevent.
    */
   unresolved?: { imports: number; calls: number };
+}
+
+/**
+ * One attribute that spells an association; see `GraphEdge.roles`.
+ *
+ * Everything here is what the field's declaration wrote, and absent means it
+ * wrote nothing — never that the opposite holds. A diamond drawn from a guess
+ * is worse than no diamond.
+ */
+export interface AssociationRole {
+  /** The field's own name: UML's role name at the far end of the line. */
+  name: string;
+  /** `T[]`, `List<T>`: 1..* rather than 1. */
+  many?: true;
+  /** `x?: T`, `T | null`, `T?`, `Optional<T>`: 0..1 rather than 1. */
+  optional?: true;
+  /**
+   * Composition when the class builds the part itself, aggregation when the
+   * part is handed in through the constructor. One field with two states
+   * rather than two booleans, because the two are exclusive by definition —
+   * a part the whole created and owns cannot also be one it was merely given
+   * — so two flags would admit a state that means nothing. The third state is
+   * absence: the source said neither, or said both (`x = new T()` beside
+   * `if (t) this.x = t`), and a claim that is half true reads as authoritative.
+   * The parser reports both when it saw both; the graph is what decides.
+   */
+  ownership?: 'composition' | 'aggregation';
 }
 
 export interface GraphEdge {
@@ -117,6 +167,14 @@ export interface GraphEdge {
    * found the answer.
    */
   guessed?: true;
+  /**
+   * `associates` only: the fields that spell this association, one role per
+   * field, in declaration order. A list because the edge is one per pair of
+   * classifiers — `left: Node; right: Node` is one line from Tree to Node —
+   * and a single role would keep the first field and drop the second, which
+   * is a count wrong in the safe-looking direction. Never empty when present.
+   */
+  roles?: AssociationRole[];
 }
 
 export interface Graph {

@@ -247,6 +247,10 @@ function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
 
   for (const edge of graph.edges) {
     if (edge.kind === 'contains') continue;
+    // A type named only in a signature is not the coupling this measures —
+    // and letting it vote moved every stored name on every TypeScript, Java
+    // and C# project the day dependency edges arrived.
+    if (edge.kind === 'depends') continue;
     const from = graph.nodes.get(edge.from)?.filePath;
     const to = graph.nodes.get(edge.to)?.filePath;
     if (!from || !to || from === to) continue;

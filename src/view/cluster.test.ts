@@ -128,3 +128,16 @@ test('a group that is really just its largest child is not offered beside it', (
     [0, 0],
   );
 });
+
+test('a dependency edge does not vote on who belongs together', () => {
+  // Two triangles, and one file in each naming the other's type in five
+  // signatures. The day dependency edges arrived they counted like imports,
+  // and every stored name on every typed project moved.
+  const plain = graphOf([...members('a'), ...members('b')], [...triangle('a'), ...triangle('b')]);
+  const depends = Array.from({ length: 5 }, () => ({ from: 'a1.ts', to: 'b1.ts', kind: 'depends' as const }));
+  const groups = clusterFiles({ nodes: plain.nodes, edges: [...plain.edges, ...depends] });
+  assert.deepEqual(
+    groups.map((group) => [...group.files].sort()).sort(),
+    [members('a'), members('b')],
+  );
+});

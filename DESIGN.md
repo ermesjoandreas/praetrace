@@ -116,9 +116,16 @@ Each one is a different *kind* of mark, not just a different hue:
 | too many boxes to place quickly | a chip in the breadcrumb row, `⚠ 289 boxes — depth 1 is quicker` | warning |
 | a stored name that matches nothing | a row under "Stored, matches nothing" in Categories | muted |
 | a symbol the test suite never ran | a 5px dot in the member row, left of the follow mark | disabled grey |
+| an association | the line in the field colour; UML's diamond at the holder's end — filled when the class builds the part, hollow (the canvas showing through) when it is handed in, none when the source did not say — and the role name with `1`, `0..1` or `*` at the far end, 11px muted with a canvas-coloured knockout | field |
+| a dependency | dashed `6 4`, 1.2px, an open arrowhead at the far end. `implements` is dashed in the same hue; the head and the longer dash are what tell them apart | type |
+| the component diagram is on | the `Components` crumb, filled | accent |
+| a named category, drawn as a component | the box's name and icon, and 40% on its edge — the colour its frame wears; slate when none was chosen. Unnamed is plain | the category's own colour |
+| files in no category | the box at 60% opacity, solid — dashed is `.box-external`, which means outside the scope | none |
+| a flow too big to draw unasked | `⚠ 116 boxes — this one is big` in the overlay, beside a secondary "Draw anyway" | warning |
 
 `--vsc-warning` means one thing: **the tool's own gap** — cannot read, could not
-parse, too many to place. Do not give it a fourth meaning. Coverage is not a fault
+parse, too many to place. The flow's size warning is that third meaning again,
+not a fourth. Do not give it one. Coverage is not a fault
 and does not get it: a never-executed symbol wears the disabled grey, and a symbol
 with no measurement wears nothing at all, because absent is not zero.
 
@@ -153,8 +160,11 @@ border. Those are the user's own meaning and are not subject to rule 4.
 ```
 
 - The menu bar is the title bar. Nothing in a menu is decoration.
-- The breadcrumb row is a toolbar: crumbs separated by a chevron, then the commit
-  the diagram is frozen at, then the active filters as chips, then search.
+- The breadcrumb row is a toolbar: crumbs separated by a chevron, then the
+  `Components` crumb — which diagram is a fact about where you are, so it holds
+  the accent while on — then the commit the diagram is frozen at, then the active
+  filters as chips (an opt-in edge kind that is on is a chip like the filters,
+  and removes only itself), then search.
 - The left bar and the side bar are side bars in VS Code's sense: `#181818`,
   edged by a 1px line, made of 22px sections with a chevron that really folds. The
   left bar is Repository (titled with the repository's own name), Source Control
@@ -189,6 +199,46 @@ row is hovered. Git letters right-aligned in the git colour.
 around where the boxes land. A pixel of change moves every frame. Member rows are
 UML compartments, not list rows — the 22px rule does not apply to them.
 
+**Component box** — the box, led by a 16px `codicon-package` and a bold name, a
+27px count line (`META_HEIGHT` in `web/src/layout.ts`: `12 files · 84%`,
+`· by hand`, `· no category`), then a compartment of 17px member rows listing what
+it provides, the number of outside files that reach each at the right in
+tabular figures, and `+N more` as a muted row that is a count and not a control.
+A named category wears its colour the way its frame does — name, icon, and 40%
+on the edge through `--box-line`, a variable with the plain line as fallback so
+amber, blue and the picked ring, which set `border-color` outright, still win.
+The no-category box is at 60% opacity and solid.
+
+**Relation line** — UML's notation, drawn only from what the view said. An
+association is the field colour, with the diamond at the holder's end (12px long,
+7 wide; filled for composition, canvas-filled for aggregation, absent when the
+source did not say) and the role rows at the far end — `name multiplicity`, one
+per field, three at most and the rest counted, stacked upwards from the line in
+11px muted with a 3px canvas-coloured stroke behind the glyphs so the words
+survive crossing a line. A dependency is the type colour, dashed `6 4` at 1.2px,
+with an 8px open head at the target. `extends` and `implements` carry no head,
+as before. Nothing on a line is decoration: a diamond drawn from a guess would
+be worse than none.
+
+**Flow overlay** — covers the canvas at the welcome screen's z-index, 20, and for
+the welcome screen's reason: the chrome stays reachable and the find bar under
+it is covered rather than argued with. Its header is a section header's shape —
+22px, chrome behind it, an 11px bold title, the status beside the title
+(`116 boxes`, `reading…`, `of the working tree, not 7fe7f88`), the close at the
+right edge. The boxes are UML's activity shapes and no others: start a filled
+dot (an 18px circle in `--vsc-fg`), end a bullseye (a 22px 1.5px ring around a
+12px dot), both SVG circles so the radius rule holds in the built CSS; an action a `--vsc-widget-bg` box with `--vsc-border-menu`, 6px corners —
+UML's rounded action, and the one place the 6px ceiling is reached; a decision
+and a loop a diamond drawn as an SVG the size of the box with the label in its
+middle band; try, catch and finally dashed, the interruptible region's line;
+return, throw, break and continue muted on a plain line. Labels are one line of
+source in the member rows' 11px monospace, never highlighted; the `+N more` and
+the note under a label are the UI face, muted. Every edge ends in a closed head;
+`yes`, `no`, a case's value and `catch` are the edge labels. Under the diagram,
+in the chrome colour, the engine's own sentences about what is not drawn. The
+size warning wears `--vsc-warning` and "Draw anyway" is a secondary button,
+because drawing it is the override, not the recommendation.
+
 **Commit graph** — one 22px row per commit: an SVG lane column at 12px a lane,
 1.5px threads in the lane colours, a 6px dot, a curve where a thread changes lane,
 then the subject, the refs as 18px badges (the checked-out branch on the accent
@@ -222,7 +272,8 @@ the accent. No glow.
 
 **Icon** — a Codicon, 16px, `currentColor`, `aria-hidden`, with the meaning kept in
 the button's `title` and `aria-label`. Never an emoji, never a unicode glyph. The UML
-visibility marks (`+ − #`), the git letters, and `·` are text and stay text.
+visibility marks (`+ − #`), the multiplicities (`1`, `0..1`, `*`) and role names on
+a line, the git letters, and `·` are text and stay text.
 
 **Scrollbar** — 14px overlay, no track, no radius, thumb `#79797966`.
 
@@ -255,15 +306,21 @@ The list of things that make a page look generated, with the reason each is out:
 A design brief for "make it look like VS Code" will suggest these, and they are
 wrong for this app. Each has been considered and refused:
 
-- **An activity bar with one icon per visualisation type.** There is one
-  visualisation. Icons for dataflow, database and infrastructure would open nothing,
-  and CLAUDE.md says those are not to be built.
-- **Tabs for open visualisations.** There is one.
+- **An activity bar with one icon per visualisation type.** There are three
+  diagrams — the class diagram, the component diagram, and the flow of one
+  function — and none of them is a bar. The component diagram is a crumb and a
+  URL; the flow is an overlay opened from a symbol and closed by Escape. Icons for
+  dataflow, database and infrastructure would open nothing, and CLAUDE.md says
+  those are not to be built.
+- **Tabs for open visualisations.** A diagram is where you are, not a document
+  you have open; the URL is the tab.
 - **A bottom panel with Problems / Agent log / Diff.** None of those exist. The
   activity table is the agent log, and it is a side bar section.
 - **A second command palette.** ⌘K is one. It is styled as Quick Pick.
 - **A custom Tauri title bar.** An engineering project, not a restyle.
-- **Syntax-highlighted source.** The app never renders source.
+- **Syntax-highlighted source.** The app never highlights source. A flow box
+  carries one line of it, in the member rows' monospace, as a label and no more;
+  the range on the box is how to read the rest, in an editor.
 
 ---
 
@@ -277,10 +334,12 @@ comments that name the old values.
 
 The checklist a change to `web/` has to pass, with the page in front of you:
 
-- No `border-radius` above 6px in the built CSS.
+- No `border-radius` above 6px in the built CSS. The one 6px is `.flow-box`,
+  UML's rounded action; it is the ceiling, not a licence.
 - No `box-shadow` outside menus, the palette, tooltips and the group editor.
 - Chrome `#181818`, canvas `#1F1F1F`, every region edge a 1px `#2B2B2B`.
-- List rows 22px, section headers 22px, member rows 17px, box header 38px.
+- List rows 22px, section headers 22px, member rows 17px, box header 38px;
+  a component box's count line 27px and its provided rows 17px.
 - Only `#0078D4` as accent; `7aa2f7`, `bb9af7`, `9ece6a`, `e0af68` absent. The
   five lane hexes (`ffb000`, `dc267f`, `994f00`, `40b0a6`, `b66dff`) are expected.
 - Every icon a Codicon that renders — no missing-glyph boxes.
