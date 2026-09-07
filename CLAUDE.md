@@ -569,10 +569,11 @@ web/              the browser page (Vite, built into dist/web)
                   under it
   src/GroupNode.tsx a group frame: name, colour, size, membership
   src/Sidebar.tsx the right side bar: Following (with its readings) and Detail
-  src/Categories.tsx   the left bar's third section: every group with its
-                       cohesion or "by hand", the editor (name, colour, members,
+  src/Categories.tsx   the left bar's third section, a tree: one folded row per
+                       group with its count and cohesion or "by hand", the files
+                       under it once unfolded, the editor (name, colour, members,
                        delete), the create-from-selection form, and the model's
-                       suggested names with accept / dismiss
+                       suggested name on the group's own row with accept / dismiss
   src/Repository.tsx   the left bar's first section: project, remote, the Claude
                        Code hook and MCP, and the buttons that act on them
   src/SourceControl.tsx  Changes (the per-file list, the base picker) and Graph
@@ -872,6 +873,11 @@ governs membership.
   `.codemap/groups.json`, the API stays `/api/clusters` and `/api/groups`, the MCP
   tools stay `list_groups` / `name_group`, the CSS classes stay `.group-*`. Do not
   "fix" either side toward the other.
+- **The Categories section is VS Code's tree.** Every category is a 22px row with
+  a chevron, folded by default and not persisted, that hides its files and never a
+  category nested in it; a suggested name sits on that row with its ✓ and ✕, so
+  accepting never needs unfolding; editing unfolds, renaming does not; ← folds
+  and → unfolds the focused row, and the header has Collapse all / Expand all.
 - **The status bar.** 22px at the bottom: branch, ahead/behind, the "Changes" count
   that toggles the filter, then boxes and files, "N tests hidden" (a button that
   shows them) while `tests=0`, "N files with syntax errors" and "not read: …" for

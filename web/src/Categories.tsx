@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { money } from './api';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
@@ -72,9 +72,16 @@ function suggestTitle(lastRun: { costUsd: number; ms: number } | null): string {
  * there is nothing in it, because a section that comes and goes with its
  * contents is never where it was last seen.
  *
+ * A tree, the way VS Code's side bar lists things: every category is a row
+ * with a chevron, folded by default, and its files are under it only once it
+ * is unfolded. It used to list every file under every category, always — on a
+ * real project twenty categories and hundreds of rows, and the one row that
+ * mattered, a suggested name with its accept, was somewhere in that wall.
+ *
  * A suggested name is the one thing here a model produced, and it is held to
  * decision 5: a guess in the page's memory until a person accepts it, and
- * accepting is the same write that typing the name would have been.
+ * accepting is the same write that typing the name would have been. There is
+ * no accept-all, and there will not be: one press per name.
  */
 export function Categories({
   groups,
@@ -113,24 +120,64 @@ export function Categories({
   onDismissSuggestion: (id: string) => void;
 }) {
   // One walk over the whole list, in the order it is drawn: a group, the name
-  // being typed in place of it, then the files under it. A group's files are
-  // its rows as much as the group's own name is, and the arrows read the list
-  // the eye reads. The swatch, the palette and the row actions are not rows —
-  // they act on the row they sit in, and Tab still reaches them.
+  // being typed in place of it, then the files under it — when it is
+  // unfolded. listkeys reads the rows out of the DOM, so a folded group's
+  // files are not rows and the walk skips them without being told. The
+  // chevron, the swatch, the palette and the row actions are not rows — they
+  // act on the row they sit in, and Tab still reaches all but the chevron.
   const keys = useListKeys();
   const [naming, setNaming] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   /** The row whose palette and membership are open. One at a time. */
   const [editing, setEditing] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  /**
+   * The rows whose files are on screen, by cluster id. Everything starts
+   * folded, and nothing is persisted: a new session starts tidy. The id embeds
+   * the member count, so a group that drifts arrives under a new id and
+   * therefore folded — which is right, since as far as the page knows it is a
+   * new row.
+   */
+  const [unfolded, setUnfolded] = useState<ReadonlySet<string>>(() => new Set());
 
   const live = groups.filter((group) => group.state !== 'rejected');
   const canCreate = editor.selection.boxes >= 2;
+  const unfoldedCount = live.filter((group) => unfolded.has(group.id)).length;
+
+  const setFold = (id: string, open: boolean) => {
+    setUnfolded((was) => {
+      if (was.has(id) === open) return was;
+      const next = new Set(was);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    // The palette and the member editor live in the unfolded body, so folding
+    // the row ends the edit rather than leaving a swatch pressed over nothing.
+    if (!open && editing === id) setEditing(null);
+  };
 
   /** What a nested row says it sits inside: the outer group's name, or its size. */
   const parentLabel = (id: string): string => {
     const parent = groups.find((group) => group.id === id);
     return parent === undefined ? id : (parent.name ?? `${parent.files.length} files`);
+  };
+
+  // ← folds the row the keyboard is on and → unfolds it: VS Code's tree keys.
+  // Only a category's own row answers them — a file is a leaf, and the rename
+  // field owns its arrows for the caret. Everything else is listkeys'.
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    const target = event.target;
+    if (
+      (event.key === 'ArrowLeft' || event.key === 'ArrowRight') &&
+      target instanceof HTMLElement &&
+      target.dataset.group !== undefined
+    ) {
+      event.preventDefault();
+      setFold(target.dataset.group, event.key === 'ArrowRight');
+      return;
+    }
+    keys.onKeyDown(event);
   };
 
   // Greyed with the reason rather than absent, for the same reason the add
@@ -169,6 +216,39 @@ export function Categories({
           >
             <i className="codicon codicon-add" aria-hidden="true" />
           </button>
+          <button
+            type="button"
+            disabled={unfoldedCount === live.length}
+            title={
+              live.length === 0
+                ? 'Nothing to unfold'
+                : unfoldedCount === live.length
+                  ? 'Every category is already unfolded'
+                  : 'Expand all'
+            }
+            aria-label="Expand all"
+            onClick={() => setUnfolded(new Set(live.map((group) => group.id)))}
+          >
+            <i className="codicon codicon-expand-all" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            disabled={unfoldedCount === 0}
+            title={
+              live.length === 0
+                ? 'Nothing to fold'
+                : unfoldedCount === 0
+                  ? 'Every category is already folded'
+                  : 'Collapse all'
+            }
+            aria-label="Collapse all"
+            onClick={() => {
+              setUnfolded(new Set());
+              setEditing(null);
+            }}
+          >
+            <i className="codicon codicon-collapse-all" aria-hidden="true" />
+          </button>
         </>
       }
     >
@@ -198,21 +278,35 @@ export function Categories({
         </p>
       )}
 
-      <ul {...keys}>
+      <ul {...keys} onKeyDown={onKeyDown}>
         {live.map((group) => {
           const manual = group.origin === 'manual';
           const decided = manual || group.state === 'accepted';
-          const open = decided && editing === group.id;
+          const shown = unfolded.has(group.id);
+          // Editing unfolds the row and folding it ends the edit, so this is
+          // never true of a folded row; the `shown` is there so that a palette
+          // can never be drawn under a chevron that says there is nothing.
+          const open = shown && decided && editing === group.id;
           // Only a row with no name has a guess to show. The ids embed the
           // member count, so a guess for a cluster that has since drifted
           // finds no row and is simply not shown — never matched to the
           // wrong one.
           const suggestion = decided ? undefined : suggestions.get(group.id);
+          // A drawn group carries a cohesion of 0 — the import graph was never
+          // asked to find it — and 0% would read as a terrible group rather
+          // than as somebody's decision.
+          const cohesion = manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`;
 
           return (
             // One indent in under the group it was found inside. The list is
             // in walk order — an outer group, then what nests in it — so the
             // indent alone says which; the title says it in words.
+            //
+            // Its own row, and its own fold: folding the outer group hides
+            // that group's files and never the categories nested in it. A
+            // category is a thing, and hiding it under another would hide a
+            // name the person may be looking for — which is the whole reason
+            // the list folds at all.
             <li
               key={group.id}
               className={group.parent === null ? undefined : 'group-nested'}
@@ -220,7 +314,8 @@ export function Categories({
             >
               {naming === group.id ? (
                 // A row while it is being renamed, so the walk does not lose
-                // its place; the arrows inside it belong to the caret.
+                // its place; the arrows inside it belong to the caret. The
+                // fold is untouched: a name is typed on the row, not under it.
                 <input
                   {...LIST_ROW}
                   autoFocus
@@ -237,10 +332,29 @@ export function Categories({
                 />
               ) : (
                 <div className="group-row">
+                  {/* The chevron is VS Code's twistie and is not a tab stop:
+                      ← and → on the row do the same, and twenty chevrons
+                      between Tab and the next section would be the 300 stops
+                      listkeys exists to prevent. */}
+                  <button
+                    type="button"
+                    className="group-twistie"
+                    tabIndex={-1}
+                    aria-expanded={shown}
+                    title={shown ? 'Fold' : 'Unfold'}
+                    aria-label={shown ? 'Fold' : 'Unfold'}
+                    onClick={() => setFold(group.id, !shown)}
+                  >
+                    <i
+                      className={`codicon codicon-chevron-${shown ? 'down' : 'right'}`}
+                      aria-hidden="true"
+                    />
+                  </button>
                   {/* The swatch is the way in: it shows the colour the frame is
                       drawn in and opens the palette that changes it. A group
                       with no colour of its own is drawn in the default grey,
-                      which is what slate is.
+                      which is what slate is. The palette lives under the row,
+                      so opening it unfolds the row; typing a name does not.
 
                       Only a group that has been decided has an entry in
                       groups.json to hang a colour on, so a suggestion is not
@@ -253,13 +367,28 @@ export function Categories({
                       data-color={group.color ?? 'slate'}
                       aria-pressed={open}
                       title={open ? 'Close' : manual ? 'Colour and members' : 'Colour'}
-                      onClick={() => setEditing(open ? null : group.id)}
+                      onClick={() => {
+                        setEditing(open ? null : group.id);
+                        if (!open) setFold(group.id, true);
+                      }}
                     />
+                  )}
+                  {/* A model's guess at a name sits on the group's own row —
+                      the lightbulb where a decided group's swatch would be, and
+                      the name muted, because nothing has been decided — so the
+                      accept is on the one row a folded list shows. It turns
+                      into the title's text the moment a person accepts it, by
+                      the same write typing it would have made. The reason
+                      stays on hover, in the title. */}
+                  {suggestion !== undefined && (
+                    <i className="codicon codicon-lightbulb" aria-hidden="true" />
                   )}
                   <button
                     type="button"
                     {...LIST_ROW}
+                    data-group={group.id}
                     className={group.state === 'accepted' ? 'group-title named' : 'group-title'}
+                    title={suggestion?.reason}
                     onClick={() => {
                       // A guess is a starting point for typing as much as a
                       // thing to accept whole: the input opens on it.
@@ -267,11 +396,11 @@ export function Categories({
                       setNaming(group.id);
                     }}
                   >
-                    {group.name ?? `${group.files.length} files`}
+                    {group.name ?? suggestion?.name ?? `${group.files.length} files`}
                   </button>
-                  {/* A drawn group carries a cohesion of 0 — the import graph
-                      was never asked to find it — and 0% would read as a
-                      terrible group rather than as somebody's decision. */}
+                  {/* The count and the cohesion, since a folded row is all
+                      there is to read. An unnamed group with no guess is
+                      titled by its count already and is not told it twice. */}
                   <span
                     className="group-cohesion"
                     title={
@@ -286,66 +415,61 @@ export function Categories({
                           `${Math.round(group.cohesion * 100)}% of these ${group.files.length} files' edges stay inside the category — a share, not a score: it rises with the group, and a group holding everything reads 100%`
                     }
                   >
-                    {manual ? 'by hand' : `${Math.round(group.cohesion * 100)}%`}
-                  </span>
-                  {/* Rejecting is remembering that this is not a group, so the
-                      next scan stops proposing it. Nothing proposed a drawn
-                      group, so there is nothing to remember: it is deleted. */}
-                  <span className="row-actions">
-                    <button
-                      type="button"
-                      className="group-drop"
-                      title={manual ? 'Delete this category' : 'Not a category'}
-                      aria-label={manual ? 'Delete this category' : 'Not a category'}
-                      onClick={() =>
-                        manual
-                          ? // A drawn group is always stored, so it always has the id it
-                            // is stored under; the cluster id is the fallback App uses.
-                            editor.onDelete(group.storedId ?? group.id)
-                          : onDecide(group, group.name ?? '', 'rejected')
-                      }
-                    >
-                      <i
-                        className={`codicon codicon-${manual ? 'trash' : 'close'}`}
-                        aria-hidden="true"
-                      />
-                    </button>
-                  </span>
-                </div>
-              )}
-
-              {/* Its own row under the group, not more words on the group's:
-                  the row above already ends in a close that means "not a
-                  category", and a second close beside it meaning "not this
-                  name" would be two identical icons with opposite reach. */}
-              {suggestion !== undefined && (
-                <div
-                  className="group-row category-suggestion"
-                  title="Suggested by Claude — not saved until you accept it"
-                >
-                  <i className="codicon codicon-lightbulb" aria-hidden="true" />
-                  <span className="category-suggested" title={suggestion.reason}>
-                    {suggestion.name}
+                    {group.name === null && suggestion === undefined
+                      ? cohesion
+                      : `${group.files.length} · ${cohesion}`}
                   </span>
                   <span className="row-actions">
-                    <button
-                      type="button"
-                      className="group-drop"
-                      title={`Name it "${suggestion.name}"`}
-                      aria-label="Accept"
-                      onClick={() => editor.onRename(group, suggestion.name)}
-                    >
-                      <i className="codicon codicon-check" aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="group-drop"
-                      title="Dismiss this suggestion"
-                      aria-label="Dismiss"
-                      onClick={() => onDismissSuggestion(group.id)}
-                    >
-                      <i className="codicon codicon-close" aria-hidden="true" />
-                    </button>
+                    {suggestion === undefined ? (
+                      // Rejecting is remembering that this is not a group, so
+                      // the next scan stops proposing it. Nothing proposed a
+                      // drawn group, so there is nothing to remember: it is
+                      // deleted.
+                      <button
+                        type="button"
+                        className="group-drop"
+                        title={manual ? 'Delete this category' : 'Not a category'}
+                        aria-label={manual ? 'Delete this category' : 'Not a category'}
+                        onClick={() =>
+                          manual
+                            ? // A drawn group is always stored, so it always has the id it
+                              // is stored under; the cluster id is the fallback App uses.
+                              editor.onDelete(group.storedId ?? group.id)
+                            : onDecide(group, group.name ?? '', 'rejected')
+                        }
+                      >
+                        <i
+                          className={`codicon codicon-${manual ? 'trash' : 'close'}`}
+                          aria-hidden="true"
+                        />
+                      </button>
+                    ) : (
+                      // While a guess stands the row's two actions are about
+                      // the guess, and "not a category" waits until it is
+                      // dismissed: a second close beside this one, meaning
+                      // the group and not the name, would be two identical
+                      // icons with opposite reach.
+                      <>
+                        <button
+                          type="button"
+                          className="group-drop"
+                          title={`Name it "${suggestion.name}"`}
+                          aria-label="Accept"
+                          onClick={() => editor.onRename(group, suggestion.name)}
+                        >
+                          <i className="codicon codicon-check" aria-hidden="true" />
+                        </button>
+                        <button
+                          type="button"
+                          className="group-drop"
+                          title="Dismiss this suggestion"
+                          aria-label="Dismiss"
+                          onClick={() => onDismissSuggestion(group.id)}
+                        >
+                          <i className="codicon codicon-close" aria-hidden="true" />
+                        </button>
+                      </>
+                    )}
                   </span>
                 </div>
               )}
@@ -384,55 +508,57 @@ export function Categories({
                 </div>
               )}
 
-              <div className="group-files">
-                {group.files.map((file) =>
-                  open && manual ? (
-                    <span className="group-row" key={file}>
-                      <button type="button" {...LIST_ROW} title={file} onClick={() => onSelect(file)}>
+              {shown && (
+                <div className="group-files">
+                  {group.files.map((file) =>
+                    open && manual ? (
+                      <span className="group-row" key={file}>
+                        <button type="button" {...LIST_ROW} title={file} onClick={() => onSelect(file)}>
+                          {file}
+                        </button>
+                        <span className="row-actions">
+                          <button
+                            type="button"
+                            className="group-drop"
+                            disabled={group.files.length <= 2}
+                            title={
+                              group.files.length <= 2
+                                ? 'A category needs at least two files'
+                                : `Take ${file} out of this category`
+                            }
+                            aria-label={`Take ${file} out of this category`}
+                            onClick={() =>
+                              editor.onMembers(
+                                group,
+                                group.files.filter((member) => member !== file),
+                              )
+                            }
+                          >
+                            <i className="codicon codicon-close" aria-hidden="true" />
+                          </button>
+                        </span>
+                      </span>
+                    ) : (
+                      <button type="button" {...LIST_ROW} key={file} title={file} onClick={() => onSelect(file)}>
                         {file}
                       </button>
-                      <span className="row-actions">
-                        <button
-                          type="button"
-                          className="group-drop"
-                          disabled={group.files.length <= 2}
-                          title={
-                            group.files.length <= 2
-                              ? 'A category needs at least two files'
-                              : `Take ${file} out of this category`
-                          }
-                          aria-label={`Take ${file} out of this category`}
-                          onClick={() =>
-                            editor.onMembers(
-                              group,
-                              group.files.filter((member) => member !== file),
-                            )
-                          }
-                        >
-                          <i className="codicon codicon-close" aria-hidden="true" />
-                        </button>
-                      </span>
-                    </span>
-                  ) : (
-                    <button type="button" {...LIST_ROW} key={file} title={file} onClick={() => onSelect(file)}>
-                      {file}
+                    ),
+                  )}
+                  {open && manual && editor.selection.files.length > 0 && (
+                    <button
+                      type="button"
+                      title="Add what is selected on the diagram"
+                      onClick={() =>
+                        editor.onMembers(group, [
+                          ...new Set([...group.files, ...editor.selection.files]),
+                        ])
+                      }
+                    >
+                      add {editor.selection.files.length} selected
                     </button>
-                  ),
-                )}
-                {open && manual && editor.selection.files.length > 0 && (
-                  <button
-                    type="button"
-                    title="Add what is selected on the diagram"
-                    onClick={() =>
-                      editor.onMembers(group, [
-                        ...new Set([...group.files, ...editor.selection.files]),
-                      ])
-                    }
-                  >
-                    add {editor.selection.files.length} selected
-                  </button>
-                )}
-              </div>
+                  )}
+                </div>
+              )}
             </li>
           );
         })}

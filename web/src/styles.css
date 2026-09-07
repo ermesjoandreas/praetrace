@@ -1820,21 +1820,29 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
 .group-title:focus-visible { outline-offset: -1px; }
 .group-cohesion { flex: none; margin-left: auto; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
 
-/* A model's guess at a name: the row under the group it is for, one indent
-   in like the palette, so it reads as belonging to the row above and not as
-   a group of its own. Muted, because nothing has been decided — it turns
-   into the title's text the moment a person accepts it, by the same write
-   typing it would have made. The reason is in its title. */
-.category-suggestion { padding-left: 24px; }
-.category-suggestion > .codicon { flex: none; color: var(--vsc-fg-muted); }
-.category-suggested {
-  flex: 1;
-  min-width: 0;
+/* The twistie, VS Code's: a 16px chevron at the row's left edge, and the only
+   thing in the row that folds. The list is a tree of category rows over file
+   leaves — a category found inside another is a row of its own, one indent
+   in, and folding the outer one hides files and never rows. Muted like the
+   icon buttons, and lit under the cursor the way they are; no background,
+   because the row behind it already has one. */
+.group-twistie {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: var(--vsc-row-h);
   color: var(--vsc-fg-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+.group-twistie:hover { color: var(--vsc-fg); }
+
+/* A model's guess at a name, on the category's own row: the lightbulb where a
+   decided group's swatch would sit — an undecided group has no swatch — and
+   the title left muted, because nothing has been decided. It turns into the
+   title's text the moment a person accepts it, by the same write typing it
+   would have made. The reason is in the title's tooltip. */
+.group-row > .codicon-lightbulb { flex: none; color: var(--vsc-fg-muted); }
 
 /* The palette inside the list: one row under the group, indented like its
    files. Distinct from .group-editor, the popover over the diagram. */
@@ -1843,20 +1851,22 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
   align-items: center;
   gap: 8px;
   height: var(--vsc-row-h);
-  padding: 0 2px 0 24px;
+  padding: 0 2px 0 40px;
 }
 .group-palette .group-swatches { flex: 1; }
 .group-palette-label { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 
-/* A group's files: child rows, one indent in. Direct children only — the row
-   actions inside a member row are icon buttons and must not become rows. */
+/* A group's files: the leaves under an unfolded row, 10px in from where the
+   row's name begins (8px of padding, the 16px twistie, a 6px gap), so they
+   read as the row's children the way a tree's do. Direct children only — the
+   row actions inside a member row are icon buttons and must not become rows. */
 .group-files { display: flex; flex-direction: column; }
 .group-files > button,
 .group-files .group-row > button {
   display: block;
   width: 100%;
   height: var(--vsc-row-h);
-  padding: 0 8px 0 24px;
+  padding: 0 8px 0 40px;
   color: var(--vsc-fg-muted);
   font-family: var(--vsc-font-mono);
   font-size: var(--vsc-font-size-status);
@@ -1867,22 +1877,26 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
   text-overflow: ellipsis;
 }
 .group-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
-.group-files > button:focus-visible { outline-offset: -1px; }
+/* Both shapes a file row takes: the bare leaf, and the leaf wrapped in a
+   .group-row while its hand-drawn category is being edited, so a ✕ can sit
+   beside it. The wrapped one is a row too, and its ring is inset like every
+   other's — at the default 2px it spilled over the palette row above it. */
+.group-files > button:focus-visible,
+.group-files .group-row > button:focus-visible { outline-offset: -1px; }
 .group-files .group-row { padding-left: 0; }
 .group-files .group-row > button { flex: 1; min-width: 0; }
 .group-files .group-row:hover > button { color: var(--vsc-fg); }
 
 /* A group found inside another sits one indent under it, and everything that
-   hangs off its row — the name being typed, a suggestion, the palette, its
-   files — one more, so the list reads as the outline the frames draw. The
-   li's own children only: a member row under a group being edited is a
-   .group-row too, and keeps the edge the rule above gave it. */
+   hangs off its row — the name being typed, the palette, its files — one
+   more, so the list reads as the outline the frames draw. The li's own
+   children only: a member row under a group being edited is a .group-row
+   too, and keeps the edge the rule above gave it. */
 li.group-nested > .group-row { padding-left: 24px; }
 li.group-nested > input { width: calc(100% - 32px); margin-left: 24px; }
-li.group-nested > .category-suggestion,
-li.group-nested > .group-palette { padding-left: 40px; }
+li.group-nested > .group-palette { padding-left: 56px; }
 li.group-nested .group-files > button,
-li.group-nested .group-files .group-row > button { padding-left: 40px; }
+li.group-nested .group-files .group-row > button { padding-left: 56px; }
 
 /* Names in groups.json that match nothing the graph finds now. A block under
    the list, titled the way the repository panel titles one — the title's

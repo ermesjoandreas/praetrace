@@ -253,8 +253,10 @@ row and scrolls sideways past the panel; a commit is never drawn without its dot
 and one 26px full-width button under it. In a browser the "Open folder" slot holds
 the CLI line in `<code>` instead.
 
-**Categories** — a group found inside another sits one indent (24px) under its
-parent and its files one more (40px). Names in groups.json that match nothing are
+**Categories** — a tree, folded by default: each category is one 22px row with a
+16px twistie, and a suggested name sits on that row with its ✓ and ✕, so
+accepting never needs unfolding. A group found inside another sits one indent
+(24px) under its parent; a group's files sit at 40px, a nested group's at 56px. Names in groups.json that match nothing are
 a block under the list, titled `Stored, matches nothing` the way a Repository block
 is titled; each row is a group row whose name is muted and is not a control, with
 the file count where the cohesion goes and a trash in `.row-actions` on hover.
