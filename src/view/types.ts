@@ -24,8 +24,36 @@ import type { ViewFilter } from './filter.js';
 export type Tracking = 'tracked' | 'partial';
 
 /**
+ * How a slice is put in front of the reader: boxes and lines, or one row per
+ * box. The same slice either way — `ViewGraph.nodes` and `edges` are what they
+ * are — and only the drawing differs.
+ */
+export type Presentation = 'list' | 'diagram';
+
+/**
+ * Above this many boxes a scope is a list, not a diagram.
+ *
+ * A map of everything never works. astrupdata's `lib` is 106 boxes and 427
+ * lines, laid out as one strip zoomed to a smear; the root beside it is 12
+ * boxes and reads fine. Thirty is where a diagram of this project's boxes, on
+ * this project's canvas, stops answering "what is in here" faster than a list
+ * would — and past it the honest overview is the list, with the numbers on
+ * the row, and the diagram is something you go to (`?as=diagram`) rather than
+ * something you land in. Here and not in `select.ts` because the page may
+ * want to say the number, and `select.ts` pulls in the parser.
+ */
+export const LIST_ABOVE = 30;
+
+/**
  * Which slice of the graph to show. Carried in the page URL, so navigation is
  * links rather than client state: the back button works and a view is shareable.
+ *
+ * `as`, `category` and `diff` are optional where `focus` and `at` are
+ * nullable: absent is the ordinary answer for each of them, JSON drops an
+ * undefined either way, and a spec written before they existed is still a
+ * spec. The price is that a reader which forgets one compiles — so both
+ * readers in `server/app.ts` are checked by sending the server's own echo
+ * back over the socket, not by the type.
  */
 export interface ViewSpec {
   /** Directory to look inside; '' is the project root. */
@@ -62,6 +90,32 @@ export interface ViewSpec {
    * with half its members missing.
    */
   diagram: 'classes' | 'components';
+  /**
+   * List or diagram, when the URL says. Absent leaves it to the rule in
+   * `presentationOf`: a focus and a diff are always diagrams, and a scope is
+   * a list past `LIST_ABOVE`. Navigation and not a filter, for the reason
+   * `diagram` is: it changes what a box is drawn as, never which boxes.
+   */
+  as?: Presentation;
+  /**
+   * A scope by category: the stored id of a group, whose members are the
+   * view's files the way a directory's are under `scope`. "Show me the Data
+   * Pipeline" is the question the categories exist to answer. Wins over
+   * `scope`; `focus` wins over it. The stored id and never the cluster id,
+   * which embeds the member count and changes the moment a file joins.
+   */
+  category?: string;
+  /**
+   * `base` — the session's git base — or a commit, to draw only what differs
+   * between that graph and this one: VISION.md phase 1, the structural diff.
+   * Read by both wire formats, and drawn by `selectView` only when the caller
+   * hands it the *before* graph as well — a pure function given one graph
+   * cannot draw a diff of two, and echoes no `diff` rather than claim one.
+   * Scope, focus and category are not slices of a diff, and the echo drops
+   * them; `at` makes the diff one between two commits. Always a diagram: a
+   * diff is small by construction, which is the point of one.
+   */
+  diff?: string;
 }
 
 /**
@@ -192,6 +246,11 @@ export interface ViewMember {
    * function at the same line.
    */
   aliasOf?: string;
+  /**
+   * Under `spec.diff` only: this row came or went between the two graphs. A
+   * row in both is never marked — a line moved is not news. Absent otherwise.
+   */
+  change?: 'added' | 'removed';
 }
 
 export interface ViewNode {
@@ -284,6 +343,14 @@ export interface ViewNode {
   unresolved?: { imports: number; calls: number };
   /** Present on a `component` box and on nothing else. */
   component?: ComponentFacts;
+  /**
+   * Under `spec.diff` only: what happened to this file between the two
+   * graphs. `removed` is a ghost, built from the *before* graph — the only
+   * place a file no longer on disk still exists — and is drawn dashed and
+   * dimmed, never a new hue. Absent on a context box (the far end of a line
+   * that changed, drawn `external`) and on every other view.
+   */
+  change?: 'added' | 'removed' | 'touched';
 }
 
 export interface ViewEdge {
@@ -320,6 +387,8 @@ export interface ViewEdge {
    * the canvas's shape are one rule and cannot drift apart.
    */
   ownership?: 'composition' | 'aggregation';
+  /** Under `spec.diff` only: solid for added, dashed for removed. A line in both graphs is not drawn. */
+  change?: 'added' | 'removed';
 }
 
 /** How much of a project one language accounts for. */
@@ -335,8 +404,20 @@ export interface ViewGraph {
   edges: ViewEdge[];
   /** The spec actually used, which may differ from the one asked for. */
   spec: ViewSpec;
-  /** Breadcrumb for the current scope, root first. */
-  trail: { label: string; scope: string }[];
+  /**
+   * List or diagram — the rule applied, so the page and the socket cannot
+   * apply it differently: `spec.as` wins; else a focus or a diff is a diagram;
+   * else `nodes.length` above `LIST_ABOVE` is a list. Decided here and not on
+   * the page because it is a fact about this slice, and two readers of one
+   * threshold is how a live push redraws a list as a diagram.
+   */
+  presentation: Presentation;
+  /**
+   * Breadcrumb for the current scope, root first. A crumb for a category
+   * carries its stored id in `category` and `''` in `scope`: it is a scope by
+   * membership and not by path, and a link built from it says `?category=`.
+   */
+  trail: { label: string; scope: string; category?: string }[];
   /** Files inside the scope before any grouping. */
   totalFiles: number;
   /**

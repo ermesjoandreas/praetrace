@@ -3,8 +3,9 @@ import { test } from 'node:test';
 import type { Graph, GraphNode } from '../graph/types.js';
 import type { Coverage } from '../report/types.js';
 import { NO_FILTER, type ViewFilter } from './filter.js';
-import { ownershipOf, selectView } from './select.js';
-import type { ViewSpec } from './types.js';
+import { categoryOf, ownershipOf, selectView } from './select.js';
+import type { ComponentSource } from './components.js';
+import { LIST_ABOVE, type ViewSpec } from './types.js';
 
 /** Files that import each other, some of them broken, in the order given. */
 function graphOf(files: readonly string[], imports: readonly [string, string][], broken: readonly string[] = []): Graph {
@@ -738,4 +739,248 @@ test('a line wears a diamond only when every field that states an ownership stat
   assert.deepEqual(ownershipOf([{ name: 'a', ownership: 'aggregation' }, { name: 'b' }]), 'aggregation');
   assert.deepEqual(ownershipOf([{ name: 'b' }]), undefined);
   assert.deepEqual(ownershipOf(undefined), undefined);
+});
+
+// --- list or diagram ------------------------------------------------------------
+
+/** A flat directory of `n` source files: one box each, none of them grouped. */
+const flat = (n: number): Graph =>
+  graphOf(Array.from({ length: n }, (_, index) => `src/f${index}.ts`), []);
+
+test('a scope past LIST_ABOVE is a list, one at it is a diagram, and as= says either way', () => {
+  assert.equal(LIST_ABOVE, 30);
+
+  const under = selectView(flat(LIST_ABOVE), root, 0);
+  assert.equal(under.nodes.length, 30);
+  assert.equal(under.presentation, 'diagram');
+
+  const over = selectView(flat(LIST_ABOVE + 1), root, 0);
+  assert.equal(over.nodes.length, 31);
+  assert.equal(over.presentation, 'list');
+
+  // The URL wins over the count, in both directions, and is echoed.
+  const asDiagram = selectView(flat(LIST_ABOVE + 1), { ...root, as: 'diagram' }, 0);
+  assert.equal(asDiagram.presentation, 'diagram');
+  assert.equal(asDiagram.spec.as, 'diagram');
+  const asList = selectView(graphOf(files, imports), { ...root, as: 'list' }, 0);
+  assert.equal(asList.presentation, 'list');
+  assert.equal(asList.spec.as, 'list');
+  // Not asked is not echoed: the key is absent, never null.
+  assert.equal('as' in over.spec, false);
+});
+
+test('a focus is a diagram whatever the count, and so is a diff; only as= overrides them', () => {
+  // A hub with ten neighbours each way, each of which has one neighbour of its
+  // own: 41 boxes at depth 2, and every one of them the answer.
+  const inbound = Array.from({ length: 10 }, (_, index) => `src/in${index}.ts`);
+  const outbound = Array.from({ length: 10 }, (_, index) => `src/out${index}.ts`);
+  const beyondIn = inbound.map((file) => file.replace('.ts', '-own.ts'));
+  const beyondOut = outbound.map((file) => file.replace('.ts', '-own.ts'));
+  const graph = graphOf(
+    ['src/hub.ts', ...inbound, ...outbound, ...beyondIn, ...beyondOut],
+    [
+      ...inbound.map((file): [string, string] => [file, 'src/hub.ts']),
+      ...outbound.map((file): [string, string] => ['src/hub.ts', file]),
+      ...inbound.map((file, index): [string, string] => [beyondIn[index] ?? '', file]),
+      ...outbound.map((file, index): [string, string] => [file, beyondOut[index] ?? '']),
+    ],
+  );
+
+  const focused = selectView(graph, { ...onHub, depth: 2 }, 0);
+  assert.equal(focused.nodes.length, 41);
+  assert.equal(focused.presentation, 'diagram');
+  assert.equal(selectView(graph, { ...onHub, depth: 2, as: 'list' }, 0).presentation, 'list');
+
+  // A focus on a file the graph has not got falls back to the scope, and the
+  // rule sees the scope: 41 boxes in a flat directory is a list.
+  const fallen = selectView(graph, { ...root, focus: 'src/gone.ts' }, 0);
+  assert.equal(fallen.spec.focus, null);
+  assert.equal(fallen.presentation, 'list');
+
+  // A diff needs two graphs. Handed one, this draws the ordinary slice and
+  // the echo says so by carrying no `diff` — never a claim it did not apply —
+  // and the count decides the presentation as it would for any scope.
+  const diffed = selectView(flat(LIST_ABOVE + 1), { ...root, diff: 'base' }, 0);
+  assert.equal('diff' in diffed.spec, false);
+  assert.equal(diffed.presentation, 'list');
+});
+
+test('handed the before graph, a diff draws what differs and nothing else, and is a diagram at any count', () => {
+  // Before: a flat directory of 40 files, f0 importing f1. After: f0 now
+  // imports f2 instead, f39 is gone, and f40 is new. Four boxes differ; the
+  // other 36 did nothing and are not drawn.
+  const beforeFiles = Array.from({ length: 40 }, (_, index) => `src/f${index}.ts`);
+  const afterFiles = [...beforeFiles.filter((file) => file !== 'src/f39.ts'), 'src/f40.ts'];
+  const before = graphOf(beforeFiles, [['src/f0.ts', 'src/f1.ts']]);
+  const after = graphOf(afterFiles, [['src/f0.ts', 'src/f2.ts']]);
+
+  const view = selectView(after, { ...root, scope: 'src', diff: 'base' }, 0, null, null, [], before);
+  assert.equal(view.spec.diff, 'base');
+  // Not a slice of a scope: the echo drops it, and the trail is the root.
+  assert.equal(view.spec.scope, '');
+  assert.deepEqual(view.trail, [{ label: 'root', scope: '' }]);
+  assert.equal(view.presentation, 'diagram');
+
+  assert.deepEqual(
+    view.nodes.map((node) => [node.id, node.change ?? null, node.external]),
+    [
+      ['src/f0.ts', 'touched', false],
+      ['src/f39.ts', 'removed', false],
+      ['src/f40.ts', 'added', false],
+      // The far ends of the two lines that changed: context, and marked as such.
+      ['src/f1.ts', null, true],
+      ['src/f2.ts', null, true],
+    ],
+  );
+  assert.deepEqual(
+    view.edges.map((edge) => [edge.from, edge.to, edge.change]),
+    [
+      ['src/f0.ts', 'src/f2.ts', 'added'],
+      ['src/f0.ts', 'src/f1.ts', 'removed'],
+    ],
+  );
+  // Project-wide facts are the after graph's, the way every view's are.
+  assert.equal(view.fileCount, 40);
+  // A diff of a graph against itself draws nothing, and says so honestly.
+  const same = selectView(after, { ...root, diff: 'base' }, 0, null, null, [], after);
+  assert.equal(same.nodes.length, 0);
+  assert.equal(same.spec.diff, 'base');
+});
+
+// --- a scope by category ---------------------------------------------------------
+
+/**
+ * Three files in `lib/` that a stored category names, one of them a test,
+ * reached from two places under `app/` and leaning on one under `util/`.
+ */
+const pipeline = [
+  'lib/a.ts',
+  'lib/b.ts',
+  'lib/a.test.ts',
+  'app/page.tsx',
+  'app/api/route.ts',
+  'util/x.ts',
+];
+const pipelineImports: [string, string][] = [
+  ['app/page.tsx', 'lib/a.ts'],
+  ['app/api/route.ts', 'lib/b.ts'],
+  ['lib/a.ts', 'lib/b.ts'],
+  ['lib/a.ts', 'util/x.ts'],
+  ['lib/a.test.ts', 'lib/a.ts'],
+];
+
+const source = (
+  storedId: string | undefined,
+  state: ComponentSource['state'],
+  name: string | null,
+  files: readonly string[],
+): ComponentSource => ({
+  id: `${files[0] ?? ''}~${files.length}`,
+  files,
+  cohesion: 0.5,
+  name,
+  state,
+  parent: null,
+  ...(storedId === undefined ? {} : { storedId }),
+});
+
+const dataPipeline = source('lib/a.ts~3', 'accepted', 'Data Pipeline', ['lib/a.ts', 'lib/b.ts', 'lib/a.test.ts']);
+const rejected = source('util/x.ts~1', 'rejected', 'Scraps', ['util/x.ts']);
+const unnamed = source(undefined, 'suggested', null, ['app/page.tsx', 'app/api/route.ts']);
+const stored = [dataPipeline, rejected, unnamed];
+
+const byCategory: ViewSpec = { ...root, scope: 'app', category: 'lib/a.ts~3' };
+
+test('a category is a scope: its members are the boxes, and the outside collapses to directories', () => {
+  const view = selectView(graphOf(pipeline, pipelineImports), byCategory, 0, null, null, stored);
+
+  assert.deepEqual(
+    view.nodes.map((node) => [node.id, node.kind, node.label, node.external]),
+    [
+      // Whole paths: there is no prefix the members share to leave out.
+      ['lib/a.test.ts', 'file', 'lib/a.test.ts', false],
+      ['lib/a.ts', 'file', 'lib/a.ts', false],
+      ['lib/b.ts', 'file', 'lib/b.ts', false],
+      ['app', 'folder', 'app', true],
+      ['app/api', 'folder', 'app/api', true],
+      ['util', 'folder', 'util', true],
+    ],
+  );
+  // The lines a list row's numbers are read off: the two inside, and three
+  // to boxes standing for what is outside.
+  const lines = [...view.edges].sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+  assert.deepEqual(lines.map((edge) => [edge.from, edge.to, edge.weight]), [
+    ['app', 'lib/a.ts', 1],
+    ['app/api', 'lib/b.ts', 1],
+    ['lib/a.test.ts', 'lib/a.ts', 1],
+    ['lib/a.ts', 'lib/b.ts', 1],
+    ['lib/a.ts', 'util', 1],
+  ]);
+  assert.equal(view.totalFiles, 3);
+  assert.equal(view.grouped, false);
+  assert.equal(view.presentation, 'diagram');
+  // The category wins over the scope, and the echo says which was drawn.
+  assert.equal(view.spec.scope, '');
+  assert.equal(view.spec.category, 'lib/a.ts~3');
+  assert.deepEqual(view.trail, [
+    { label: 'root', scope: '' },
+    { label: 'Data Pipeline', scope: '', category: 'lib/a.ts~3' },
+  ]);
+});
+
+test('a category honours the filter, and never stands its members in folders', () => {
+  const hidden = selectView(
+    graphOf(pipeline, pipelineImports),
+    { ...byCategory, filter: { ...NO_FILTER, hideTests: true } },
+    0,
+    null,
+    null,
+    stored,
+  );
+  assert.deepEqual(
+    hidden.nodes.filter((node) => !node.external).map((node) => node.id),
+    ['lib/a.ts', 'lib/b.ts'],
+  );
+  assert.equal(hidden.totalFiles, 2);
+
+  // Past the directory-grouping threshold a directory scope draws folders; a
+  // category of the same files draws every member, because a directory
+  // inside a category stands for nothing.
+  const members = Array.from({ length: 45 }, (_, index) => `lib/d${index % 5}/f${index}.ts`);
+  const big = source('lib/d0/f0.ts~45', 'accepted', 'Big', members);
+  const view = selectView(graphOf(members, []), { ...root, category: big.storedId ?? '' }, 0, null, null, [big]);
+  assert.equal(view.nodes.length, 45);
+  assert.equal(view.nodes.every((node) => node.kind === 'file'), true);
+  assert.equal(view.grouped, false);
+  assert.equal(view.presentation, 'list');
+  assert.equal(selectView(graphOf(members, []), { ...root, scope: 'lib' }, 0).grouped, true);
+});
+
+test('a category that matches nothing falls back to the scope, and the echo carries none', () => {
+  const graph = graphOf(pipeline, pipelineImports);
+  for (const category of ['nobody', rejected.storedId ?? '', unnamed.id]) {
+    const view = selectView(graph, { ...root, category }, 0, null, null, stored);
+    assert.equal(view.nodes.length, 6, category);
+    assert.equal('category' in view.spec, false, category);
+    assert.deepEqual(view.trail, [{ label: 'root', scope: '' }]);
+  }
+  // Handed no categories at all, the same fallback.
+  assert.equal('category' in selectView(graph, byCategory, 0).spec, false);
+
+  assert.equal(categoryOf(stored, 'lib/a.ts~3'), dataPipeline);
+  assert.equal(categoryOf(stored, 'util/x.ts~1'), null);
+  assert.equal(categoryOf(stored, unnamed.id), null);
+});
+
+test('a focus wins over a category, and a component diagram ignores it', () => {
+  const graph = graphOf(pipeline, pipelineImports);
+  const focused = selectView(graph, { ...byCategory, focus: 'lib/b.ts' }, 0, null, null, stored);
+  assert.equal(focused.spec.focus, 'lib/b.ts');
+  assert.equal(focused.nodes.some((node) => node.focused), true);
+  // Kept, not dropped: the URL said both, and leaving the focus goes back to it.
+  assert.equal(focused.spec.category, 'lib/a.ts~3');
+
+  const components = selectView(graph, { ...byCategory, diagram: 'components' }, 0, null, null, stored);
+  assert.equal('category' in components.spec, false);
+  assert.equal(components.nodes.every((node) => node.kind === 'component'), true);
 });

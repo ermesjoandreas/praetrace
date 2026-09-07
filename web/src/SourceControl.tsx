@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import type { GitFileStatus, GitStatus, LogResponse } from './api';
+import type { DiffCounts, GitFileStatus, GitStatus, LogResponse } from './api';
 import { GitGraph, shortSha } from './GitGraph';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
@@ -41,6 +41,42 @@ const GIT_WORD: Record<GitFileStatus, string> = {
   untracked: 'Untracked',
   renamed: 'Renamed',
 };
+
+/**
+ * What the Structural diff row has to say, and the front page's copy of it.
+ * `since` is what the diff is against in the status bar's words — `HEAD`,
+ * `merge base`, a short sha. `blocked` carries the reason the row runs
+ * nothing: no git, a root commit, a commit the log does not hold. Reading is
+ * a state and not a null, because the first answer builds a whole commit's
+ * graph and a row that showed nothing meanwhile would read as "no diff".
+ */
+export type DiffRow =
+  | { state: 'reading'; since: string }
+  | { state: 'ready'; since: string; counts: DiffCounts }
+  | { state: 'blocked'; why: string };
+
+/** "+12 −3", the diff's own two numbers: symbols added and removed since the base. */
+export function DiffCount({ counts }: { counts: DiffCounts }) {
+  return (
+    <span className="scm-diff-counts">
+      <span className="scm-added">+{counts.symbols.added}</span>
+      <span className="scm-deleted">−{counts.symbols.removed}</span>
+    </span>
+  );
+}
+
+/**
+ * The sentence under the numbers, shared by the two rows that print them so
+ * they cannot say different things about the same count.
+ */
+export function diffTitle(row: DiffRow, on: boolean): string {
+  if (row.state === 'blocked') return row.why;
+  if (row.state === 'reading') return `Comparing the graph against ${row.since} — the first comparison builds that commit's graph`;
+  const { files, symbols, edges } = row.counts;
+  return `${symbols.added} symbols added and ${symbols.removed} removed since ${row.since}; ${files.added} files added, ${files.removed} removed, ${files.touched} changed in shape; ${edges.added} lines added, ${edges.removed} removed. What the graph holds, not what git holds: an edit that moves no declaration and changes no resolved reference is invisible here. ${
+    on ? 'Click to leave the diff' : 'Click to draw it: added boxes, ghosts for what was removed'
+  }`;
+}
 
 function nameOf(path: string): string {
   return path.slice(path.lastIndexOf('/') + 1);
@@ -147,12 +183,44 @@ function Changes({
   );
 }
 
+/**
+ * The structural diff, one row under the base picker: what changed in the
+ * shape since the base — or, while the diagram is frozen, since the commit's
+ * parent — and the way onto the diagram of it. Pressed, it is a mode and
+ * holds the selection fill; greyed with the reason where it can run nothing.
+ */
+function StructuralDiff({ row, on, onToggle }: { row: DiffRow; on: boolean; onToggle: () => void }) {
+  const blocked = row.state === 'blocked';
+  return (
+    <button
+      type="button"
+      {...LIST_ROW}
+      className="scm-diff"
+      aria-pressed={on}
+      aria-disabled={blocked}
+      onClick={blocked ? undefined : onToggle}
+      title={diffTitle(row, on)}
+    >
+      <i className="codicon codicon-git-compare" aria-hidden="true" />
+      <span className="scm-diff-name">Structural diff{row.state === 'blocked' ? '' : ` · since ${row.since}`}</span>
+      {row.state === 'ready' ? (
+        <DiffCount counts={row.counts} />
+      ) : (
+        <span className="scm-diff-counts">{row.state === 'reading' ? 'comparing…' : ''}</span>
+      )}
+    </button>
+  );
+}
+
 export function SourceControl({
   git,
   base,
   onChangeBase,
   onlyChanged,
   onToggleChanged,
+  diff,
+  diffOn,
+  onToggleDiff,
   log,
   at,
   onViewCommit,
@@ -172,6 +240,11 @@ export function SourceControl({
   /** Whether the diagram is keeping only what differs from the base. */
   onlyChanged: boolean;
   onToggleChanged: () => void;
+  /** The structural diff's numbers, or why there are none. See `DiffRow`. */
+  diff: DiffRow;
+  /** Whether the diagram is the diff — `?diff=` — and the row is the way out. */
+  diffOn: boolean;
+  onToggleDiff: () => void;
   /** null until the first read; empty commits when there are none. */
   log: LogResponse | null;
   /** The commit the diagram is frozen at — `?at=` — or null for now. */
@@ -227,6 +300,7 @@ export function SourceControl({
             }
           >
             <DiffAgainst base={base} onChangeBase={onChangeBase} />
+            <StructuralDiff row={diff} on={diffOn} onToggle={onToggleDiff} />
             <Changes git={git} onSelect={onSelect} onFocus={onFocus} />
           </Section>
 

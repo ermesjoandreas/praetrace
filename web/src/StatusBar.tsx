@@ -91,6 +91,12 @@ interface StatusBarProps {
   live: boolean;
   /** "12 boxes · 40 files", or '' until the first view has loaded. */
   counts: string;
+  /**
+   * What the counts mean, when a number alone does not say — under a
+   * structural diff "+12 −3 ~5 since HEAD" is boxes, and the sentence about
+   * what the graph cannot see belongs one hover away from it.
+   */
+  countsTitle?: string;
   /** "TypeScript 479 · JavaScript 31", or '' when nothing was parsed. */
   languages: string;
   unreadable: Unreadable | null;
@@ -145,6 +151,7 @@ export function StatusBar({
   frozen,
   live,
   counts,
+  countsTitle,
   languages,
   unreadable,
   hiddenTests,
@@ -422,7 +429,11 @@ export function StatusBar({
       </div>
 
       <div className="statusbar-right">
-        {counts !== '' && <span className="status-item counts">{counts}</span>}
+        {counts !== '' && (
+          <span className="status-item counts" {...(countsTitle === undefined ? {} : { title: countsTitle })}>
+            {counts}
+          </span>
+        )}
         {/* Runs something: a click is the way the filter comes off from here,
             the same as the Changes badge toggles its own. */}
         {hiddenTests > 0 && (

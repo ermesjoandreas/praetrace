@@ -3,6 +3,7 @@ import type { MouseEvent } from 'react';
 import {
   describeUnresolved,
   openInEditor,
+  type Change,
   type GitFileStatus,
   type LanguageId,
   type ViewMember,
@@ -40,6 +41,20 @@ export type BoxData = {
   gitStatus: GitFileStatus | null;
   /** How many of `files` differ from the base. 0 or 1 for a file box. */
   gitChanged: number;
+  /**
+   * Under a structural diff: what happened to this file between the two
+   * graphs, or undefined on a context box and on every other view. `removed`
+   * is the ghost — drawn from the before graph, dashed and dimmed, and not
+   * on disk, so nothing on it may open an editor or spend money on a file
+   * that is not there. The letter it wears replaces the git badge: the diff
+   * is the comparison, and two letters for one fact would read as two facts.
+   */
+  change?: Change;
+  /**
+   * What the diff is against, in the status bar's words — `HEAD`, `merge
+   * base`, a short sha — for the letter's title. Null outside a diff.
+   */
+  since: string | null;
   /** The one language its files share; null on a folder holding several. */
   language: LanguageId | null;
   /** False in a single-language project, where the tag would say nothing. */
@@ -133,6 +148,18 @@ const GIT_LETTER: Record<GitFileStatus, string> = {
 };
 
 /**
+ * The diff's letters, VS Code's own: a file the base graph has not got is
+ * added, a ghost is deleted, a file whose shape moved is modified. The same
+ * three colours the git badge wears, because they say the same thing about a
+ * different pair — the graphs rather than the trees.
+ */
+const CHANGE_LETTER: Record<Change, { letter: string; status: GitFileStatus; said: string }> = {
+  added: { letter: 'A', status: 'added', said: 'Added' },
+  removed: { letter: 'D', status: 'deleted', said: 'Removed' },
+  touched: { letter: 'M', status: 'modified', said: 'Changed' },
+};
+
+/**
  * UML's three markers. A member whose source said nothing is public, which is
  * what TypeScript means by silence, so it gets the + a UML reader expects
  * rather than a blank that would read as "unknown".
@@ -171,11 +198,13 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
  * document order, unchanged.
  */
 function rowsToShow(members: ViewMember[]): ViewMember[] {
-  const linked = members.filter((member) => member.linked === true);
+  // Under a diff a row that came or went is what the box is on the canvas
+  // for, and it is ranked the way a linked row is: first, and before the
+  // rows that did nothing.
+  const marked = (member: ViewMember): boolean => member.linked === true || member.change !== undefined;
+  const linked = members.filter(marked);
   if (linked.length >= MAX_MEMBERS) return linked.slice(0, MAX_MEMBERS);
-  return [...members]
-    .sort((a, b) => Number(b.linked ?? false) - Number(a.linked ?? false))
-    .slice(0, MAX_MEMBERS);
+  return [...members].sort((a, b) => Number(marked(b)) - Number(marked(a))).slice(0, MAX_MEMBERS);
 }
 
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
@@ -224,8 +253,17 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
           ...(data.files.length > 8 ? [`…and ${data.files.length - 8} more`] : []),
         ].join('\n');
 
+  /**
+   * A ghost is not on disk: the file's box is drawn from the graph the diff
+   * compares against, and an editor link, a reading or a hold would be about
+   * a path that answers nothing. What can be read of it is in the panel,
+   * which asks the before graph.
+   */
+  const onDisk = data.change !== 'removed';
+
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
+  if (data.change !== undefined) classes.push(`box-${data.change === 'removed' ? 'ghost' : data.change}`);
   if (data.changed) classes.push('box-changed');
   if (data.queried) classes.push('box-queried');
   if (data.focused) classes.push('box-focused');
@@ -246,13 +284,32 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
         <span className="box-title-text" title={title}>
           {data.label}
         </span>
-        {data.gitStatus !== null && (
+        {/* Under a diff the letter is the diff's, in the same place and the
+            same colours the git badge sits in: the diff is the comparison
+            here, and the git status is still in the title for the reader who
+            wants both. A context box wears the git letter as ever. */}
+        {data.change !== undefined ? (
           <span
-            className={`box-git box-git-${data.gitStatus}`}
-            title={`${data.gitStatus} vs the git base`}
+            className={`box-git box-git-${CHANGE_LETTER[data.change].status}`}
+            title={`${CHANGE_LETTER[data.change].said} since ${data.since ?? 'the base'}${
+              data.change === 'removed'
+                ? ' — a ghost: this file is not on disk, and the box is drawn from the graph it is compared against'
+                : data.change === 'added'
+                  ? ' — no box for it in the graph it is compared against'
+                  : ' — a symbol came, went or moved, or a line it wrote did'
+            }${data.gitStatus === null ? '' : `. git: ${data.gitStatus} vs the git base`}`}
           >
-            {GIT_LETTER[data.gitStatus]}
+            {CHANGE_LETTER[data.change].letter}
           </span>
+        ) : (
+          data.gitStatus !== null && (
+            <span
+              className={`box-git box-git-${data.gitStatus}`}
+              title={`${data.gitStatus} vs the git base`}
+            >
+              {GIT_LETTER[data.gitStatus]}
+            </span>
+          )
         )}
         {/* A box standing for many files says how many of them moved, not
             which way any single one did — the direction is a fact about one
@@ -332,7 +389,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
             for one gesture is worse than a control you have to press. Only on a
             file box — a folder stands for many paths, and quietly holding all
             of them would be a different act than the one you asked for. */}
-        {file !== undefined && (
+        {file !== undefined && onDisk && (
           <>
             <button
               type="button"
@@ -420,6 +477,7 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 member.isAbstract ? 'member-abstract' : '',
                 data.following.has(member.id) ? 'member-picked' : '',
                 data.related.has(member.id) ? 'member-related' : '',
+                member.change === undefined ? '' : `member-${member.change}`,
                 data.following.size > 0 &&
                 !data.following.has(member.id) &&
                 !data.related.has(member.id)
@@ -436,14 +494,20 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
               <button
                 type="button"
                 className="member-name"
-                onClick={open(member.line)}
+                // A removed row's line is the before graph's, and the file
+                // may not even be there: nothing to open, and the title says.
+                onClick={member.change === 'removed' ? undefined : open(member.line)}
                 title={
-                  // An alias says so here rather than taking a column: the box
-                  // is measured for a dozen names, and two rows at one line
-                  // otherwise read as two functions. See `ViewMember.aliasOf`.
-                  member.aliasOf === undefined
-                    ? `${member.owner === null ? '' : `${member.owner}.`}${member.name} — open at line ${member.line}`
-                    : `${member.name} is another name for ${member.aliasOf}, one body — open at line ${member.line}`
+                  member.change === 'removed'
+                    ? `${member.owner === null ? '' : `${member.owner}.`}${member.name} — removed since ${data.since ?? 'the base'}; it was at line ${member.line} then`
+                    : // An alias says so here rather than taking a column: the box
+                      // is measured for a dozen names, and two rows at one line
+                      // otherwise read as two functions. See `ViewMember.aliasOf`.
+                      member.aliasOf === undefined
+                      ? `${member.owner === null ? '' : `${member.owner}.`}${member.name}${
+                          member.change === 'added' ? ` — added since ${data.since ?? 'the base'};` : ' —'
+                        } open at line ${member.line}`
+                      : `${member.name} is another name for ${member.aliasOf}, one body — open at line ${member.line}`
                 }
               >
                 {member.kind === 'function' || member.kind === 'method'
@@ -466,6 +530,19 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                   title="never executed by the test suite"
                   aria-label="never executed by the test suite"
                 />
+              )}
+
+              {/* The diff's letter on a row, the way the box wears one in its
+                  title: text, in the git colour, at the right — the left
+                  gutter is the visibility column and a mark there read as a
+                  fourth visibility symbol. */}
+              {member.change !== undefined && (
+                <span
+                  className={`member-change box-git-${CHANGE_LETTER[member.change].status}`}
+                  aria-label={CHANGE_LETTER[member.change].said}
+                >
+                  {CHANGE_LETTER[member.change].letter}
+                </span>
               )}
 
               {/* On the right, where the box already puts its editor link, and

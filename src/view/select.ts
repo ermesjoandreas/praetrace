@@ -1,12 +1,28 @@
 import type { Coverage, FileCoverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
+import { diffGraphs } from '../graph/diff.js';
 import type { AssociationRole, Graph } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
 import type { LanguageId, LanguageSupport } from '../lang/types.js';
 import { partitionByCategory, type ComponentSource } from './components.js';
+// A cycle on purpose: diffview.ts reads `presentationOf`, `ownershipOf` and
+// `projectLanguages` from here so the diff's boxes and lines are made by the
+// same rules as every other view's, and this dispatches to it so one call
+// draws every view. Both sides export only function declarations, which ESM
+// binds before either body runs, so the cycle costs nothing at load.
+import { diffView } from './diffview.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
 import { isTestFile } from './tests.js';
-import type { LanguageCount, ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
+import {
+  LIST_ABOVE,
+  type LanguageCount,
+  type Presentation,
+  type ViewEdge,
+  type ViewGraph,
+  type ViewMember,
+  type ViewNode,
+  type ViewSpec,
+} from './types.js';
 
 /**
  * Above this many files in scope, boxes stand for directories instead. Chosen
@@ -56,11 +72,21 @@ const DIRECTIONS: readonly Direction[] = ['dependencies', 'dependents'];
  * CI left behind — and null is again the ordinary case: most projects have no
  * report, and one that has none is not one where nothing ran.
  *
- * The categories arrive as an argument too, and only a component diagram reads
- * them: they are the graph's own clusters wearing names read off a file, and
- * the caller that can draw one — the view route, the live hub — hands over
- * what `/api/clusters` answers. Left empty under `diagram: 'components'`, the
- * whole project is honestly one box of files in no category.
+ * The categories arrive as an argument too, and a component diagram or a
+ * category scope reads them: they are the graph's own clusters wearing names
+ * read off a file, and the caller that can draw one — the view route, the
+ * live hub — hands over what `/api/clusters` answers. Left empty under
+ * `diagram: 'components'`, the whole project is honestly one box of files in
+ * no category; left empty under `category`, the scope is the root, and the
+ * echoed spec says the category was not found.
+ *
+ * `before` is the other graph a diff is drawn against — the git base's, or a
+ * commit's — and the only way `spec.diff` is honoured: a diff needs two
+ * graphs, and a caller that hands one cannot be drawn one. The live hub is
+ * such a caller, and it is pushed a view whose echo carries no `diff`, which
+ * the page reads as "not the view I asked for" and refetches. Never the
+ * working tree drawn under a URL that named a diff: that is the picture that
+ * looks authoritative and is wrong, and the echo is what stops it.
  */
 export function selectView(
   graph: Graph,
@@ -69,7 +95,16 @@ export function selectView(
   git: GitStatus | null = null,
   coverage: Coverage | null = null,
   categories: readonly ComponentSource[] = [],
+  before: Graph | null = null,
 ): ViewGraph {
+  if (spec.diff !== undefined) {
+    if (before !== null) return diffView(diffGraphs(before, graph), before, graph, spec, git);
+    // Dropped from the echo rather than kept: an echo that named a diff over
+    // an ordinary slice would claim a narrowing this view did not apply.
+    const { diff: _undrawn, ...asked } = spec;
+    spec = asked;
+  }
+
   // One set, built once and threaded down: every lookup below is a membership
   // test, and Object.keys on each file would be the whole cost of the view.
   const changed = git ? new Set(Object.keys(git.files)) : null;
@@ -80,12 +115,15 @@ export function selectView(
     (edge) => files.has(edge.from) && files.has(edge.to),
   );
 
+  const category = spec.category === undefined ? null : categoryOf(categories, spec.category);
   const slice =
     spec.diagram === 'components'
       ? componentView(graph, spec, files, edges, git, changed, categories)
       : spec.focus !== null && files.has(spec.focus)
         ? focusView(spec, files, edges, git, changed)
-        : scopeView(spec, files, edges, git, changed);
+        : category !== null
+          ? categoryView(spec, files, edges, git, changed, category)
+          : scopeView(spec, files, edges, git, changed);
 
   // After the slice, because "visible" is a question about what got drawn.
   markLinkedMembers(graph, spec.filter, slice);
@@ -96,6 +134,9 @@ export function selectView(
   // `at` is echoed, not acted on: the caller chose which graph this is.
   return {
     ...slice,
+    // Over the echoed spec, not the asked one: a focus on a file the graph
+    // has not got fell back to a scope, and the rule must see the scope.
+    presentation: presentationOf(slice.spec, slice.nodes.length),
     fileCount: countFiles(graph),
     hiddenTests: countHiddenTests(graph, spec.filter, now, changed),
     parseErrors: countParseErrors(graph),
@@ -113,8 +154,44 @@ export function selectView(
 /** Everything a slice decides for itself; the project-wide facts land after. */
 type Slice = Omit<
   ViewGraph,
-  'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors' | 'unresolved' | 'scoped'
+  'languages' | 'at' | 'fileCount' | 'hiddenTests' | 'parseErrors' | 'unresolved' | 'scoped' | 'presentation'
 >;
+
+/**
+ * List or diagram, for a slice of this many boxes. The one rule, and the
+ * whole of it — see `ViewGraph.presentation` for why it is decided here.
+ *
+ * A focus is never a list: there the lines are the answer, and a list of
+ * neighbours with the lines taken away says less than the three boxes did. A
+ * diff is small by construction — that is the point of one — so it is drawn.
+ * Everything else is a count, and past `LIST_ABOVE` the count wins, unless
+ * the URL said `as=` either way.
+ */
+export function presentationOf(spec: ViewSpec, boxes: number): Presentation {
+  if (spec.as !== undefined) return spec.as;
+  if (spec.focus !== null || spec.diff !== undefined) return 'diagram';
+  return boxes > LIST_ABOVE ? 'list' : 'diagram';
+}
+
+/**
+ * The category a stored id names, or null. Accepted only: a rejected one is
+ * a stored memory that this is *not* a piece of the architecture, and a scope
+ * drawn from it would say the opposite — the same rule `partitionByCategory`
+ * applies to a box. A category nobody has named has no stored id, so it can
+ * never be asked for here; and a stored name that matches no cluster — an
+ * orphan — is not in the list at all, which is what "matches nothing" means.
+ * Exported so the view route can refuse with the same answer this falls back
+ * from.
+ */
+export function categoryOf(
+  categories: readonly ComponentSource[],
+  storedId: string,
+): ComponentSource | null {
+  return (
+    categories.find((category) => category.storedId === storedId && category.state === 'accepted') ??
+    null
+  );
+}
 
 /** What a file box is drawn from: its symbols, and whether the parse was clean. */
 interface FileFacts {
@@ -758,10 +835,13 @@ function componentView(
     }
   }
 
+  // The category asked for is dropped along with the scope and the focus: it
+  // is one of the boxes here, not a slice of them.
+  const { category: _ignored, ...asked } = spec;
   return {
     nodes,
     edges: withOwnership(aggregated.values()),
-    spec: { ...spec, scope: '', focus: null },
+    spec: { ...asked, scope: '', focus: null },
     trail: trailFor(''),
     totalFiles: files.size,
     // No box here stands for a directory.
@@ -784,8 +864,104 @@ function scopeView(
   const prefix = scope === '' ? '' : `${scope}/`;
 
   const inScope = allPaths.filter((filePath) => filePath.startsWith(prefix));
-  const inScopeSet = new Set(inScope);
   const grouped = inScope.length > GROUP_THRESHOLD;
+
+  const drawn = boxesOf(
+    inScope,
+    files,
+    edges,
+    git,
+    changed,
+    (filePath) => (grouped ? groupOf(filePath, prefix) : { id: filePath, kind: 'file' }),
+    (id, inside) => labelFor(id, prefix, inside),
+  );
+
+  // A category that reached here matched nothing, and the echo says so by
+  // carrying none — the way a focus on a file the graph has not got echoes
+  // `focus: null` — so the page can tell this root view from one it asked for.
+  const { category: _unmatched, ...asked } = spec;
+  return {
+    ...drawn,
+    spec: { ...asked, scope, focus: null },
+    trail: trailFor(scope),
+    totalFiles: inScope.length,
+    // Whether grouping actually happened, not whether it was attempted. A flat
+    // directory above the threshold has no subdirectories to group by, so every
+    // file stays its own box and calling that "grouped" would be a lie.
+    grouped: drawn.nodes.some((node) => node.kind === 'folder' && !node.external),
+    git: gitSummary(git),
+  };
+}
+
+// --- category scope -------------------------------------------------------
+
+/**
+ * A category's members, drawn the way a directory's files are: a box each,
+ * the files outside collapsed to their directories so the lines say what the
+ * category connects to. `files` arrived with the filter applied, so hiding
+ * tests or showing only changes narrows the category to what is on screen,
+ * as it does a directory.
+ *
+ * Never grouped into folders, whatever the count: a category cuts across
+ * directories — that is what makes it worth naming — so a directory inside
+ * one stands for nothing, and past `LIST_ABOVE` the page draws rows rather
+ * than boxes. Labels are whole paths for the same reason: there is no prefix
+ * the members share to leave out.
+ */
+function categoryView(
+  spec: ViewSpec,
+  files: ReadonlyMap<string, FileFacts>,
+  edges: readonly FileEdge[],
+  git: GitStatus | null,
+  changed: ReadonlySet<string> | null,
+  category: ComponentSource,
+): Slice {
+  const members = category.files.filter((filePath) => files.has(filePath)).sort();
+  const storedId = spec.category ?? '';
+
+  const drawn = boxesOf(
+    members,
+    files,
+    edges,
+    git,
+    changed,
+    (filePath) => ({ id: filePath, kind: 'file' }),
+    (id) => id,
+  );
+
+  return {
+    ...drawn,
+    spec: { ...spec, scope: '', focus: null },
+    // Root, then the category by its stored id: a scope by membership, not by
+    // path, so the crumb's `scope` is '' and its `category` is the link.
+    trail: [...trailFor(''), { label: category.name ?? storedId, scope: '', category: storedId }],
+    totalFiles: members.length,
+    grouped: false,
+    git: gitSummary(git),
+  };
+}
+
+/** How a file inside the scope is drawn: as itself, or as a directory standing for it. */
+type BoxOf = (filePath: string) => { id: string; kind: 'file' | 'folder' };
+
+/**
+ * The boxes and lines for a set of files, whichever rule chose the set: a
+ * directory prefix, or a category's membership. Each file inside gets the box
+ * `boxOf` says; each file outside that a line reaches collapses to its
+ * directory, drawn `external`. One builder for both scopes, so a category and
+ * a directory holding the same files draw the same boxes with the same
+ * numbers on them.
+ */
+function boxesOf(
+  inScope: readonly string[],
+  files: ReadonlyMap<string, FileFacts>,
+  edges: readonly FileEdge[],
+  git: GitStatus | null,
+  changed: ReadonlySet<string> | null,
+  boxOf: BoxOf,
+  labelOf: (id: string, inside: boolean) => string,
+): Pick<Slice, 'nodes' | 'edges'> {
+  const inScopeSet = new Set(inScope);
 
   const nodes = new Map<string, ViewNode>();
   // Distinct files behind each box. A folder reached through five edges still
@@ -796,11 +972,7 @@ function scopeView(
     const inside = inScopeSet.has(filePath);
     // Files outside the scope collapse to their directory: enough to show what
     // the scope connects to, without dragging the rest of the project in.
-    const target = inside
-      ? grouped
-        ? groupOf(filePath, prefix)
-        : { id: filePath, kind: 'file' as const }
-      : parentOf(filePath);
+    const target = inside ? boxOf(filePath) : parentOf(filePath);
 
     (backing.get(target.id) ?? setIn(backing, target.id)).add(filePath);
 
@@ -815,7 +987,7 @@ function scopeView(
     const created: ViewNode = {
       id: target.id,
       kind: target.kind,
-      label: target.id === '' ? '.' : labelFor(target.id, prefix, inside),
+      label: target.id === '' ? '.' : labelOf(target.id, inside),
       members: target.kind === 'file' ? (files.get(filePath)?.members ?? []) : [],
       files: [],
       external: !inside,
@@ -870,19 +1042,9 @@ function scopeView(
     if (counts !== undefined) node.unresolved = counts;
   }
 
-  const boxes = [...nodes.values()].sort(byExternalThenId);
-
   return {
-    nodes: boxes,
+    nodes: [...nodes.values()].sort(byExternalThenId),
     edges: withOwnership(aggregated.values()),
-    spec: { scope, focus: null, depth: spec.depth, filter: spec.filter, at: spec.at, diagram: spec.diagram },
-    trail: trailFor(scope),
-    totalFiles: inScope.length,
-    // Whether grouping actually happened, not whether it was attempted. A flat
-    // directory above the threshold has no subdirectories to group by, so every
-    // file stays its own box and calling that "grouped" would be a lie.
-    grouped: boxes.some((node) => node.kind === 'folder' && !node.external),
-    git: gitSummary(git),
   };
 }
 

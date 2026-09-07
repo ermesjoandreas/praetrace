@@ -393,6 +393,9 @@ main { display: flex; flex: 1; min-height: 0; }
 .trail button:hover:not(:disabled) { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
 /* The crumb you are standing on. */
 .trail button:disabled { color: var(--vsc-fg); }
+/* A category's crumb carries the component icon, so a scope by membership
+   reads apart from a directory's. 14px, inline, so the 22px crumb holds. */
+.trail .crumb-kind { font-size: 14px; vertical-align: -2px; margin-right: 3px; }
 
 .focus-label { color: var(--vsc-fg-muted); padding: 0 4px; }
 .trail code { color: var(--vsc-fg); }
@@ -464,8 +467,10 @@ main { display: flex; flex: 1; min-height: 0; }
 /* Which commit the diagram is frozen at. A filter chip, in the filter chips'
    badge grey: not the accent, which is the selection, and not the info blue,
    which is the agent's. A diagram of last week is a filter on time, and it
-   reads as one beside the others. */
-.frozen-chip {
+   reads as one beside the others. The diff chip is the same shape for the
+   same reason: a diff is a filter on what changed, and it stands beside the
+   commit it may be frozen at. */
+.frozen-chip, .diff-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -479,7 +484,7 @@ main { display: flex; flex: 1; min-height: 0; }
   line-height: 18px;
   white-space: nowrap;
 }
-.frozen-chip:hover { background: var(--vsc-fg-disabled); }
+.frozen-chip:hover, .diff-chip:hover { background: var(--vsc-fg-disabled); }
 
 .filter-clear {
   height: 22px;
@@ -619,8 +624,162 @@ main { display: flex; flex: 1; min-height: 0; }
   stroke-dasharray: 1 4;
   stroke-linecap: round;
 }
+/* The structural diff's lines. An added line is drawn as the kind draws it —
+   solid is what a line looks like — and a removed one is the same hue, dashed
+   and dimmed the way the ghost is: it is a line the graph used to hold. Last,
+   so the dash wins over a kind that set one of its own, and over `guessed`,
+   because "gone" is the stronger fact about a line than "found by name". */
+.react-flow__edge.edge-removed .react-flow__edge-path {
+  stroke-dasharray: 5 4;
+  stroke-linecap: butt;
+  opacity: 0.6;
+}
 .react-flow__edge-text { fill: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 .react-flow__edge-textbg { fill: var(--vsc-editor-bg); }
+
+/* Lines on demand. In a scope diagram every line is drawn at a quarter, and
+   only the lines touching the box under the cursor, the inspected one or a
+   picked one are drawn whole — so a 25-box scope reads as boxes with lines
+   when you ask for them rather than as a net. `edge-near` is toggled on the
+   line elements themselves by the page, on hover, with no render: the page
+   sets a class and this is the whole of the rule. Never in a focus, where
+   the lines are the answer, and never in a diff. The following lens's 0.15
+   is written after and wins: a line the lens set aside stays aside under the
+   cursor, because the lens is the stronger, deliberate statement. */
+.canvas-faint .react-flow__edge { opacity: 0.25; }
+.canvas-faint .react-flow__edge.edge-near { opacity: 1; }
+.canvas-faint .react-flow__edge.edge-aside { opacity: 0.15; }
+
+/* --- the list -------------------------------------------------------------- */
+
+/* A scope past LIST_ABOVE boxes, as the explorer would list it: one 22px row
+   per box, the numbers that matter on the row, every column a sort. It
+   stands where the canvas stands — same footprint, no minimap, no controls,
+   because there is no camera — on the editor colour, under a header row in
+   the chrome colour the way the flow overlay's is. The columns are one
+   template shared by the header and every row, or they could not line up. */
+.listview {
+  --list-columns: minmax(0, 1fr) 76px 84px 56px 56px 32px 44px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--vsc-editor-bg);
+}
+
+.list-head, .list-row {
+  display: grid;
+  grid-template-columns: var(--list-columns);
+  align-items: center;
+  width: 100%;
+  height: var(--vsc-row-h);
+}
+
+.list-head {
+  flex: none;
+  border-bottom: 1px solid var(--vsc-border);
+  background: var(--vsc-chrome-bg);
+  user-select: none;
+}
+
+/* A column header is a section title's shape — 11px bold, muted — and the
+   one sorting by is in the body colour with its triangle. Every header is a
+   control: it sorts. */
+.list-col {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.list-col:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
+.list-col-on { color: var(--vsc-fg); }
+.list-col:focus-visible { outline-offset: -1px; }
+.list-col-members, .list-col-in, .list-col-out { justify-content: flex-end; }
+/* The caption the canvas keeps in its corner, beside the first header:
+   information, never a control, and not bold. */
+.list-status {
+  margin-left: 8px;
+  color: var(--vsc-fg-muted);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.list-body { flex: 1; min-height: 0; overflow-y: auto; }
+
+/* The row: VS Code's list row, 8px in from the edge, hover and selection
+   fills and nothing else. Monospace for the path like every other path on
+   the page; the numbers in tabular figures so the columns read down. */
+.list-row {
+  padding: 0;
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
+}
+.list-row:hover { background: var(--vsc-list-hover); }
+.list-row:focus-visible { outline-offset: -1px; }
+.list-row-selected, .list-row-selected:hover {
+  background: var(--vsc-list-active-sel);
+  color: var(--vsc-fg-strong);
+}
+
+.list-cell { display: flex; align-items: center; min-width: 0; height: var(--vsc-row-h); padding: 0 8px; }
+.list-name { gap: 6px; }
+.list-name > .codicon { flex: none; color: var(--vsc-fg-muted); }
+.list-row-folder .list-name > .codicon, .list-row-bundle .list-name > .codicon { color: var(--vsc-fg); }
+.list-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.list-row-folder .list-label, .list-row-bundle .list-label, .list-row-component .list-label { font-weight: 600; }
+.list-kind { color: var(--vsc-fg-muted); font-family: var(--vsc-font-ui); font-size: var(--vsc-font-size-sm); }
+.list-num { justify-content: flex-end; font-variant-numeric: tabular-nums; }
+.list-git { justify-content: center; padding: 0; }
+.list-test { padding-left: 4px; }
+
+/* The same marks a box's title carries, in the same colours: the language
+   and the test tag as quiet text, the warning as the tool's own gap, the
+   count of references that went nowhere muted and never a line. */
+.list-tag { flex: none; color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); }
+.list-warning { flex: none; color: var(--vsc-warning); }
+.list-unresolved {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The git letter, in the colour the box and the Changes list use for it. */
+.list-letter { font-size: var(--vsc-font-size-sm); color: var(--vsc-fg-muted); }
+.list-letter-modified  { color: var(--vsc-git-modified); }
+.list-letter-added     { color: var(--vsc-git-added); }
+.list-letter-deleted   { color: var(--vsc-git-deleted); }
+.list-letter-untracked { color: var(--vsc-git-untracked); }
+.list-letter-renamed   { color: var(--vsc-git-untracked); }
+.list-letter-count     { color: var(--vsc-git-modified); }
+
+/* Outside the scope, as its box is: dimmed. Set aside by a lens, as its box
+   is: dimmer still, and written after so the lens wins. */
+.list-row-external { opacity: 0.6; }
+.list-row-aside { opacity: 0.35; }
+
+/* The two live signals, on the row where the box would have carried them.
+   Mark, do not move: the row's name turns the colour and the row pulses
+   where it stands — the same keyframes the boxes use, so amber means the
+   file system's edit and blue the agent's question here as there. */
+.list-row-changed { outline: 2px solid transparent; outline-offset: -2px; animation: box-pulse 1.1s ease-out 2; }
+.list-row-changed .list-label { color: var(--vsc-git-modified); }
+.list-row-queried { outline: 2px solid transparent; outline-offset: -2px; animation: box-query 1.1s ease-out 2; }
+.list-row-queried .list-label { color: var(--vsc-info); }
+@media (prefers-reduced-motion: reduce) {
+  .list-row-changed, .list-row-queried { animation: none; }
+}
 
 /* --- boxes ----------------------------------------------------------------- */
 
@@ -802,6 +961,15 @@ main { display: flex; flex: 1; min-height: 0; }
 
 .box-external { opacity: 0.6; border-style: dashed; }
 
+/* The structural diff's boxes. A ghost is a file the working tree has not
+   got, drawn from the graph it is compared against: dashed like a box outside
+   the scope, and dimmed a little further, never a new hue — the D in its
+   title and the struck names are what say it is gone rather than elsewhere.
+   An added or a touched box is an ordinary box wearing its letter; the letter
+   is the whole of the mark, as the git badge is. */
+.box-ghost { opacity: 0.5; border-style: dashed; }
+.box-ghost .box-title-text { text-decoration: line-through; color: var(--vsc-fg-muted); }
+
 .box-meta { padding: 5px 10px; font-size: var(--vsc-font-size-sm); color: var(--vsc-fg-muted); }
 
 /* --- component boxes ------------------------------------------------------- */
@@ -979,6 +1147,21 @@ main { display: flex; flex: 1; min-height: 0; }
 /* The two UML type styles: static is underlined, abstract is italic. */
 .member-static .member-name { text-decoration: underline; text-underline-offset: 2px; }
 .member-abstract .member-name { font-style: italic; }
+
+/* A row that came or went under a structural diff: the letter at the right
+   in the git colour, the way the box's title wears its own, and a removed
+   row struck through and muted — it was read off the graph the diff
+   compares against, and its name is not a link into an editor any more.
+   Written after the picked and related rules so a struck row stays struck
+   while followed. */
+.member-change {
+  flex: none;
+  min-width: 10px;
+  font-size: var(--vsc-font-size-sm);
+  text-align: center;
+}
+.member-removed .member-name { text-decoration: line-through; color: var(--vsc-fg-muted); cursor: default; }
+.member-removed .member-name:hover { background: transparent; }
 
 .member-more { padding: 0 10px; color: var(--vsc-fg-disabled); font-style: italic; }
 
@@ -1549,6 +1732,35 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
 .scm-change-gone, .scm-change-gone:hover { background: transparent; cursor: default; }
 .scm-change-gone .scm-change-name, .scm-change-gone .scm-change-where { color: var(--vsc-fg-disabled); }
 
+/* The structural diff, one 22px row under the base picker: what changed in
+   the shape rather than in the lines — symbols added and removed since the
+   base, in the same two colours the line counts wear, and the row is the way
+   onto the diagram of it. A mode while the diagram is up, so it holds the
+   list-selection fill like a selected row and not the accent, which the
+   filter button beside it already wears. */
+.scm-diff {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  font-size: var(--vsc-font-size-status);
+  white-space: nowrap;
+}
+.scm-diff:hover { background: var(--vsc-list-hover); }
+.scm-diff:focus-visible { outline-offset: -1px; }
+.scm-diff[aria-pressed='true'] { background: var(--vsc-list-active-sel); }
+.scm-diff .codicon { flex: none; color: var(--vsc-fg-muted); }
+.scm-diff-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.scm-diff-counts { flex: none; font-size: var(--vsc-font-size-sm); font-variant-numeric: tabular-nums; color: var(--vsc-fg-muted); }
+.scm-diff[aria-disabled='true'], .scm-diff[aria-disabled='true']:hover {
+  background: transparent;
+  cursor: default;
+  color: var(--vsc-fg-disabled);
+}
+.scm-diff[aria-disabled='true'] .codicon { color: var(--vsc-fg-disabled); }
+
 /* --- the commit graph ------------------------------------------------------ */
 
 /* One 22px row per commit: threads down the left, the subject, the refs that
@@ -1929,6 +2141,24 @@ li.group-nested .group-files .group-row > button { padding-left: 56px; }
   padding: 4px 8px;
   color: var(--vsc-fg-muted);
   line-height: 1.5;
+}
+
+/* A sentence above a file's lists that qualifies all of them: a ghost's are
+   the before graph's. Muted like the empty state, one 22px row, the history
+   icon the frozen chip wears — it is the same fact, a commit rather than now. */
+.panel-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0 8px;
+  height: var(--vsc-row-h);
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  line-height: var(--vsc-row-h);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-head { padding: 4px 8px 0; }
@@ -2681,6 +2911,141 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .welcome-list kbd, .welcome-path { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
 .welcome-list code { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
 .welcome-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* --- the front page -------------------------------------------------------- */
+
+/* What `/` shows instead of the root diagram: the project as a list. It
+   covers the canvas the way the welcome does and for the same reason — the
+   chrome stays reachable — but under the welcome (20) so Help still opens on
+   top of it, and over the find bar (6) and the banners (5), which describe
+   a diagram it is standing on. One column, the side bars' own shape: 22px
+   section headers in the chrome colour, 22px rows, edge to edge, no card. */
+.front {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  overflow-y: auto;
+  background: var(--vsc-editor-bg);
+}
+.front-inner { width: min(760px, 100%); margin: 0 auto; padding-bottom: 24px; }
+
+/* A section here is the panels' section: the same header, on chrome, with a
+   line under it while it is open — the body sits on the editor colour, and
+   the step between the two is what the list's own header row does. Every
+   section wears a top line; a folded one is then a line and a header, and
+   the next section's line follows without doubling. */
+.front-section { border-top: 1px solid var(--vsc-border); }
+.front-section > .section-head { background: var(--vsc-chrome-bg); padding-left: 4px; }
+.front-section > .section-head:has(+ .section-body) { border-bottom: 1px solid var(--vsc-border); }
+.front-section + .front-section > .section-head { border-top: 0; }
+.front-section > .section-body { overflow: visible; padding: 2px 0 4px; }
+
+/* The status beside a section's title: a count, in the same muted 11px the
+   Categories section says "Suggesting…" in. Information, never a control. */
+.front-status { flex: none; padding-right: 8px; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-sm); }
+.front-lines { display: inline-flex; gap: 6px; font-variant-numeric: tabular-nums; }
+.front-added { color: var(--vsc-git-added); }
+.front-deleted { color: var(--vsc-git-deleted); }
+
+/* A heading inside a section, not a section: what the Repository panel's
+   block titles wear. */
+.front-subtitle {
+  margin: 0;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-sm);
+  font-weight: 600;
+  line-height: 22px;
+}
+
+/* The row. VS Code's list row: 22px, 8px in, full width, hover fill and
+   nothing else. A row that leads somewhere is a button and wears the link
+   colour on its name; a row that only says something is a div in the body
+   colour. Paths in the monospace every other path on the page is in. */
+.front-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px;
+  color: var(--vsc-fg);
+  white-space: nowrap;
+  text-align: left;
+}
+.front-row > .codicon { flex: none; color: var(--vsc-fg-muted); }
+.front-link { cursor: pointer; }
+.front-link:hover { background: var(--vsc-list-hover); }
+.front-link:focus-visible { outline-offset: -1px; }
+.front-link .front-name, .front-link .front-name-ui { color: var(--vsc-link); }
+/* A file inside a group, one indent in, as a group's files sit in Categories. */
+.front-depth-1 { padding-left: 28px; }
+.front-twistie { width: 16px; }
+
+.front-name { flex: none; font-family: var(--vsc-font-mono); font-size: var(--vsc-font-size-status); }
+.front-where {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+}
+.front-name-ui { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.front-quote { color: var(--vsc-fg); }
+.front-more { color: var(--vsc-fg-muted); }
+/* Why a row is there — "nothing imports it", "12 files · 84%" — at the right,
+   muted, the way a description sits on a Quick Pick row. */
+.front-why { flex: none; margin-left: auto; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
+.front-why + .front-why, .front-why + .front-count { margin-left: 0; }
+.front-count {
+  flex: none;
+  min-width: 3ch;
+  text-align: right;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  font-variant-numeric: tabular-nums;
+}
+/* When nothing else sits at the right, the count still does. */
+.front-row > .front-count:not(.front-why + .front-count) { margin-left: auto; }
+
+/* The Project rows: a 76px label and the value, the Repository panel's shape. */
+.front-label { flex: none; width: 76px; color: var(--vsc-fg-muted); }
+.front-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 4px; }
+
+/* A sentence in a body: "no agent yet", "Reading the project…". */
+.front-note { margin: 0; padding: 0 8px; color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); line-height: 22px; }
+.front-note.front-warn { display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; padding-top: 4px; padding-bottom: 4px; white-space: normal; }
+.front-note.front-warn .codicon { flex: none; margin-top: 2px; }
+/* The tool's own gap, in the colour that means it and no other. */
+.front-warn { color: var(--vsc-warning); }
+.front-value.front-warn .codicon { color: var(--vsc-warning); }
+
+/* A row that leads nowhere and says why on hover: a deleted file has no box,
+   the structural diff is not wired. Greyed, not hidden, and not a hover fill. */
+.front-row-off, .front-row-off .front-name, .front-row-off .front-name-ui { color: var(--vsc-fg-disabled); cursor: default; }
+.front-row-off:hover { background: none; }
+.front-row-off > .codicon { color: var(--vsc-fg-disabled); }
+
+/* The git letter at the row's right, in the colour the box and the Changes
+   list use for it. */
+.front-letter { flex: none; margin-left: auto; font-size: var(--vsc-font-size-sm); color: var(--vsc-fg-muted); }
+.front-letter-modified  { color: var(--vsc-git-modified); }
+.front-letter-added     { color: var(--vsc-git-added); }
+.front-letter-deleted   { color: var(--vsc-git-deleted); }
+.front-letter-untracked { color: var(--vsc-git-untracked); }
+.front-letter-renamed   { color: var(--vsc-git-untracked); }
+
+/* The two live signals on a row, as on a box and a list row: amber is the
+   file system's, blue is the agent's, and the row pulses where it stands. */
+.front-row-changed { outline: 2px solid transparent; outline-offset: -2px; animation: box-pulse 1.1s ease-out 2; }
+.front-row-changed .front-name { color: var(--vsc-git-modified); }
+.front-row-queried { outline: 2px solid transparent; outline-offset: -2px; animation: box-query 1.1s ease-out 2; }
+.front-row-queried .front-name { color: var(--vsc-info); }
+@media (prefers-reduced-motion: reduce) {
+  .front-row-changed, .front-row-queried { animation: none; }
+}
 
 /* --- the flow of one function ---------------------------------------------- */
 

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { shortSha } from './GitGraph';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
 import { FLOOR, money, fetchDetail,
@@ -134,8 +135,19 @@ interface SidebarProps {
   selected: string | null;
   /** Bumped whenever the graph changes, so the panel never shows a stale file. */
   revision: number;
-  /** The commit the diagram is frozen at, so the detail describes what is drawn. */
+  /**
+   * The commit the diagram is frozen at, so the detail describes what is
+   * drawn — or, for a ghost under a structural diff, the commit the diff
+   * compares against: a removed file is in no live graph, and the graph it
+   * is still in is the only one that can describe it.
+   */
   at: string | null;
+  /**
+   * The selected box is a ghost: a file the working tree has not got, drawn
+   * from the graph the diff compares against. The panel says so, and offers
+   * no editor link and no reading — there is nothing on disk to open or send.
+   */
+  ghost?: boolean;
   onSelect: (target: string) => void;
   /** The kind decides whether navigating means focus or scope. */
   onFocus: (target: string, kind: 'file' | 'folder') => void;
@@ -211,6 +223,7 @@ export function Sidebar({
   selected,
   revision,
   at,
+  ghost = false,
   onSelect,
   onFocus,
   bundle = null,
@@ -370,8 +383,9 @@ export function Sidebar({
             a path row selects an importer the current scope does not draw, and
             the reader looking at it is exactly the one asking what it is for.
             The sparkle is VS Code's mark for "a model did this", and the title
-            says what a press costs before it is pressed. */}
-        {detail.kind === 'file' && (
+            says what a press costs before it is pressed. Neither for a ghost:
+            there is no file on disk to read to a model or open. */}
+        {detail.kind === 'file' && !ghost && (
           <button
             type="button"
             title="Ask Claude what this file is for — it spends your Claude quota"
@@ -381,7 +395,7 @@ export function Sidebar({
             <i className="codicon codicon-sparkle" aria-hidden="true" />
           </button>
         )}
-        {detail.kind === 'file' && (
+        {detail.kind === 'file' && !ghost && (
           <button
             type="button"
             title="Open in editor"
@@ -435,14 +449,25 @@ export function Sidebar({
             onFocus={onFocus}
           />
         ) : detail.kind === 'file' ? (
-          <FileView
-            detail={detail}
-            root={root}
-            onSelect={onSelect}
-            symbolIds={symbolIds}
-            onExplainSymbol={onExplainSymbol}
-            onOpenSymbol={setOpenSymbol}
-          />
+          <>
+            {/* Said before the lists, because every one of them is the before
+                graph's: the file, its symbols and who imported it as of the
+                commit the diff compares against, not as of now. */}
+            {ghost && at !== null && (
+              <p className="panel-note panel-ghost" title={`This file is not in the working tree. What is listed is the graph as of ${at}, which the diff compares against.`}>
+                <i className="codicon codicon-history" aria-hidden="true" />
+                Removed — as it was at {shortSha(at)}
+              </p>
+            )}
+            <FileView
+              detail={detail}
+              root={root}
+              onSelect={onSelect}
+              symbolIds={symbolIds}
+              onExplainSymbol={onExplainSymbol}
+              onOpenSymbol={setOpenSymbol}
+            />
+          </>
         ) : (
           <FolderView detail={detail} onSelect={onSelect} />
         )}

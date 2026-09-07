@@ -63,14 +63,24 @@ import {
   type LanguageReport,
   type OrphanGroup,
   type SearchHit,
+  type ViewCrumb,
   type ViewGraph,
   type ViewNode,
   type ViewResponse,
   type FlowTarget,
+  type Presentation,
+  type OverviewReply,
+  LIST_ABOVE,
+  fetchOverview,
+  fetchDiff,
   flowBlocked as flowBlockedBy,
 } from './api';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
 import { Flow } from './Flow';
+import { ListView } from './ListView';
+import { Overview } from './Overview';
+import { homeSearch, isFrontPage, rootDiagramSearch } from './frontpage';
+import { presentationChip } from './listrows';
 import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
@@ -83,8 +93,8 @@ import { ComponentNode, type ComponentNodeType } from './ComponentNode';
 import { GroupNode, type GroupNodeType } from './GroupNode';
 import { Activity } from './Activity';
 import { Repository } from './Repository';
-import { findCommit, relativeTime } from './GitGraph';
-import { SourceControl } from './SourceControl';
+import { findCommit, relativeTime, shortSha } from './GitGraph';
+import { SourceControl, type DiffRow } from './SourceControl';
 import { ContextMenu } from './ContextMenu';
 import { Sash } from './Sash';
 import { SectionPanes, type SectionPane } from './Section';
@@ -379,6 +389,14 @@ export function App() {
    * fallback the server just stopped making.
    */
   const [viewMissing, setViewMissing] = useState(false);
+  /**
+   * The front page's answer, and why there is none. Kept across refetches
+   * so a save re-reads the page under the reader without blanking it; the
+   * page itself holds its rows' order (mark, do not move). Read only while
+   * `frontOn`, and only shown for the project on screen.
+   */
+  const [overview, setOverview] = useState<OverviewReply | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
   /** Bumped to refetch the current view without changing the URL. */
   const [reloadToken, setReloadToken] = useState(0);
@@ -652,6 +670,18 @@ export function App() {
    * handler is registered once and would otherwise close over the first render.
    */
   const frozenRef = useRef(false);
+  /**
+   * Whether the view on screen is a structural diff, for the same handler.
+   * The hub cannot compute a diff for a push — it holds one graph — so a push
+   * under a diff is the signal that the diff changed, and the page refetches.
+   */
+  const diffRef = useRef(false);
+  /**
+   * The structural diff's numbers, keyed by what they are between so a stale
+   * answer is never printed under a base that has since moved. Null until
+   * the first answer; the row reads as "comparing…" meanwhile.
+   */
+  const [diffRow, setDiffRow] = useState<{ key: string; row: DiffRow } | null>(null);
 
   // The view lives in the URL, so the back button is the navigation history.
   useEffect(() => {
@@ -834,6 +864,18 @@ export function App() {
         // moment before freezing can still be in flight, and nothing that
         // happens in the working tree changes what that commit looked like.
         if (frozenRef.current) return;
+
+        // A diff view redraws when the working tree changes, because the diff
+        // changed — but the hub holds one graph and cannot draw a diff of two,
+        // so what it pushed is the ordinary slice with no `diff` in its echo.
+        // The push is taken as the signal and the view is fetched again from
+        // the route that can resolve both ends; the pulse is kept, because
+        // the files it names did change.
+        if (diffRef.current) {
+          setPulsing(message.changedFiles);
+          setReloadToken((token) => token + 1);
+          return;
+        }
 
         // The server computes each push from the spec it currently holds for this
         // socket, and that lags a navigation until the new spec has been sent.
@@ -1059,6 +1101,23 @@ export function App() {
   const at = view?.spec.at ?? null;
   const frozen = at !== null;
   /**
+   * The structural diff: what the URL asked to compare against — `base`, or
+   * a commit — and whether the view on screen is one. `?diff=` is a view
+   * like `at`, and it rides the URL; what it is against, in words, is
+   * `diffSince`, which the boxes, the chip and the status bar all print.
+   */
+  const diffAsked = view?.spec.diff;
+  const diffOn = diffAsked !== undefined;
+  /**
+   * The front page: `/` with nothing asked for, or only a commit. Read off
+   * the URL and not the view, because the view under it is the root view
+   * either way — the page still fetches it, so the socket, the counts and
+   * the crumb have a project to describe, and "Draw the whole project" can
+   * say how many boxes it is. What the URL says is the front page; what the
+   * engine drew underneath is covered.
+   */
+  const frontOn = isFrontPage(search);
+  /**
    * The categories as boxes, rather than files. A view, carried in the URL as
    * `diagram=components`; the filters and the commit apply to it as to any
    * other, and every helper that rebuilds the URL from the live one keeps it.
@@ -1066,6 +1125,26 @@ export function App() {
    * a place in the project is the class diagram's to draw.
    */
   const componentsOn = view?.spec.diagram === 'components';
+  /**
+   * Rows or boxes. The engine's decision, read and never re-derived: the
+   * threshold lives in `presentationOf`, and a page that counted boxes for
+   * itself is how a live push would redraw a list as a diagram. `asked` is
+   * what the URL said, for the chip and the checked menu item; `listOn` is
+   * what is on screen.
+   */
+  const presentation: Presentation = view?.presentation ?? 'diagram';
+  const listOn = presentation === 'list';
+  const asked = view?.spec.as;
+  /** The stored id of the category this view is a scope of, or undefined. */
+  const categoryScope = view?.spec.category;
+  /**
+   * Faint lines: in a scope diagram every line is drawn at a quarter until a
+   * box is under the cursor or picked, and then only its own lines are drawn
+   * whole — so a 25-box scope reads as boxes with lines on demand rather
+   * than as a net. Never in a focus, where the lines are the answer, and
+   * never in a diff, where every line drawn is one that changed.
+   */
+  const faintOn = view !== undefined && !listOn && focus === null && view.spec.diff === undefined;
 
   useEffect(() => {
     let cancelled = false;
@@ -1083,6 +1162,36 @@ export function App() {
       cancelled = true;
     };
   }, [revision, groupsRevision, data?.root, at]);
+
+  /**
+   * The front page, re-read whenever anything on it could have moved: a
+   * save or a commit (`revision` — the socket push, and the server's git
+   * poll publishing when the status changed), a name given (`groupsRevision`),
+   * the agent asking (`agentCalls`), or the project switching. Nothing is
+   * read while the page is not up. The commit rides the URL, and the server
+   * says in its own words why a frozen front page is refused; the page
+   * prints that sentence rather than a status code.
+   */
+  const lastAgentAt = agentCalls[0]?.at ?? null;
+  useEffect(() => {
+    if (!frontOn) return;
+    let cancelled = false;
+    fetchOverview(new URLSearchParams(search).get('at')).then(
+      (result) => {
+        if (cancelled) return;
+        setOverview(result);
+        setOverviewError(null);
+      },
+      (cause: unknown) => {
+        if (cancelled) return;
+        setOverview(null);
+        setOverviewError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [frontOn, search, revision, groupsRevision, lastAgentAt, data?.root]);
 
   // Per project: the server keeps the last run's names with the session, so a
   // reload — or a second tab — is shown what was already paid for rather than
@@ -1229,6 +1338,86 @@ export function App() {
   useEffect(() => {
     frozenRef.current = frozen;
   }, [frozen]);
+  useEffect(() => {
+    diffRef.current = diffOn;
+  }, [diffOn]);
+
+  /**
+   * What a diff would be against from here: the git base while the diagram
+   * is now, and the commit's first parent while it is frozen — a commit's
+   * diff is against what came before it, and its parent is what the log
+   * says came before. Null with the reason when nothing can be compared.
+   */
+  const diffTarget = useMemo((): { from: string; since: string } | { why: string } => {
+    if (git === null) return { why: 'This project is not a git work tree, so there is no base to compare against' };
+    if (at === null) return { from: 'base', since: baseLabel };
+    if (log === null) return { why: 'Reading the log…' };
+    const commit = findCommit(log.commits, at);
+    if (commit === null) return { why: `${shortSha(at)} is further back than the log holds, so its parent is not known` };
+    const parent = commit.parents[0];
+    if (parent === undefined) return { why: `${shortSha(at)} is a root commit: nothing came before it to compare against` };
+    return { from: parent, since: shortSha(parent) };
+  }, [git, at, log, baseLabel]);
+  /** What the diff on screen is against, in words — `HEAD`, `merge base`, a short sha. */
+  const diffSince = diffAsked === undefined ? null : diffAsked === 'base' ? baseLabel : shortSha(diffAsked);
+
+  /**
+   * The diff's numbers for the Source Control row and the front page, read
+   * whenever the graph moves (`revision`), the base changes or the commit on
+   * screen does. The first answer for a base builds that commit's graph
+   * through the parser pool — seconds on a project this size — and every
+   * answer after is a comparison of two graphs already in hand. Keyed so an
+   * answer for a base since left is never printed under the new one.
+   */
+  useEffect(() => {
+    if ('why' in diffTarget) return;
+    const from = diffTarget.from;
+    const to = at ?? 'live';
+    const key = `${data?.root ?? ''}\n${from}\n${to}\n${git?.base ?? ''}`;
+    let cancelled = false;
+    fetchDiff(from, to).then(
+      (reply) => {
+        if (!cancelled) setDiffRow({ key, row: { state: 'ready', since: diffTarget.since, counts: reply.counts } });
+      },
+      (cause: unknown) => {
+        if (!cancelled) setDiffRow({ key, row: { state: 'blocked', why: cause instanceof Error ? cause.message : String(cause) } });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [diffTarget, at, revision, data?.root, git?.base]);
+  /**
+   * The diff on screen, counted over boxes: what came, what went — the
+   * ghosts — what changed shape, and the far ends drawn as context. What
+   * the status bar prints under a diff instead of "N boxes · N files".
+   */
+  const diffCounts = useMemo(() => {
+    const counts = { added: 0, removed: 0, touched: 0, context: 0 };
+    for (const node of view?.nodes ?? []) {
+      if (node.change === undefined) counts.context += 1;
+      else counts[node.change] += 1;
+    }
+    return counts;
+  }, [view]);
+  /**
+   * The commit a selected ghost is read from, or null: a removed file is in
+   * no live graph, so its panel asks the graph the diff compared against —
+   * the resolved sha, because `base` is a word the detail route does not take.
+   */
+  const ghostAt = useMemo(() => {
+    if (selected === null || data?.diff === undefined) return null;
+    const box = view?.nodes.find((node) => node.id === selected);
+    return box?.change === 'removed' ? data.diff.from.sha : null;
+  }, [selected, data, view]);
+  /** The row as it stands: blocked with the reason, read once, or reading. */
+  const diffRowNow: DiffRow =
+    'why' in diffTarget
+      ? { state: 'blocked', why: diffTarget.why }
+      : diffRow !== null &&
+          diffRow.key === `${data?.root ?? ''}\n${diffTarget.from}\n${at ?? 'live'}\n${git?.base ?? ''}`
+        ? diffRow.row
+        : { state: 'reading', since: diffTarget.since };
 
   /**
    * While frozen the server pushes nothing to this client — nothing in the
@@ -1438,6 +1627,21 @@ export function App() {
   useEffect(() => {
     setFindAt(-1);
   }, [foundKey]);
+
+  /**
+   * The boxes the two lenses dim, as ids, for the list — which has no box
+   * data to carry `aside` on. The same two rules the canvas applies in its
+   * memo, in the same order: ⌘F wins while it has something typed, and the
+   * following lens is what is underneath.
+   */
+  const asideIds = useMemo(() => {
+    if (view === undefined) return new Set<string>();
+    if (found !== null) return new Set(view.nodes.filter((node) => !found.on.has(node.id)).map((node) => node.id));
+    if (relatedFiles === null) return new Set<string>();
+    return new Set(
+      view.nodes.filter((node) => !node.files.some((file) => relatedFiles.has(file))).map((node) => node.id),
+    );
+  }, [view, found, relatedFiles]);
 
   /** The box the selection names, or null when the diagram is not drawing one. */
   const selectedBox = useMemo(
@@ -1880,6 +2084,10 @@ export function App() {
     );
   }, [view, pulsing]);
 
+  /** The same two pulses as files, for the front page, whose rows are files and not boxes. */
+  const pulsingFiles = useMemo(() => new Set(pulsing), [pulsing]);
+  const queriedFiles = useMemo(() => new Set(agentLooking), [agentLooking]);
+
   /**
    * The canvas the diagram is drawn in, read when a layout runs.
    *
@@ -1891,6 +2099,16 @@ export function App() {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   /** The row the bars and the canvas share, which is the window the sashes divide. */
   const mainRef = useRef<HTMLElement | null>(null);
+
+  /**
+   * Each box's position in the view, as the token its lines wear: `edge-end-7`
+   * on every line that touches the seventh box. It is how a hover finds the
+   * lines to draw whole without React rendering anything — the page toggles
+   * one class on the lines carrying the hovered box's token, and that is the
+   * whole of it. An index and not the path, because a path is not a class
+   * name and a hash of one could collide.
+   */
+  const boxIndex = useMemo(() => new Map((view?.nodes ?? []).map((node, index) => [node.id, index])), [view]);
 
   // Positions survive live updates: a box must not jump because the agent saved.
   const layoutRef = useRef<{
@@ -1909,6 +2127,13 @@ export function App() {
 
   const { nodes, edges } = useMemo(() => {
     if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
+    // A list places nothing: dagre over 106 boxes is exactly the cost the
+    // list exists to skip, and the rows read `view` for themselves. The
+    // cached layout is left as it was, so a scope that flips back under the
+    // same key — a save that took it under the threshold — keeps its places.
+    if (view.presentation === 'list') return { nodes: [] as FlowNode[], edges: [] as Edge[] };
+
+    const indexOf = boxIndex;
 
     /** A box counts as involved when any file behind it is. */
     const involved = (id: string): boolean => {
@@ -1953,9 +2178,13 @@ export function App() {
       // resolved by a name match nothing in the referring file asked for. It
       // is a fact about how the line was found, so it is added to whatever the
       // kind already says rather than replacing it.
+      // `edge-removed` draws a diff's gone line dashed and dimmed in its own
+      // hue; an added line is drawn as its kind is, and the class only names it.
       className: `edge-${edge.kind}${edge.guessed === true ? ' edge-guessed' : ''}${
+        edge.change === undefined ? '' : ` edge-${edge.change}`
+      }${
         dimming && !(lit(edge.from) && lit(edge.to)) ? ' edge-aside' : ''
-      }`,
+      } edge-end-${indexOf.get(edge.from) ?? -1} edge-end-${indexOf.get(edge.to) ?? -1}`,
       // A weight of one is the common case and labelling it is just noise.
       ...(edge.weight > 1 ? { label: String(edge.weight) } : {}),
     }));
@@ -1991,6 +2220,10 @@ export function App() {
         queried: queriedBoxIds.has(node.id),
         gitStatus: node.gitStatus,
         gitChanged: node.gitChanged,
+        // Under a diff: what happened to this file, and what the diff is
+        // against, for the letter and its title. Absent everywhere else.
+        ...(node.change === undefined ? {} : { change: node.change }),
+        since: diffSince,
         language: node.language,
         showLanguage: mixedProject,
         test: node.test,
@@ -2230,6 +2463,7 @@ export function App() {
     };
   }, [
     view,
+    boxIndex,
     changedBoxIds,
     queriedBoxIds,
     following,
@@ -2250,10 +2484,74 @@ export function App() {
     clustersFor,
     relayoutToken,
     componentsOn,
+    diffSince,
     decide,
     editGroup,
     renameGroup,
   ]);
+
+  /** The box under the cursor. A ref, because a hover must not render. */
+  const hoveredRef = useRef<string | null>(null);
+
+  /**
+   * Draw whole the lines that touch the hovered box, the inspected one and
+   * every picked one; leave the rest at the quarter `.canvas-faint` gives
+   * them. Straight to the DOM: the lines are React Flow's `<g>` elements,
+   * each wearing the `edge-end-N` tokens of its two boxes, and one class
+   * toggled on each is the entire cost — no state, no render, no layout.
+   */
+  const applyNear = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const tokens = new Set<string>();
+    const mark = (id: string | null): void => {
+      if (id === null) return;
+      const index = boxIndex.get(id);
+      if (index !== undefined) tokens.add(`edge-end-${index}`);
+    };
+    mark(hoveredRef.current);
+    mark(selected);
+    for (const id of picked) mark(id);
+    for (const line of canvas.querySelectorAll<SVGGElement>('.react-flow__edge')) {
+      let near = false;
+      for (const token of tokens) {
+        if (line.classList.contains(token)) {
+          near = true;
+          break;
+        }
+      }
+      line.classList.toggle('edge-near', near);
+    }
+  }, [boxIndex, selected, picked]);
+
+  const handleNodeEnter = useCallback(
+    (_event: MouseEvent, node: FlowNode) => {
+      if (node.type === 'frame') return;
+      hoveredRef.current = node.id;
+      applyNear();
+    },
+    [applyNear],
+  );
+
+  const handleNodeLeave = useCallback(() => {
+    hoveredRef.current = null;
+    applyNear();
+  }, [applyNear]);
+
+  // Re-marked whenever the lines themselves change hands: a save rebuilds
+  // them, a pan mounts the ones that scrolled in (`onlyRenderVisibleElements`
+  // keeps the rest out of the DOM), and a fresh `<g>` wears no `edge-near`.
+  // The observer watches for mounts; the toggles it triggers are attribute
+  // changes, which it does not listen for, so it cannot feed itself.
+  useEffect(() => {
+    if (!faintOn) return;
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    applyNear();
+    const observer = new MutationObserver(applyNear);
+    observer.observe(canvas, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [faintOn, applyNear, edges]);
 
   /**
    * Enter walks the matches, and takes the camera with it.
@@ -2278,6 +2576,8 @@ export function App() {
       const from = findAt < 0 ? (delta > 0 ? -1 : 0) : findAt;
       const next = (((from + delta) % hits.length) + hits.length) % hits.length;
       setFindAt(next);
+      // On a list the step is a scroll, and the list does it for itself.
+      if (listOn) return;
       const box = nodes.find((node) => node.id === hits[next]);
       if (box === undefined) return;
       // No `duration`, and that is not a taste. With one, React Flow runs the
@@ -2294,7 +2594,7 @@ export function App() {
         { zoom: flow.getZoom() },
       );
     },
-    [found, findAt, nodes, flow],
+    [found, findAt, nodes, flow, listOn],
   );
 
   const navigate = useCallback((params: URLSearchParams) => {
@@ -2393,6 +2693,31 @@ export function App() {
   );
 
   /**
+   * A row is a box. A click inspects it and makes it the selection, as a
+   * click on a box does through React Flow; shift, ⌘ or ctrl adds it to the
+   * picked rows instead, which is the canvas's own gesture — so "Create
+   * category from selection" and the panel cannot tell a row from a box.
+   */
+  const handleRowSelect = useCallback((id: string, additive: boolean) => {
+    setSelected(id);
+    setShowSidebar(true);
+    setPicked((was) => {
+      if (!additive) return new Set([id]);
+      const next = new Set(was);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  /** The same menu a box gets, from a row; the ground's from the list's ground. */
+  const handleRowContext = useCallback((event: MouseEvent, id: string | null) => {
+    event.preventDefault();
+    if (id !== null) setSelected((current) => (current === id ? current : id));
+    setContextAt({ x: event.clientX, y: event.clientY, node: id, member: null });
+  }, []);
+
+  /**
    * Put one named file on the diagram and open it in the panel.
    *
    * Every filter is dropped on the way. This is what the status bar's count of
@@ -2415,7 +2740,9 @@ export function App() {
   const goToScope = useCallback(
     (scope: string) => {
       const params = new URLSearchParams();
-      if (scope !== '') params.set('scope', scope);
+      // The root too, as `?scope=`: the key is what says diagram now that a
+      // bare URL is the front page. See `goHome` for the other answer.
+      params.set('scope', scope);
       const edges = edgeParam(showCalls, showAssoc, showDepends);
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
@@ -2437,9 +2764,15 @@ export function App() {
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
       if (at !== null) params.set('at', at);
+      // The same place, one hop wider: a focus asked to be rows stays rows.
+      // The helpers that go somewhere new — a scope, a file — drop `as` on
+      // purpose: the override was about the slice it was made on, and a
+      // person who drew 106 boxes anyway has not asked the next directory
+      // to be drawn whatever its size.
+      if (asked !== undefined) params.set('as', asked);
       navigate(params);
     },
-    [focus, navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
+    [focus, navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at, asked],
   );
 
   const handleSwitchProject = useCallback((root: string) => {
@@ -2487,6 +2820,28 @@ export function App() {
   }, [navigate]);
 
   /**
+   * The structural diff on and off. Built from the live URL so the commit,
+   * the filters and the edge kinds survive, and the place — a scope, a
+   * focus — is kept in the URL too: the engine draws the whole diff whatever
+   * it says and echoes none of it, so turning the diff off lands back where
+   * it was turned on. What it is against is `diffTarget`'s to say: the base
+   * now, the commit's parent while frozen. The component diagram is dropped,
+   * because a diff is boxes and lines and a URL naming both would describe
+   * a picture that is not on screen.
+   */
+  const toggleDiff = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('diff')) {
+      params.delete('diff');
+    } else {
+      if ('why' in diffTarget) return;
+      params.set('diff', diffTarget.from);
+      params.delete('diagram');
+    }
+    navigate(params);
+  }, [navigate, diffTarget]);
+
+  /**
    * Flip between the class diagram and the component diagram. Built from the
    * live URL so every filter, the edge kinds and the commit survive the flip;
    * scope, focus and depth do not, because a component diagram is the whole
@@ -2496,13 +2851,107 @@ export function App() {
   const setDiagram = useCallback(
     (components: boolean) => {
       const params = new URLSearchParams(window.location.search);
-      for (const key of ['scope', 'focus', 'depth']) params.delete(key);
+      // A category scope is a place too, and a component diagram is every
+      // category at once: the engine drops it from the echo, so the URL does.
+      for (const key of ['scope', 'focus', 'depth', 'category']) params.delete(key);
       if (components) params.set('diagram', 'components');
       else params.delete('diagram');
       navigate(params);
     },
     [navigate],
   );
+
+  /**
+   * A category as a scope: its files wherever they sit, the way `goToScope`
+   * shows a directory's. "Show me the Data Pipeline" is the question the
+   * categories exist to answer, and the crumb is where it is asked. Built
+   * fresh like a scope, carrying the filters, the edge kinds and the commit,
+   * and never `scope`: the engine ignores it under `category`, and a URL
+   * naming both would describe a picture that is not on screen.
+   */
+  const goToCategory = useCallback(
+    (storedId: string) => {
+      const params = new URLSearchParams();
+      params.set('category', storedId);
+      const edges = edgeParam(showCalls, showAssoc, showDepends);
+      if (edges !== null) params.set('edges', edges);
+      if (onlyChanged) params.set('changed', '1');
+      if (hideTests) params.set('tests', '0');
+      if (at !== null) params.set('at', at);
+      navigate(params);
+    },
+    [navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
+  );
+
+  /**
+   * The front page. The commit is kept — a page frozen at a commit stays
+   * frozen — and every filter is dropped, because there is no diagram here
+   * for one to filter; see `homeSearch`. Where the "root" crumb, Go › Whole
+   * project and "Up one level" from a top-level directory all land.
+   */
+  const goHome = useCallback(() => navigate(new URLSearchParams(homeSearch(at))), [navigate, at]);
+
+  /**
+   * The root as a diagram, whatever its size — the one row that asks for the
+   * big graph on purpose. `?scope=&as=diagram`, see `rootDiagramSearch`.
+   */
+  const drawRoot = useCallback(() => navigate(new URLSearchParams(rootDiagramSearch(at))), [navigate, at]);
+
+  /** One level up the trail: a directory's parent, or the front page above the top ones. */
+  const goUp = useCallback(
+    (parent: string) => {
+      if (parent === '') goHome();
+      else goToScope(parent);
+    },
+    [goHome, goToScope],
+  );
+
+  /**
+   * Only what differs from the base, as the root diagram under the
+   * changes-only filter. Built fresh: the front page carries no filters to
+   * keep, and `changed` is what the row asked for.
+   */
+  const goToChanges = useCallback(() => {
+    const params = new URLSearchParams();
+    params.set('changed', '1');
+    navigate(params);
+  }, [navigate]);
+
+  /**
+   * The Categories section, where a name is given: unfolded if it was
+   * folded, and given the focus so the first row is one Tab away. Reached
+   * the way a click reaches it — the fold is the section's own state, held
+   * as a height once a sash has moved, and the chevron is the one control
+   * that changes it either way.
+   */
+  const revealCategories = useCallback(() => {
+    const title = document.querySelector<HTMLButtonElement>('.leftbar > .categories > .section-head > .section-title');
+    if (title === null) return;
+    if (title.getAttribute('aria-expanded') === 'false') title.click();
+    title.focus();
+  }, []);
+
+  /**
+   * Rows or boxes, said outright. Built from the live URL so the place, the
+   * filters and the commit survive; only `as` changes. Written whichever way
+   * the threshold would have gone, because the press is a person overriding
+   * the count and the chip is where the override is read and taken off.
+   */
+  const setPresentation = useCallback(
+    (as: Presentation) => {
+      const params = new URLSearchParams(window.location.search);
+      params.set('as', as);
+      navigate(params);
+    },
+    [navigate],
+  );
+
+  /** Let the count decide again. */
+  const dropPresentation = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.delete('as');
+    navigate(params);
+  }, [navigate]);
 
   /**
    * Changing the base publishes a fresh view to every connected client, so a
@@ -2689,10 +3138,12 @@ export function App() {
    */
   const fitToScreen = useCallback(() => {
     // Empty is the `viewMissing` case, where React Flow holds no nodes and the
-    // bounds would be a point at the origin.
-    if (nodes.length === 0) return;
+    // bounds would be a point at the origin. The front page covers the root
+    // view it stands on, and a camera moved under it is a surprise saved up
+    // for the next diagram.
+    if (nodes.length === 0 || frontOn) return;
     void flow.fitBounds(flow.getNodesBounds(nodes), { padding: 0.15 });
-  }, [flow, nodes]);
+  }, [flow, nodes, frontOn]);
 
   // The key handler is registered once; these keep it pointed at the current
   // callbacks without tearing the listener down on every render.
@@ -2771,7 +3222,9 @@ export function App() {
    * Whether there is anything to find in. Held in a ref because the ⌘F
    * listener is bound once and must not be rebound on every view.
    */
-  findableRef.current = view !== undefined && view.nodes.length > 0;
+  // Not on the front page: the boxes it stands on are covered, and a find
+  // that lit them would light nothing the reader can see.
+  findableRef.current = view !== undefined && view.nodes.length > 0 && !frontOn;
 
   // --- the sashes ------------------------------------------------------------
 
@@ -3074,6 +3527,17 @@ export function App() {
   // nothing to go back from, so the key does not push a no-op history entry.
   backToNowRef.current = frozen ? backToNow : null;
 
+  /**
+   * Whether a crumb is the one being stood on. A category's is, when the
+   * view is that category's; a directory's is, when no category is and the
+   * scope matches — the root crumb and a category crumb both say scope '',
+   * and only one of them can be here.
+   */
+  const isHere = (step: ViewCrumb): boolean =>
+    step.category !== undefined
+      ? categoryScope === step.category
+      : categoryScope === undefined && step.scope === view?.spec.scope;
+
   const groupOfSelection = useMemo(() => {
     if (selected === null) return null;
     // A component box is a category: the row it was drawn from is the answer,
@@ -3130,6 +3594,14 @@ export function App() {
     view !== undefined && focus !== null && depth > 1 && view.nodes.length > MANY_BOXES
       ? view.nodes.length
       : null;
+
+  /**
+   * How the slice is shown, when that is worth a chip: the threshold made a
+   * list, or the URL overrode it either way. The click is the way out — draw
+   * it anyway, or let the count decide again — the way every chip on this
+   * row removes what it names.
+   */
+  const listChip = view === undefined ? null : presentationChip(asked, view.presentation, view.nodes.length, LIST_ABOVE);
 
   /**
    * What the diagram is a slice of, for saying so on the diagram.
@@ -3263,6 +3735,50 @@ export function App() {
     checked: componentsOn,
     run: () => setDiagram(!componentsOn),
   };
+  /**
+   * Rows or boxes, as one item for the View menu, the canvas menu and the
+   * palette through the first. Checked when rows are on screen, whichever
+   * decided it — the threshold or the URL; a press writes the other answer
+   * into the URL outright, and the chip in the breadcrumb row is where an
+   * override is read and taken off again.
+   */
+  const listItem: MenuItem = {
+    label: 'Show as list',
+    checked: listOn,
+    ...(view === undefined
+      ? { disabledBecause: 'Nothing is loaded yet' }
+      : frontOn
+        ? { disabledBecause: 'The front page is already a list — open a place on it first' }
+        : diffOn && !listOn
+          ? { disabledBecause: 'A diff is small by construction and is drawn; its rows are on the boxes' }
+          : { run: () => setPresentation(listOn ? 'diagram' : 'list') }),
+  };
+  /**
+   * The structural diff, as one item for the View menu, the canvas menu and
+   * the palette through the first: which symbols and lines differ from the
+   * base — or from the commit's parent, while frozen — drawn as added boxes
+   * and ghosts. Checked while the diagram is one; greyed with the reason
+   * where nothing can be compared.
+   */
+  const diffItem: MenuItem = {
+    label: 'Structural diff',
+    checked: diffOn,
+    ...(diffOn
+      ? { run: toggleDiff }
+      : 'why' in diffTarget
+        ? { disabledBecause: diffTarget.why }
+        : { run: toggleDiff }),
+  };
+  /**
+   * What the camera and the layout cannot do to a list, or to the front
+   * page. Greyed with the way out rather than left to run against a canvas
+   * that is not there — or, on the front page, one that is covered.
+   */
+  const canvasBlocked = frontOn
+    ? { disabledBecause: 'The front page is a list — "Draw the whole project" on it, or any row, opens a diagram' }
+    : listOn
+      ? { disabledBecause: 'Shown as a list — View › Show as list draws it' }
+      : null;
   /**
    * Whether anything on screen could carry a has-a or a dependency line: a
    * file box listing a class or an interface, or a box standing for a pile —
@@ -3439,6 +3955,11 @@ export function App() {
         // Which diagram, before what is drawn on it. A checked item, so the
         // palette offers "View: Components" for free.
         { ...diagramItem, separatorBefore: true },
+        // And whether it is drawn at all, or listed: the same kind of fact.
+        listItem,
+        // And whether it is the diff: what came, went and moved since the
+        // base, and nothing else. A checked item, so the palette offers it.
+        diffItem,
         // The third diagram, of one function rather than of the project, and
         // the one place it can be typed: the palette is built from this bar.
         flowItem,
@@ -3490,26 +4011,28 @@ export function App() {
               : { run: () => changeBase(base.value) }),
           }),
         ),
-        { label: 'Zoom in', separatorBefore: true, run: () => void flow.zoomIn() },
-        { label: 'Zoom out', run: () => void flow.zoomOut() },
-        { label: 'Fit to screen', shortcut: '⇧⌘F', run: fitToScreen },
+        { label: 'Zoom in', separatorBefore: true, ...(canvasBlocked ?? { run: () => void flow.zoomIn() }) },
+        { label: 'Zoom out', ...(canvasBlocked ?? { run: () => void flow.zoomOut() }) },
+        { label: 'Fit to screen', shortcut: '⇧⌘F', ...(canvasBlocked ?? { run: fitToScreen }) },
         {
           // A save never moves a box; this is the one thing that does, and it
           // is asked for by name.
           label: 'Re-layout',
           shortcut: '⇧⌘L',
-          ...(view === undefined || view.nodes.length === 0
-            ? { disabledBecause: 'Nothing on the canvas to lay out' }
-            : { run: relayout }),
+          ...(canvasBlocked ??
+            (view === undefined || view.nodes.length === 0
+              ? { disabledBecause: 'Nothing on the canvas to lay out' }
+              : { run: relayout })),
         },
         {
           // Here as well as on the canvas, and that is the point: a command
           // that lives only behind a right-click cannot be typed, and this
           // round exists so that everything can be.
           label: anyExpanded ? 'Collapse every box' : 'Expand every box',
-          ...(expandable.length === 0
-            ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
-            : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) }),
+          ...(canvasBlocked ??
+            (expandable.length === 0
+              ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
+              : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) })),
         },
         {
           label: 'Copy link to this view',
@@ -3528,8 +4051,8 @@ export function App() {
           // searches what is drawn and takes you nowhere.
           label: 'Find in the diagram…',
           shortcut: '⌘F',
-          ...(view === undefined || view.nodes.length === 0
-            ? { disabledBecause: 'Nothing is drawn to find anything in' }
+          ...(view === undefined || view.nodes.length === 0 || frontOn
+            ? { disabledBecause: frontOn ? 'Nothing is drawn on the front page — ⌘K finds a file or symbol' : 'Nothing is drawn to find anything in' }
             : { run: openFind }),
         },
         { label: 'Back', shortcut: '⌘[', separatorBefore: true, run: () => window.history.back() },
@@ -3542,11 +4065,19 @@ export function App() {
             ? { run: backToNow }
             : { disabledBecause: 'Already viewing the working tree — pick a commit in the Graph to go back' }),
         },
-        { label: 'Whole project', separatorBefore: true, run: () => goToScope('') },
+        // The front page is the whole project now — a list of what it is,
+        // where it starts and what changed — and the diagram of it is the
+        // row under, asked for by name because it is the big graph.
+        {
+          label: 'Whole project',
+          separatorBefore: true,
+          ...(frontOn ? { disabledBecause: 'Already on the front page' } : { run: goHome }),
+        },
+        { label: 'Draw the whole project', run: drawRoot },
         {
           label: 'Up one level',
-          ...(view && view.trail.length > 1
-            ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
+          ...(view && view.trail.length > 1 && !frontOn
+            ? { run: () => goUp(view.trail[view.trail.length - 2]?.scope ?? '') }
             : { disabledBecause: 'Already at the top' }),
         },
       ],
@@ -3713,14 +4244,15 @@ export function App() {
         label: 'Fit to screen',
         shortcut: '⇧⌘F',
         separatorBefore: true,
-        run: fitToScreen,
+        ...(canvasBlocked ?? { run: fitToScreen }),
       },
       {
         label: 'Re-layout',
         shortcut: '⇧⌘L',
-        ...(view === undefined || view.nodes.length === 0
-          ? { disabledBecause: 'Nothing on the canvas to lay out' }
-          : { run: relayout }),
+        ...(canvasBlocked ??
+          (view === undefined || view.nodes.length === 0
+            ? { disabledBecause: 'Nothing on the canvas to lay out' }
+            : { run: relayout })),
       },
       {
         // One item and not two, because "every box" is a state and not two
@@ -3728,11 +4260,13 @@ export function App() {
         // collapse, then expand — is what reaches "all of them open", and a
         // second greyed row would say less than that.
         label: anyExpanded ? 'Collapse every box' : 'Expand every box',
-        ...(expandable.length === 0
-          ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
-          : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) }),
+        ...(canvasBlocked ??
+          (expandable.length === 0
+            ? { disabledBecause: `No box here holds more than ${MAX_MEMBERS} symbols` }
+            : { run: () => setExpanded(anyExpanded ? new Set() : new Set(expandable)) })),
       },
       { ...diagramItem, separatorBefore: true },
+      listItem,
       { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
       assocItem,
       dependsItem,
@@ -3745,6 +4279,7 @@ export function App() {
             ? { disabledBecause: 'A past commit has no working-tree changes' }
             : { run: toggleChanged }),
       },
+      diffItem,
       { label: 'Hide tests', checked: hideTests, run: () => setFilter('tests', hideTests ? null : '0') },
       // The breadcrumb's ± walks one hop at a time; this is the jump, and it
       // is on the canvas because deciding how far to look is something you do
@@ -3772,12 +4307,12 @@ export function App() {
               label: 'Up one level',
               separatorBefore: true,
               ...(view && view.trail.length > 1
-                ? { run: () => goToScope(view.trail[view.trail.length - 2]?.scope ?? '') }
+                ? { run: () => goUp(view.trail[view.trail.length - 2]?.scope ?? '') }
                 : { disabledBecause: 'Already at the top' }),
             },
           ]
         : []),
-      { label: 'Whole project', ...(focus === null ? {} : { separatorBefore: true }), run: () => goToScope('') },
+      { label: 'Whole project', ...(focus === null ? {} : { separatorBefore: true }), run: goHome },
       // Only while frozen, for the same reason as the depth block: with no
       // commit on screen there is no "now" to come back from.
       ...(frozen ? [{ label: 'Back to now', shortcut: '⎋', run: backToNow }] : []),
@@ -3809,13 +4344,34 @@ export function App() {
         {focus === null ? (
           <span className="trail">
             {view?.trail.map((step, index) => (
-              <span key={step.scope}>
+              <span key={step.category ?? step.scope}>
                 {index > 0 && <i className="codicon codicon-chevron-right sep" aria-hidden="true" />}
+                {/* A category's crumb links by its stored id, never by path:
+                    it is a scope by membership, and its `scope` is ''. The
+                    root crumb is the one you stand on only when no category
+                    is — both say scope '', and only one of them is here. */}
+                {/* The root crumb is the front page: where the whole project
+                    is read as a list. It is stood on only there, so from the
+                    root diagram it is the way back. */}
                 <button
                   type="button"
-                  onClick={() => goToScope(step.scope)}
-                  disabled={step.scope === view.spec.scope}
+                  onClick={() =>
+                    step.category !== undefined
+                      ? goToCategory(step.category)
+                      : step.scope === ''
+                        ? goHome()
+                        : goToScope(step.scope)
+                  }
+                  disabled={step.category === undefined && step.scope === '' ? frontOn : isHere(step)}
+                  title={
+                    step.category !== undefined
+                      ? 'A category: its files wherever they sit, not a directory'
+                      : step.scope === ''
+                        ? 'The front page: what the project is, where it starts, what changed'
+                        : undefined
+                  }
                 >
+                  {step.category !== undefined && <i className="codicon codicon-package crumb-kind" aria-hidden="true" />}
                   {step.label}
                 </button>
               </span>
@@ -3931,6 +4487,24 @@ export function App() {
           </button>
         )}
 
+        {/* Rows rather than boxes, and why. The threshold's chip is badge
+            grey like a filter — a list is not a fault — and its click draws
+            the diagram anyway; a diagram forced past the threshold wears the
+            warning the flow overlay wears for a big flow, because that one
+            is the page telling on itself, and its ✕ takes the override off. */}
+        {listChip !== null && (
+          <button
+            type="button"
+            className={listChip.warning ? 'depth-chip' : 'filter-chip'}
+            onClick={() => (listChip.action === 'draw' ? setPresentation('diagram') : dropPresentation())}
+            title={listChip.title}
+          >
+            <i className={`codicon codicon-${listChip.warning ? 'warning' : 'list-flat'}`} aria-hidden="true" />
+            {listChip.label}
+            {listChip.action === 'drop' && <i className="codicon codicon-close" aria-hidden="true" />}
+          </button>
+        )}
+
         {/* Which commit is drawn, and the way back. A chip like the filters
             because it narrows the same way — everything else in the row still
             applies, just to the project as it was then. */}
@@ -3945,6 +4519,24 @@ export function App() {
           >
             <i className="codicon codicon-history" aria-hidden="true" />
             {frozenLabel}
+            <i className="codicon codicon-close" aria-hidden="true" />
+          </button>
+        )}
+
+        {/* Which diff is drawn, and the way back. The URL's key rather than
+            the view's, like the commit above, so the chip is there while the
+            diff is still being built and when it was refused. */}
+        {params.has('diff') && (
+          <button
+            type="button"
+            className="diff-chip"
+            onClick={toggleDiff}
+            title={`Only what differs in the shape since ${
+              params.get('diff') === 'base' ? baseLabel || 'the base' : shortSha(params.get('diff') ?? '')
+            }: added boxes, ghosts for what was removed, changed lines. A file whose declarations and references did not move is not drawn. Click to leave the diff`}
+          >
+            <i className="codicon codicon-git-compare" aria-hidden="true" />
+            Structural diff since {params.get('diff') === 'base' ? baseLabel || 'base' : shortSha(params.get('diff') ?? '')}
             <i className="codicon codicon-close" aria-hidden="true" />
           </button>
         )}
@@ -4047,7 +4639,9 @@ export function App() {
             {repo !== null && (
               <Repository
                 repo={repo}
-                boxes={view?.nodes.length ?? 0}
+                // None on the front page: the root view under it is covered,
+                // and "On screen 12" beside a list was the covered count.
+                boxes={frontOn ? 0 : (view?.nodes.length ?? 0)}
                 // The commit's own count: /api/repo counts the working tree,
                 // and "Files 1128" beside a frozen "712 files" was that.
                 frozen={view !== undefined && view.at !== null ? { at: view.at, files: view.fileCount } : null}
@@ -4062,6 +4656,9 @@ export function App() {
               onChangeBase={changeBase}
               onlyChanged={onlyChanged}
               onToggleChanged={toggleChanged}
+              diff={diffRowNow}
+              diffOn={diffOn}
+              onToggleDiff={toggleDiff}
               log={log}
               at={at}
               onViewCommit={viewCommit}
@@ -4103,7 +4700,10 @@ export function App() {
             they can be taken hold of. */}
         {data !== null && barSash('leftbar', 'before')}
 
-        <div className="canvas" ref={canvasRef}>
+        {/* `canvas-faint` is what draws every line at a quarter; the lines a
+            hover or the selection draws whole wear `edge-near`, toggled on
+            them directly by `applyNear`. */}
+        <div className={faintOn ? 'canvas canvas-faint' : 'canvas'} ref={canvasRef}>
         {/* On the canvas and not over the window, the way the welcome screen
             is: it marks what is drawn, so it belongs to the region that draws
             it, and the chrome around it stays reachable while it is up. */}
@@ -4142,10 +4742,58 @@ export function App() {
             unreadable={unreadableReport}
           />
         )}
+        {/* The front page, over the root view it stands on and under the
+            welcome, so Help still opens on top of it. Not for an empty
+            project — the welcome is what that shows — and not under a URL the
+            server refused, where the banner is the answer. A page fetched for
+            the project just left is not shown for this one. */}
+        {frontOn && !emptyProject && !viewMissing && data !== null && (
+          <Overview
+            overview={overview !== null && overview.root === data.root ? overview : null}
+            error={overviewError}
+            at={urlAt}
+            rootBoxes={
+              view !== undefined && focus === null && categoryScope === undefined && !componentsOn && view.spec.scope === ''
+                ? view.nodes.length
+                : null
+            }
+            baseLabel={baseLabel}
+            changed={pulsingFiles}
+            queried={queriedFiles}
+            onFocus={(file) => goTo(file, 'file')}
+            onCategory={goToCategory}
+            onCategories={revealCategories}
+            onChanges={goToChanges}
+            diff={diffRowNow}
+            onDiff={toggleDiff}
+            onDrawAll={drawRoot}
+          />
+        )}
         {error !== null && <div className="error">{error}</div>}
-        {error === null && view?.nodes.length === 0 && (
+        {error === null && view?.nodes.length === 0 && !frontOn && (
           <div className="empty">Nothing to show here.</div>
         )}
+        {/* Rows where the engine said rows: the same footprint as the canvas,
+            no minimap and no controls, because there is no camera. Blank
+            under a URL the server refused, for the reason the canvas is. */}
+        {listOn && !viewMissing && view !== undefined ? (
+          <ListView
+            view={view}
+            viewKey={viewKey}
+            selected={selected}
+            picked={picked}
+            changed={changedBoxIds}
+            queried={queriedBoxIds}
+            aside={asideIds}
+            asideNote={found === null ? reach.note : null}
+            showLanguage={mixedProject}
+            reveal={found !== null && findAt >= 0 ? (found.boxes[findAt] ?? null) : null}
+            slice={slice}
+            onSelect={handleRowSelect}
+            onOpen={goTo}
+            onContextMenu={handleRowContext}
+          />
+        ) : (
         <ReactFlow<FlowNode, Edge>
           // Keyed on the LOADED view, not on the URL. Keying on the URL remounts
           // the instant a link is clicked, while `nodes` still holds the previous
@@ -4164,6 +4812,11 @@ export function App() {
           onNodeDragStop={handleFrameDragStop}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
+          // The faint lines: a hover marks the lines it touches and renders
+          // nothing. Bound whatever the view, and inert outside a scope
+          // diagram, where `applyNear` finds no `.canvas-faint` to act under.
+          onNodeMouseEnter={handleNodeEnter}
+          onNodeMouseLeave={handleNodeLeave}
           onNodesChange={handleNodesChange}
           // Shift is both halves of the gesture: shift-click adds a box, and
           // shift-drag rubber-bands over several. ⌘ and Ctrl keep adding one
@@ -4210,6 +4863,7 @@ export function App() {
             nodeColor={(node) => (node.type === 'frame' ? 'transparent' : 'var(--vsc-border-input)')}
           />
         </ReactFlow>
+        )}
 
         {/* The bottom line, on the canvas.
 
@@ -4223,7 +4877,7 @@ export function App() {
             Information, not a control: it is the diagram's caption, and it sits
             on the canvas the way a box's own badges do. Everything that acts on
             the slice is a chip in the breadcrumb row above it. */}
-        {slice !== null && !showWelcome && !emptyProject && (
+        {slice !== null && !showWelcome && !emptyProject && !listOn && !frontOn && !diffOn && (
           <div
             className="canvas-slice"
             title={
@@ -4264,7 +4918,11 @@ export function App() {
             // touches it come from the view, already in hand.
             component={componentSelection}
             revision={revision}
-            at={at}
+            // A ghost is drawn from the graph the diff compares against, and
+            // its panel has to be read from the same one: the live graph has
+            // never heard of it. The resolved sha, because `base` is a word.
+            at={ghostAt ?? at}
+            ghost={ghostAt !== null}
             onSelect={setSelected}
             onFocus={goTo}
             symbolIds={selectedSymbolIds}
@@ -4312,9 +4970,24 @@ export function App() {
         live={live}
         counts={
           view
-            ? `${view.nodes.length} boxes · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
+            ? frontOn
+              // The boxes under the front page are covered, and a count of
+              // them would be a count of nothing on screen.
+              ? `${view.totalFiles} files`
+              : diffOn
+                // The diff's own three numbers, over boxes: what came, what
+                // went — the ghosts — and what changed shape, since what.
+                ? `+${diffCounts.added} −${diffCounts.removed} ~${diffCounts.touched} since ${diffSince ?? 'base'}`
+                : `${view.nodes.length} ${listOn ? 'rows' : 'boxes'} · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
             : ''
         }
+        {...(diffOn
+          ? {
+              countsTitle: `${diffCounts.added} files added, ${diffCounts.removed} removed (drawn as ghosts) and ${diffCounts.touched} changed in shape since ${
+                diffSince ?? 'the base'
+              }${diffCounts.context > 0 ? `, with ${diffCounts.context} unchanged files drawn dimmed as the far ends of changed lines` : ''}. A file whose declarations and resolved references did not move is not here — git is the tool for that edit.`,
+            }
+          : {})}
         languages={languageSummary}
         unreadable={unreadableReport}
         hiddenTests={hideTests ? (view?.hiddenTests ?? 0) : 0}

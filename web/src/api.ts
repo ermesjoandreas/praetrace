@@ -11,17 +11,25 @@ import type {
   LogResponse,
   RepoInfo,
   SuggestResponse,
+  ViewReply,
 } from '../../src/server/app.js';
+import type { DiffEnd, DiffReply } from '../../src/server/diff.js';
 import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { FlowEdge, FlowGraph, FlowNode } from '../../src/parser/flow.js';
 import type { FlowReply } from '../../src/server/flow.js';
+import type { OverviewReply } from '../../src/server/overview.js';
 // A value, and the one value import from src/ on this page. flow.ts reads a
 // syntax tree and nothing else — no grammar, no fs — so it bundles; and the
 // table of languages that have a flow lives there, where the walker is, rather
 // than being copied here and drifting the day a fifth one is added.
 import { FLOW_LANGUAGES, hasFlowSyntax } from '../../src/parser/flow.js';
 import type { AssociationRole, EdgeKind } from '../../src/graph/types.js';
-import type { ComponentFacts, ProvidedSymbol, Tracking, ViewGraph } from '../../src/view/types.js';
+import type { ComponentFacts, Presentation, ProvidedSymbol, Tracking, ViewGraph } from '../../src/view/types.js';
+// The other value import from src/, and safe for the same reason: types.ts
+// imports types and nothing else. The number is the engine's — it decided
+// the list — and the chip that says "106 boxes — shown as a list" names the
+// threshold in its tooltip, so it has to be this one and not a copy.
+import { LIST_ABOVE } from '../../src/view/types.js';
 
 // Types only. `groups.ts` reaches for node:fs and `git.ts` for child_process,
 // so nothing may import a value from either here — the import disappears at
@@ -35,13 +43,20 @@ export type {
   GitStatus,
   GroupColor,
   LanguageId,
+  Presentation,
   ProvidedSymbol,
   RemoteStatus,
   Tracking,
   ViewGraph,
 };
+export { LIST_ABOVE };
 export type ViewNode = ViewGraph['nodes'][number];
 export type ViewMember = ViewNode['members'][number];
+/**
+ * One crumb. A category's carries its stored id and an empty `scope`: it is a
+ * scope by membership, and a link built from it says `?category=`.
+ */
+export type ViewCrumb = ViewGraph['trail'][number];
 /** Which UML diagram the boxes make. Absent from a URL is `classes`. */
 export type Diagram = ViewGraph['spec']['diagram'];
 
@@ -86,10 +101,16 @@ export function totalUnresolved(view: ViewGraph): Unresolved | null {
   return imports === 0 && calls === 0 ? null : { imports, calls };
 }
 
-export interface ViewResponse {
-  root: string;
-  view: ViewGraph;
-}
+/**
+ * `diff` rides along only under `?diff=`: the two ends as the server resolved
+ * them. A ghost is drawn from the *before* graph, and its panel has to be
+ * read from the same one — `/api/detail?at=<from.sha>` — so the page needs
+ * the sha, not the word `base` it asked with.
+ */
+export type ViewResponse = ViewReply;
+
+/** What happened to a box, a row or a line between the two graphs of a diff. */
+export type Change = NonNullable<ViewNode['change']>;
 
 /**
  * Where the server is.
@@ -936,4 +957,55 @@ export async function requestFetch(): Promise<FetchResponse> {
   const response = await fetch(`${base}/api/fetch`, { method: 'POST' });
   if (!response.ok) throw new Error(`fetch failed: HTTP ${response.status}`);
   return (await response.json()) as FetchResponse;
+}
+
+/**
+ * The structural diff as lists and counts — what the Source Control row and
+ * the front page print. The canvas draws the same pair through `?diff=`.
+ * `from` is `base` — the session's git base — or a commit; `to` is `live` or
+ * a commit. The server's own words on a 400 (a spelling neither end takes)
+ * or a 404 (a commit the repository has not got, or no git at all).
+ */
+export type { DiffEnd, DiffReply };
+export type DiffCounts = DiffReply['counts'];
+
+export async function fetchDiff(from: string, to: string): Promise<DiffReply> {
+  const base = await serverOrigin();
+  const response = await fetch(
+    `${base}/api/diff?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+  );
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `diff failed: HTTP ${response.status}`);
+  }
+  return (await response.json()) as DiffReply;
+}
+
+/**
+ * The front page, in one answer: what the project is, where it starts, what
+ * it is made of, what changed and what the agent is doing. Every list in it
+ * is the engine's — see src/view/overview.ts — and the page only decides
+ * where each row leads.
+ */
+export type { OverviewReply };
+export type EntryPoint = OverviewReply['entryPoints']['manifest'][number];
+export type Root = OverviewReply['entryPoints']['roots'][number];
+export type NamedCategory = OverviewReply['categories']['named'][number];
+export type OverviewChanges = NonNullable<OverviewReply['changes']>;
+export type ChangedFile = OverviewChanges['files'][number];
+
+/**
+ * Live only. Under `at` the server refuses with a sentence — a commit's graph
+ * is served without the facts its entry points are read from — and the
+ * sentence is what the page prints, so it is thrown as the error's own words
+ * rather than as a status code.
+ */
+export async function fetchOverview(at: string | null = null): Promise<OverviewReply> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/overview${at === null ? '' : `?at=${encodeURIComponent(at)}`}`);
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `overview failed: HTTP ${response.status}`);
+  }
+  return (await response.json()) as OverviewReply;
 }

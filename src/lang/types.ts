@@ -63,6 +63,24 @@ export interface LanguageParse {
 }
 
 /**
+ * A file the project starts from, and how that is known.
+ *
+ * Only ever a file the scan found. A manifest that names build output —
+ * codemap's own `bin` is `./dist/cli/index.js` — points at nothing the graph
+ * can draw, so it is dropped here and the source it was compiled from turns up
+ * under "nothing imports it" instead. `why` is words rather than a code
+ * because the front page prints it as written, and says why, not just what.
+ */
+export interface EntryPoint {
+  /** Project-relative POSIX, and a key into the graph's file nodes. */
+  file: string;
+  /** How this is known: `package.json main`, `Next.js page`, `Go func main()`. */
+  why: string;
+  /** The script's name for a `package.json script`; absent when `why` says it all. */
+  detail?: string;
+}
+
+/**
  * Facts about the project that no single file can know, gathered once by the
  * scan. Every language reads the fields it needs and ignores the rest.
  */
@@ -75,6 +93,21 @@ export interface ProjectFacts {
   goModule: string | null;
   /** Crate name -> the directory holding its src, from Cargo.toml. */
   crates: ReadonlyMap<string, string>;
+  /**
+   * Where the project starts, by manifest and by convention: package.json
+   * `main`, `bin`, `exports` and the scripts that run a file of the project's
+   * own; a Go `func main`; Cargo's `[[bin]]`, `src/main.rs` and `src/bin/`;
+   * Python's `__main__.py`; every `page.tsx`, `route.ts`, layout and fallback
+   * under a Next project's `app/`, and every file under its `pages/`. Sorted
+   * by file, one entry per file, the first claim winning.
+   *
+   * Optional because a store before its scan, and the fixtures that build
+   * facts by hand, have none to give: absent means not gathered, and an empty
+   * list is a gathered project in which nothing declared a start. Read once at
+   * boot like every other fact, so a page added since is not here — it lands
+   * under "nothing imports it" until the project is opened again.
+   */
+  entryPoints?: readonly EntryPoint[];
 }
 
 export interface ResolveContext {

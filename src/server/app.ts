@@ -48,10 +48,12 @@ import {
 } from '../view/filter.js';
 import { clusterFiles, identify } from '../view/cluster.js';
 import { search } from '../view/search.js';
-import { projectLanguages, selectView } from '../view/select.js';
-import type { LanguageCount, ViewSpec } from '../view/types.js';
+import { categoryOf, projectLanguages, selectView } from '../view/select.js';
+import type { LanguageCount, Presentation, ViewGraph, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
+import { registerDiffRoute, resolveDiffEnds, type DiffEnd } from './diff.js';
 import { registerFlowRoute } from './flow.js';
+import { registerOverviewRoute } from './overview.js';
 import type { AgentCall, ExplainRun, SessionHost, SuggestResult } from './session.js';
 
 // Vite builds the page into dist/web, beside this module's dist/server.
@@ -200,6 +202,18 @@ export interface RepoInfo {
   };
 }
 
+/**
+ * What `/api/view` answers. `diff` rides along only under `?diff=`: the two
+ * ends as they resolved, because a ghost's panel is read from the *before*
+ * commit — `/api/detail?at=<from.sha>` — and `base` is a name the page cannot
+ * turn into a sha on its own.
+ */
+export interface ViewReply {
+  root: string;
+  view: ViewGraph;
+  diff?: { from: DiffEnd; to: DiffEnd };
+}
+
 export interface FetchResponse {
   ok: boolean;
   detail: string;
@@ -258,7 +272,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   app.register(fastifyStatic, { root: WEB_DIR });
   app.register(websocket);
 
-  app.get('/api/view', async (request, reply) => {
+  app.get('/api/view', async (request, reply): Promise<ViewReply | { error: string }> => {
     const session = host.current();
     const query = request.query as Record<string, unknown>;
 
@@ -278,6 +292,13 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
         error: `diagram= takes ${DIAGRAMS.join(' or ')} — not ${String(query['diagram'])}`,
       });
     }
+    // And again: `as=lsit` drawn by the threshold's rule is a list under a URL
+    // that asked for something, and nobody can tell which.
+    if (readAs(query['as']) === null) {
+      return reply.code(400).send({
+        error: `as= takes ${PRESENTATIONS.join(' or ')} — not ${String(query['as'])}`,
+      });
+    }
 
     const spec = toSpec(query);
 
@@ -287,14 +308,46 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     if (spec.at !== null && !isCommitId(spec.at)) {
       return reply.code(404).send({ error: `not a commit id: ${spec.at}` });
     }
+
+    // The structural diff: only what differs between the base's graph — or a
+    // commit's — and this one. The two ends resolve exactly as `/api/diff`
+    // resolves them, so the canvas and the lists can never disagree about
+    // which commits they are between; frozen at `?at=` the diff is between
+    // two commits, which is what `to` names then. Scope, focus and category
+    // are not slices of a diff, so none of them is checked, and no category
+    // is read; git status rides the boxes live and not at a commit, as on
+    // every other view. Coverage is not joined — see `diffView`.
+    if (spec.diff !== undefined) {
+      const ends = await resolveDiffEnds(session, spec.diff, spec.at ?? 'live');
+      if (!ends.ok) return reply.code(ends.status).send({ error: ends.error });
+      const git = spec.at === null ? session.gitStatus() : null;
+      return {
+        root: session.root,
+        view: selectView(ends.after, spec, Date.now(), git, null, [], ends.before),
+        diff: { from: ends.from, to: ends.to },
+      };
+    }
+
     const graph = await graphFor(session, spec.at);
     if (graph === null) return reply.code(404).send({ error: `unknown commit ${spec.at}` });
 
-    // A focus or scope the graph has never heard of is a 404 for the same
-    // reason. It used to answer the root view, which is a diagram of the whole
-    // project under a URL naming one file — the reader has no way to tell that
-    // from a file with no imports.
-    const missing = missingFrom(graph, spec);
+    // A component diagram draws the categories, which are this graph's own
+    // clusters wearing the names in groups.json — the commit's clusters under
+    // `at`, exactly as `/api/clusters?at=` answers. A category scope reads
+    // the same list for its members. The file is re-read first, because
+    // nothing watches `.codemap/`: this is the one moment a name written by
+    // hand since the last save is caught, and it is one small read.
+    let categories: GroupSuggestion[] = [];
+    if (spec.diagram === 'components' || spec.category !== undefined) {
+      await session.refreshGroups();
+      categories = session.clustersOf(graph).clusters;
+    }
+
+    // A focus, scope or category the graph has never heard of is a 404 for
+    // the same reason. It used to answer the root view, which is a diagram of
+    // the whole project under a URL naming one file — the reader has no way to
+    // tell that from a file with no imports.
+    const missing = missingFrom(graph, spec, categories);
     if (missing !== null) return reply.code(404).send({ error: missing });
 
     // No git status at a commit: it has no working tree to differ from a base.
@@ -312,17 +365,6 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     if (spec.at === null) {
       await session.refreshCoverage();
       coverage = session.coverage();
-    }
-
-    // A component diagram draws the categories, which are this graph's own
-    // clusters wearing the names in groups.json — the commit's clusters under
-    // `at`, exactly as `/api/clusters?at=` answers. The file is re-read first,
-    // because nothing watches `.codemap/`: this is the one moment a name
-    // written by hand since the last save is caught, and it is one small read.
-    let categories: GroupSuggestion[] = [];
-    if (spec.diagram === 'components') {
-      await session.refreshGroups();
-      categories = session.clustersOf(graph).clusters;
     }
 
     // The view carries the graph's own `fileCount`, so the Repository panel
@@ -388,6 +430,16 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   // The activity diagram of one function. Its own module: the flow is a
   // detail about a symbol, like /api/symbol, and never graph structure.
   registerFlowRoute(app, () => host.current());
+
+  // The structural diff as lists and counts — what the Source Control row
+  // and the front page print; the canvas draws the same pair through
+  // `/api/view?diff=`. Its own module for the reason the flow has one.
+  registerDiffRoute(app, () => host.current());
+
+  // The front page: what the project is, where it starts, what it is made
+  // of, what changed and what the agent is doing — a list, never a diagram.
+  // Its own module for the reason the flow has one; see view/overview.ts.
+  registerOverviewRoute(app, () => host.current());
 
   /**
    * What has been explained, for the ids the panel is showing.
@@ -1025,10 +1077,47 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     // The route has already refused an unknown one, so the fallback here is
     // for the socket reader below, which is handed the server's own echo.
     diagram: readDiagram(raw['diagram']) ?? 'classes',
+    // Spread rather than assigned: absent is a key the URL did not carry, and
+    // `exactOptionalPropertyTypes` will not let an undefined stand in for it.
+    // The three keys the two readers must not disagree about — see
+    // `toSocketSpec`, which reads the same three off the same names.
+    ...optionalKeys(raw),
+  };
+}
+
+/**
+ * The three keys that are absent more often than not, read once for both
+ * wire formats: they share the names, and the page sends back the spec it
+ * was given, so the socket reader is handed exactly what the query reader
+ * built. A refused `as=` is dropped here rather than defaulted, and the
+ * route refuses it before this runs.
+ */
+function optionalKeys(raw: Record<string, unknown>): Pick<ViewSpec, 'as' | 'category' | 'diff'> {
+  const as = readAs(raw['as']);
+  const category = raw['category'];
+  const diff = readAt(raw['diff']);
+  return {
+    ...(as === undefined || as === null ? {} : { as }),
+    ...(typeof category === 'string' && category !== '' ? { category } : {}),
+    // Kept as given, like `at` and for the same reason: `base` or a commit is
+    // for the route to check, and turning a bad one into nothing would draw
+    // the working tree under a URL that asked for a diff.
+    ...(diff === null ? {} : { diff }),
   };
 }
 
 const DIAGRAMS = ['classes', 'components'] as const;
+const PRESENTATIONS = ['list', 'diagram'] as const;
+
+/**
+ * `as=list` or `as=diagram`: itself. Absent is undefined — the threshold
+ * decides, see `presentationOf` — and anything else is null, so the view
+ * route can refuse it the way it refuses `diagram=`.
+ */
+function readAs(raw: unknown): Presentation | undefined | null {
+  if (raw === undefined || raw === '') return undefined;
+  return raw === 'list' || raw === 'diagram' ? raw : null;
+}
 
 /**
  * Which diagram a request asks for: absent is the class diagram, a name is
@@ -1078,19 +1167,31 @@ async function graphFor(session: Session, at: string | null): Promise<Graph | nu
 /**
  * Why this spec cannot be drawn from this graph, or null when it can.
  *
- * A focus names a file; a scope names a directory with at least one file
- * under it. Checked against the whole graph and not the filtered slice: a
- * file the "changes only" filter hid is still a file, and the filter
- * emptying the view is its own honest answer. The scope is normalised the way
- * `selectView` normalises it, so `src/graph/` and `src/graph` are one question.
+ * A focus names a file; a category names a stored, accepted group; a scope
+ * names a directory with at least one file under it. Checked against the
+ * whole graph and not the filtered slice: a file the "changes only" filter
+ * hid is still a file, and the filter emptying the view is its own honest
+ * answer. The scope is normalised the way `selectView` normalises it, so
+ * `src/graph/` and `src/graph` are one question. The category is looked up
+ * by the same `categoryOf` the view falls back from, so the route can never
+ * refuse one the view would draw or draw one it would refuse.
  */
-function missingFrom(graph: Graph, spec: ViewSpec): string | null {
-  // A component diagram ignores both, and refusing a scope it will not read
-  // would be a 404 for a picture that can be drawn.
+function missingFrom(graph: Graph, spec: ViewSpec, categories: readonly GroupSuggestion[]): string | null {
+  // A component diagram ignores all three, and refusing a scope it will not
+  // read would be a 404 for a picture that can be drawn.
   if (spec.diagram === 'components') return null;
   if (spec.focus !== null) {
     return graph.nodes.get(spec.focus)?.kind === 'file' ? null : `no such file: ${spec.focus}`;
   }
+  if (spec.category !== undefined && categoryOf(categories, spec.category) === null) {
+    // Said apart, because they are: a rejected one exists, and the person
+    // asking may be the one who rejected it.
+    const stored = categories.find((category) => category.storedId === spec.category);
+    return stored?.state === 'rejected'
+      ? `category "${stored.name ?? spec.category}" was rejected`
+      : `no such category: ${spec.category}`;
+  }
+  if (spec.category !== undefined) return null;
   const scope = spec.scope.replace(/^\/+|\/+$/g, '');
   if (scope === '') return null;
   const prefix = `${scope}/`;
@@ -1147,6 +1248,7 @@ function toSocketSpec(raw: Record<string, unknown>): ViewSpec {
     },
     at: readAt(raw['at']),
     diagram: readDiagram(raw['diagram']) ?? 'classes',
+    ...optionalKeys(raw),
   };
 }
 

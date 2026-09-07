@@ -119,14 +119,15 @@ export function createLiveHub(
         // meaning five minutes from now rather than five minutes from when it was set.
         // Coverage is taken, not read: this is synchronous by design, and the
         // session has already stamped the report on its way to publishing.
-        // The categories the same way, and only for a client that draws them.
+        // The categories the same way, and only for a client that reads them:
+        // one drawing them as boxes, or one scoped to one of them.
         view: selectView(
           graph,
           spec,
           Date.now(),
           session.gitStatus(),
           session.coverage(),
-          spec.diagram === 'components' ? session.clustersOf(graph).clusters : [],
+          readsCategories(spec) ? session.clustersOf(graph).clusters : [],
         ),
         changedFiles,
       }),
@@ -186,7 +187,7 @@ export function createLiveHub(
         if (socket.readyState === OPEN) socket.send(payload);
       }
       for (const [socket, spec] of clients) {
-        if (spec.diagram === 'components' && spec.at === null) push(socket, spec, [], 'update');
+        if (readsCategories(spec) && spec.at === null) push(socket, spec, [], 'update');
       }
     },
 
@@ -194,4 +195,15 @@ export function createLiveHub(
       return clients.size;
     },
   };
+}
+
+/**
+ * Whether a view is built from the categories at all — drawn as boxes, or
+ * scoped to one — and so must be handed them, and pushed again when the
+ * names change: a category's membership can move on a groups.json write
+ * as much as its name can, and a scope drawn from it is then a different
+ * set of boxes.
+ */
+function readsCategories(spec: ViewSpec): boolean {
+  return spec.diagram === 'components' || spec.category !== undefined;
 }
