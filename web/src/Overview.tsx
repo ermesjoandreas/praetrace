@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { ChangedFile, EntryPoint, GitFileStatus, NamedCategory, OverviewReply, Root } from './api';
+import { fileIconFor } from './fileicons';
 import { FOLD_MANIFEST_AT, changesSummary, manifestGroups, splitPath, type EntryGroup } from './frontpage';
 import { relativeTime } from './GitGraph';
 import { LIST_ROW, useListKeys } from './listkeys';
@@ -54,6 +55,14 @@ interface OverviewProps {
   queried: ReadonlySet<string>;
   /** A file and its neighbours. Every file row leads here. */
   onFocus: (file: string) => void;
+  /**
+   * Whether the graph holds a file box for a path — the root view's files,
+   * which under the front page is the whole project. The agent's row leads
+   * to `?focus=` only for one it does: `describe_file` on a directory names
+   * a path with a slash in it and no file to focus on, and the row used to
+   * link it to a 404.
+   */
+  inGraph: (path: string) => boolean;
   /** A category's files, wherever they sit. */
   onCategory: (storedId: string) => void;
   /** The Categories section in the left bar, where names are given. */
@@ -111,6 +120,7 @@ export function Overview({
   changed,
   queried,
   onFocus,
+  inGraph,
   onCategory,
   onCategories,
   onChanges,
@@ -176,6 +186,9 @@ export function Overview({
     depth = 0,
   ) => {
     const { name, where } = splitPath(file);
+    // The file icon, as the explorer draws one; the codicon for a file the
+    // theme has no picture for.
+    const icon = fileIconFor(file);
     return (
       <button
         key={key}
@@ -185,7 +198,11 @@ export function Overview({
         title={title}
         onClick={() => onFocus(file)}
       >
-        <i className="codicon codicon-file" aria-hidden="true" />
+        {icon !== null ? (
+          <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
+        ) : (
+          <i className="codicon codicon-file" aria-hidden="true" />
+        )}
         <span className="front-name">{name}</span>
         <span className="front-where">{where}</span>
         {extra.detail !== undefined && <span className="front-why">{extra.detail}</span>}
@@ -265,9 +282,13 @@ export function Overview({
               </div>
               <div
                 className="front-row"
-                // No link: the list has no column to sort by language, and a
+                // No link, and a div like Root and Files above it: there is no
+                // view by language — the list has no column for one, and the
+                // icon on every file row is where a language is read — so a
                 // row that led to the same twelve folders would be furniture.
-                title="What codemap parsed here, biggest first. Detected from the files, never declared."
+                // Measured: body colour, `cursor: auto`, no hover fill, the
+                // same as the two rows above it. The title says so too.
+                title="What codemap parsed here, biggest first. Detected from the files, never declared. Information only: there is no view by language — the file icon on every row is where a language is read."
               >
                 <span className="front-label">Languages</span>
                 <span className="front-value">
@@ -335,15 +356,23 @@ export function Overview({
                     title="Source files no other source file imports, tests and declaration files aside. A start, or dead code — the graph cannot tell which. Most-importing first, because a root that pulls in twenty files reads as a program."
                   >
                     Found by the graph
+                    {/* Where a section puts its status, and not a row under
+                        the list: "and 45 more" stood there as a row nothing
+                        opened, and a row that leads nowhere is furniture.
+                        Nothing lists the rest — past forty files the root
+                        is drawn as directories, and a list of those sorted
+                        by lines in is a list of directories, not of these —
+                        so the number is said once, as a number. */}
+                    {overview.entryPoints.rootsTotal > roots.length && (
+                      <span
+                        className="front-subcount"
+                        title={`The ${roots.length} that import most, of ${overview.entryPoints.rootsTotal}. No view lists the rest.`}
+                      >
+                        {roots.length} of {overview.entryPoints.rootsTotal}
+                      </span>
+                    )}
                   </h3>
                   {roots.map((root) => rootRow(root, fileRow))}
-                  {overview.entryPoints.rootsTotal > roots.length && (
-                    // A count and not a control: nothing lists the rest, and a
-                    // row that led nowhere would be worse than the number.
-                    <p className="front-note" title="The front page lists the twelve that import most. There is no view of the rest yet.">
-                      and {overview.entryPoints.rootsTotal - roots.length} more
-                    </p>
-                  )}
                 </>
               )}
             </Section>
@@ -483,7 +512,7 @@ export function Overview({
                 </p>
               ) : (
                 <>
-                  {agentRow(overview.agent.last, now, marksOf, onFocus)}
+                  {agentRow(overview.agent.last, now, marksOf, onFocus, inGraph)}
                   {overview.agent.lastNote !== null && overview.agent.lastNote.note !== undefined && (
                     <div
                       className="front-row"
@@ -642,20 +671,27 @@ function changeRow(file: ChangedFile, marks: string, onFocus: (file: string) => 
 }
 
 /**
- * What the agent last asked, and where. A target with a slash is a path and
- * the row leads to it; a search term is not, and the row only says so.
+ * What the agent last asked, and where. A target the graph holds a file box
+ * for is a path and the row leads to it; a search term is not, and neither
+ * is a directory — `describe_file` takes one, and a slash in it is not a
+ * file to focus on — so the row only says so.
  */
 function agentRow(
   last: NonNullable<OverviewReply['agent']['last']>,
   now: number,
   marksOf: (file: string) => string,
   onFocus: (file: string) => void,
+  inGraph: (path: string) => boolean,
 ) {
-  const path = last.target !== null && last.target.includes('/') ? last.target : null;
+  const path = last.target !== null && inGraph(last.target) ? last.target : null;
   const age = relativeTime(last.at, now);
   if (path === null) {
+    // A path-shaped target that is not a file box says why the row leads
+    // nowhere: a directory, or a file the graph does not hold.
+    const why =
+      last.target !== null && last.target.includes('/') ? ' — not a file the graph holds, so nothing to focus on' : '';
     return (
-      <div className="front-row" title={`${last.tool}${last.target === null ? '' : ` "${last.target}"`}, ${age}`}>
+      <div className="front-row" title={`${last.tool}${last.target === null ? '' : ` "${last.target}"`}, ${age}${why}`}>
         <i className="codicon codicon-hubot" aria-hidden="true" />
         <span className="front-name-ui">{last.tool}</span>
         {last.target !== null && <span className="front-where">{last.target}</span>}

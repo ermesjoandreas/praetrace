@@ -1,5 +1,6 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { money } from './api';
+import { fileIconFor } from './fileicons';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
 import type { GroupColor, GroupSuggestion, OrphanGroup, Suggestion } from './api';
@@ -59,6 +60,22 @@ function suggestTitle(lastRun: { costUsd: number; ms: number } | null): string {
       ? 'about $0.05'
       : `the last run cost ${money(lastRun.costUsd)} and took ${Math.round(lastRun.ms / 1000)} s`;
   return `Ask Claude to suggest names for the unnamed categories — ${cost}, nothing is saved until you accept one`;
+}
+
+/**
+ * A file under a category, as the explorer lists one: the file icon, then
+ * the path with its directory ellipsised away first. Both shapes a row takes
+ * — the bare leaf, and the leaf beside a ✕ while a drawn category is being
+ * edited — draw the same two things.
+ */
+function fileLeaf(file: string) {
+  const icon = fileIconFor(file);
+  return (
+    <>
+      {icon !== null && <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />}
+      <span className="group-file-path">{file}</span>
+    </>
+  );
 }
 
 /**
@@ -514,7 +531,7 @@ export function Categories({
                     open && manual ? (
                       <span className="group-row" key={file}>
                         <button type="button" {...LIST_ROW} title={file} onClick={() => onSelect(file)}>
-                          {file}
+                          {fileLeaf(file)}
                         </button>
                         <span className="row-actions">
                           <button
@@ -540,7 +557,7 @@ export function Categories({
                       </span>
                     ) : (
                       <button type="button" {...LIST_ROW} key={file} title={file} onClick={() => onSelect(file)}>
-                        {file}
+                        {fileLeaf(file)}
                       </button>
                     ),
                   )}

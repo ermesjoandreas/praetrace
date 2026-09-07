@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { describeUnresolved, type GitFileStatus, type LanguageId, type ViewGraph, type ViewNode } from './api';
+import { fileIconFor } from './fileicons';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { holdOrder, letterStatus, nextSort, rowsOf, sortRows, type ListRow, type Sort, type SortKey } from './listrows';
 
@@ -247,7 +248,11 @@ export function ListView({
           if (changed.has(row.id)) classes.push('list-row-changed');
           if (queried.has(row.id)) classes.push('list-row-queried');
           if (dimmed) classes.push('list-row-aside');
-          const tag = !showLanguage ? null : row.language === null ? 'mixed' : LANGUAGE_TAG[row.language];
+          // A file row's id is its path, which is what the icon is read off.
+          // The tag stays only where there is no icon — a folder's pile, or a
+          // file the theme has no picture for — as on the box.
+          const icon = row.kind === 'file' ? fileIconFor(row.id) : null;
+          const tag = !showLanguage || icon !== null ? null : row.language === null ? 'mixed' : LANGUAGE_TAG[row.language];
           const letter = letterStatus(row);
           return (
             <button
@@ -267,7 +272,11 @@ export function ListView({
               }}
             >
               <span className="list-cell list-name">
-                <i className={`codicon codicon-${KIND_ICON[row.kind]}`} aria-hidden="true" />
+                {icon !== null ? (
+                  <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
+                ) : (
+                  <i className={`codicon codicon-${KIND_ICON[row.kind]}`} aria-hidden="true" />
+                )}
                 <span className="list-label">{row.label}</span>
                 {row.external && <span className="list-tag">outside</span>}
                 {/* The same marks the box's title carries, for the same

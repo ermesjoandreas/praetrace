@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { fetchSearch, type SearchHit } from './api';
+import { fileIconFor } from './fileicons';
 
 interface SearchPaletteProps {
   /**
@@ -132,6 +133,10 @@ export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
               const isFile = hit.kind === 'file';
               const positions = matchedAt(isFile ? hit.path : hit.name, needle);
               const nameOffset = isFile ? hit.path.length - hit.name.length : 0;
+              // A file wears its file icon, as Quick Open draws one; a symbol
+              // keeps its kind's glyph, and so does a file the theme has no
+              // picture for.
+              const icon = isFile ? fileIconFor(hit.path) : null;
 
               return (
                 <li key={`${hit.path}-${hit.name}-${index}`} role="presentation">
@@ -146,12 +151,16 @@ export function SearchPalette({ at, onPick, onClose }: SearchPaletteProps) {
                     className={index === active ? 'hit hit-active' : 'hit'}
                     onClick={(event) => onPick(hit, event.shiftKey)}
                   >
-                    <i
-                      className={`codicon codicon-${KIND_ICON[hit.kind]} hit-icon kind-${hit.kind}`}
-                      role="img"
-                      aria-label={hit.kind}
-                      title={hit.kind}
-                    />
+                    {icon !== null ? (
+                      <img className="file-icon hit-icon" src={icon.url} alt="file" title={icon.label} draggable={false} />
+                    ) : (
+                      <i
+                        className={`codicon codicon-${KIND_ICON[hit.kind]} hit-icon kind-${hit.kind}`}
+                        role="img"
+                        aria-label={hit.kind}
+                        title={hit.kind}
+                      />
+                    )}
                     <span className={`hit-name kind-${hit.kind}`}>
                       {coloured(hit.name, positions, nameOffset)}
                       {hit.kind === 'function' ? '()' : ''}

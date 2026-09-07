@@ -38,6 +38,16 @@ export interface LiveHub {
    * happens in the working tree changes what that commit looked like, and a
    * view recomputed from the live graph would quietly replace the commit with
    * now while the page still said otherwise. A frozen view is frozen.
+   *
+   * A client drawing the structural diff is told, and handed no view. The
+   * hub holds one graph and a diff is of two: the other is a commit's, built
+   * through git and the session's cache, asynchronously, and answered by
+   * `/api/view?diff=` together with the two ends the page reads a ghost's
+   * panel from. A push is synchronous by design, and it used to compute the
+   * whole root view for such a client — a slice with no `diff` in its echo,
+   * which the page threw away and fetched the diff for. So the frame is the
+   * signal and the files, and the page fetches from the one route that can
+   * resolve both ends.
    */
   publish(changedFiles: readonly string[]): void;
   /**
@@ -151,6 +161,13 @@ export function createLiveHub(
     publish(changedFiles) {
       for (const [socket, spec] of clients) {
         if (spec.at !== null) continue;
+        if (spec.diff !== undefined) {
+          // The signal and the files, and no view — see `publish` above.
+          if (socket.readyState === OPEN) {
+            socket.send(JSON.stringify({ type: 'changed', root: getSession().root, changedFiles }));
+          }
+          continue;
+        }
         push(socket, spec, changedFiles, 'update');
       }
     },

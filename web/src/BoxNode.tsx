@@ -9,6 +9,7 @@ import {
   type ViewMember,
   type ViewNode,
 } from './api';
+import { fileIconFor } from './fileicons';
 import { MAX_MEMBERS } from './layout';
 
 export type BoxData = {
@@ -211,15 +212,25 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const shown = data.expanded ? data.members : rowsToShow(data.members);
   const hidden = data.members.length - shown.length;
   const file = data.kind === 'file' ? data.files[0] : undefined;
+  // The file icon, the way the editor's explorer says what a file is: the
+  // theme has one for every language this tool reads, so a file box always
+  // wears it, in a project of one language too — the test variant is what
+  // tells a suite's box from the code's at a glance. A folder stands for a
+  // pile and gets none.
+  const icon = file === undefined ? null : fileIconFor(file);
   // Muted text and nothing else. The box surface already carries amber for just
   // written, blue for the agent just asked, a git badge and the selection ring;
   // what a file is written in is the slowest fact of the five and gets the
-  // quietest treatment. Only a folder can be mixed — every file has one.
-  const tag = !data.showLanguage
-    ? null
-    : data.language === null
-      ? 'mixed'
-      : LANGUAGE_TAG[data.language];
+  // quietest treatment. Only a folder can be mixed — every file has one. And
+  // never beside the icon: an icon and a tag saying the same thing is two
+  // things for one fact, so the tag is a folder's, or a file's the theme has
+  // no picture for.
+  const tag =
+    !data.showLanguage || icon !== null
+      ? null
+      : data.language === null
+        ? 'mixed'
+        : LANGUAGE_TAG[data.language];
 
   // `lines` is what the report had a count for, not what the file holds, so the
   // sentence says "measured" rather than leaving the reader to assume the file
@@ -281,6 +292,9 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
       <Handle type="target" position={Position.Left} />
 
       <div className="box-title">
+        {icon !== null && (
+          <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
+        )}
         <span className="box-title-text" title={title}>
           {data.label}
         </span>

@@ -108,10 +108,10 @@ Each one is a different *kind* of mark, not just a different hue:
 | just written | border pulse, holds a tint | git modified, amber |
 | the agent asked about it | border pulse | info blue |
 | git status | a letter badge in the title | the git colour |
-| language | a small muted tag in the title | none |
+| language | the file icon before the name — the Material Icon Theme's, coloured, the one mark on the page that is not a Codicon; a folder box, which stands for a pile, keeps a small muted tag | the theme's own: the file type's meaning, not one of this app's |
 | frozen at a commit | a chip in the breadcrumb row, `Viewing 7fe7f88 · 2 days ago ✕` | badge grey, like the filter chips |
 | a thread in the commit graph | a 1.5px line in the lane column | the accent for lane 0, then graph 1–5 |
-| a test, fixture or story | a small muted `test` tag in the title, beside the language tag | none |
+| a test, fixture or story | a small muted `test` tag in the title; a TypeScript or JavaScript file's icon is the theme's test flask as well | none |
 | a file that would not fully parse | a 16px `codicon-warning` in the title, before the language tag | warning |
 | too many boxes to place quickly | a chip in the breadcrumb row, `⚠ 289 boxes — depth 1 is quicker` | warning |
 | a stored name that matches nothing | a row under "Stored, matches nothing" in Categories | muted |
@@ -142,7 +142,9 @@ new signal one of those three hues — the frozen chip was blue for a day and sh
 the agent's colour with a state that has nothing to do with the agent.
 
 Group frames keep the eight colours a person chose for them, at a 6% fill and a 40%
-border. Those are the user's own meaning and are not subject to rule 4.
+border. Those are the user's own meaning and are not subject to rule 4. Nor are
+the file icons: their colours are the file type's, and the icon theme's — see
+*File icon* under Components.
 
 ---
 
@@ -223,8 +225,9 @@ file. An added or touched box under a diff is an ordinary box wearing `A` or
 sort button per column: 11px bold, muted, the active one in the body colour
 with a `codicon-triangle-up` or `-down` and `aria-sort`. Then 22px rows in the
 same grid template as the header — `minmax(0, 1fr) 76px 84px 56px 56px 32px
-44px`: name, kind, members, in, out, git, test — a 16px codicon leading the
-monospace name, tabular figures right-aligned, the git letter centred in its
+44px`: name, kind, members, in, out, git, test — the file icon, or a 16px
+codicon for a folder, a bundle or a component, leading the monospace name,
+tabular figures right-aligned, the git letter centred in its
 colour, the `test` tag muted. Hover `#2A2D2E`, selected `#04395E`, a row
 outside the scope at 60% and a lens-dimmed row at 35%, and the same amber and
 blue pulses a box wears. One Tab stop. Nothing on the row is decoration: every
@@ -326,6 +329,28 @@ the button's `title` and `aria-label`. Never an emoji, never a unicode glyph. Th
 visibility marks (`+ − #`), the multiplicities (`1`, `0..1`, `*`) and role names on
 a line, the git letters, and `·` are text and stay text.
 
+**File icon** — the one exception, and it is VS Code's own: the editor draws its
+files with a separate, coloured file icon theme, because the colour *is* the
+recognition — a reader knows a `.ts` from a `.go` before the name has been read.
+The twelve pictures are the Material Icon Theme's (MIT, in `web/src/icons/`, each
+with its licence line): nine language icons for the seven languages the tool
+reads — `.tsx` and `.jsx` are the theme's React variants — and its three test
+flasks for what `view/tests.ts` calls a test in the TypeScript and JavaScript
+families; a Go or Java test keeps its language's icon, as it does in the editor.
+`web/src/fileicons.ts` is the mapping, by path alone, the way the language and
+the test tag are decided. A 16px `<img>` with `alt=""` and the language in its
+`title`, shipped as a data URI inside the bundle — about 15 KB minified and
+3.4 KB gzipped for all twelve, by vite's own reporter, on a 614 KB bundle: the
+colour is the picture's own and nothing on the page
+recolours it, so it is not in the DOM as paths the way a codicon has to be. It
+leads the name wherever the explorer would show one — the box title, the list
+row, a ⌘K file hit, a category's file rows, the Detail lists, the front page's
+entry points — and it *replaces* the language tag on a file box and a file row,
+because an icon and a tag saying the same thing is two things for one fact. A
+folder box keeps its tag; a file the theme has no picture for keeps the codicon
+it had. The colours are the theme's and not this app's: like a group frame's,
+they carry a meaning of their own and are not subject to rule 4.
+
 **Scrollbar** — 14px overlay, no track, no radius, thumb `#79797966`.
 
 **Focus ring** — 1px solid accent, `outline-offset: -1px` in lists and `2px` on
@@ -403,7 +428,8 @@ The checklist a change to `web/` has to pass, with the page in front of you:
   `.canvas-faint` in a focus or a diff.
 - Only `#0078D4` as accent; `7aa2f7`, `bb9af7`, `9ece6a`, `e0af68` absent. The
   five lane hexes (`ffb000`, `dc267f`, `994f00`, `40b0a6`, `b66dff`) are expected.
-- Every icon a Codicon that renders — no missing-glyph boxes.
+- Every icon a Codicon that renders — no missing-glyph boxes — and every file
+  icon a 16px `<img>` with a `data:` src, never a request for a `.svg`.
 - Section and row actions absent until hovered.
 - A group frame still hugs its members after any change near `layout.ts`.
 - `document.body.scrollHeight === innerHeight`.

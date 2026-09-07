@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react';
+import { fileIconFor } from './fileicons';
 import { shortSha } from './GitGraph';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
@@ -963,13 +964,19 @@ function PathList({
 
   return (
     <PanelList title={`${title} (${floor ? FLOOR : ''}${paths.length})`} note={note}>
-      {paths.map((path) => (
-        <li key={path}>
-          <button type="button" {...LIST_ROW} className="path" onClick={() => onSelect(path)} title={path}>
-            {path}
-          </button>
-        </li>
-      ))}
+      {paths.map((path) => {
+        // The file icon, as the explorer lists a file; a directory in a
+        // folder's lists has none, and is drawn as it was.
+        const icon = fileIconFor(path);
+        return (
+          <li key={path}>
+            <button type="button" {...LIST_ROW} className="path" onClick={() => onSelect(path)} title={path}>
+              {icon !== null && <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />}
+              <span className="path-text">{path}</span>
+            </button>
+          </li>
+        );
+      })}
     </PanelList>
   );
 }
@@ -1490,10 +1497,17 @@ function Relations({
             >
               {/* The name is a basename here, which without a mark would read
                   as a symbol someone had called store.ts. Beside the name and
-                  not inside it, so the name keeps its own ellipsis. */}
-              {row.kind === 'file' && (
-                <i className="codicon codicon-symbol-file followed-icon" aria-hidden="true" />
-              )}
+                  not inside it, so the name keeps its own ellipsis. The file
+                  icon where the theme has one; the codicon where it has not. */}
+              {row.kind === 'file' &&
+                (() => {
+                  const icon = fileIconFor(row.filePath);
+                  return icon !== null ? (
+                    <img className="file-icon followed-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
+                  ) : (
+                    <i className="codicon codicon-symbol-file followed-icon" aria-hidden="true" />
+                  );
+                })()}
               <span className="followed-symbol">{row.name}</span>
               {/* The graph's phrase, not the kind: an association reads
                   "composed of", "aggregates" or "holds" by what the source

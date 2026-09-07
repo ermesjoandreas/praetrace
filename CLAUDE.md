@@ -681,6 +681,10 @@ web/              the browser page (Vite, built into dist/web)
   src/api.ts      fetch + the shared types, imported from src/ — and one value,
                   flow.ts's language table, which bundles because it reads a
                   tree and nothing else
+  src/fileicons.ts path -> file icon, the Material Icon Theme's twelve SVGs in
+                  src/icons/ — the one icon that is not a Codicon, and DESIGN.md
+                  says why; tested, and the SVGs are bound with `new URL` so Node
+                  can load the module
 .claude/
   settings.json   the PostToolUse hook, committed so the repo dogfoods itself
 .codemap/

@@ -106,7 +106,6 @@ import {
   barOf,
   clampLayout,
   defaultLayout,
-  defaultStack,
   isDefaultLayout,
   isFolded,
   loadLayout,
@@ -114,6 +113,8 @@ import {
   resizeBar,
   resizeSection,
   saveLayout,
+  setFolded,
+  stackApplies,
   stackOf,
   type BarId,
   type Layout,
@@ -226,18 +227,6 @@ function measureStack(main: HTMLElement | null, bar: BarId): number[] {
     return section instanceof HTMLElement ? section.offsetHeight : 0;
   });
   return sizes.some((height) => height <= 0) ? [] : sizes;
-}
-
-/**
- * One section to an exact height, through whichever sash can express it. The
- * last section in a stack has no sash under it, so it is moved by the one
- * above — the same reach `resetPane` makes for the same reason.
- */
-function setSectionHeight(layout: Layout, bar: BarId, index: number, want: number, viewport: Viewport): Layout {
-  if (index < SECTIONS[bar].length - 1) return resizeSection(layout, bar, index, want, viewport);
-  const sizes = stackOf(layout, bar, viewport);
-  const pair = (sizes[index - 1] ?? 0) + (sizes[index] ?? 0);
-  return resizeSection(layout, bar, index - 1, pair - want, viewport);
 }
 
 /**
@@ -373,6 +362,17 @@ interface LiveMessage {
   type: 'update' | 'project';
   root: string;
   view: ViewGraph;
+  changedFiles: string[];
+}
+
+/**
+ * The working tree changed and the hub drew nothing for it: this socket's
+ * spec names a structural diff, which is of two graphs, and the hub holds
+ * one. The files are the pulse; the view is fetched from `/api/view?diff=`.
+ */
+interface ChangedMessage {
+  type: 'changed';
+  root: string;
   changedFiles: string[];
 }
 
@@ -799,6 +799,7 @@ export function App() {
       socket.onmessage = (event: MessageEvent<string>) => {
         const parsed = JSON.parse(event.data) as
           | LiveMessage
+          | ChangedMessage
           | AgentMessage
           | ExplainMessage
           | ExplainDeltaMessage
@@ -857,20 +858,28 @@ export function App() {
           return;
         }
 
-        if (message.type !== 'update') return;
-
         // A frozen view is frozen. The server already skips a socket whose spec
         // names a commit, but a push computed for the spec this client held a
         // moment before freezing can still be in flight, and nothing that
         // happens in the working tree changes what that commit looked like.
+        if (message.type === 'changed') {
+          if (frozenRef.current) return;
+          // The working tree changed under a structural diff, and the hub —
+          // which holds one graph — drew nothing: the diff is fetched again
+          // from the route that resolves both ends. The pulse is kept,
+          // because the files it names did change.
+          setPulsing(message.changedFiles);
+          setReloadToken((token) => token + 1);
+          return;
+        }
+
+        if (message.type !== 'update') return;
         if (frozenRef.current) return;
 
-        // A diff view redraws when the working tree changes, because the diff
-        // changed — but the hub holds one graph and cannot draw a diff of two,
-        // so what it pushed is the ordinary slice with no `diff` in its echo.
-        // The push is taken as the signal and the view is fetched again from
-        // the route that can resolve both ends; the pulse is kept, because
-        // the files it names did change.
+        // An `update` under a diff is the hub's lag: the push was computed for
+        // the spec this socket held before the diff was turned on, and its
+        // view is the ordinary slice with no `diff` in its echo. The same
+        // answer as to `changed` — the diff route draws it, the pulse stays.
         if (diffRef.current) {
           setPulsing(message.changedFiles);
           setReloadToken((token) => token + 1);
@@ -1334,6 +1343,14 @@ export function App() {
    * there is no tag at all; the moment there are two, every box says which.
    */
   const mixedProject = (view?.languages.length ?? 0) > 1;
+  /**
+   * Every file the view on screen stands for — under the front page the root
+   * view, which is the whole project, folders and all. What the front page
+   * asks before it links the agent's target: a `describe_file` on a
+   * directory is a path with no file box, and a link to `?focus=` on it was
+   * a link to a 404.
+   */
+  const viewFiles = useMemo(() => new Set(view?.nodes.flatMap((node) => node.files) ?? []), [view]);
 
   useEffect(() => {
     frozenRef.current = frozen;
@@ -3381,7 +3398,7 @@ export function App() {
   const stackNow = useCallback(
     (bar: BarId): number[] => {
       const sizes = drawn[bar];
-      if (shown.stack[bar] === null && sizes.length === SECTIONS[bar].length) return sizes;
+      if (shown.stack[bar] === null && stackApplies(bar, sizes.length)) return sizes;
       return stackOf(shown, bar, viewport);
     },
     [drawn, shown, viewport],
@@ -3396,7 +3413,7 @@ export function App() {
   const adopt = useCallback(
     (bar: BarId): Layout => {
       const sizes = drawn[bar];
-      if (shown.stack[bar] !== null || sizes.length !== SECTIONS[bar].length) return shown;
+      if (shown.stack[bar] !== null || !stackApplies(bar, sizes.length)) return shown;
       return adoptStack(shown, bar, sizes, viewport);
     },
     [drawn, shown, viewport],
@@ -3454,10 +3471,13 @@ export function App() {
         // Until a sash in this bar has been touched the fold is still the
         // section's own, and the stylesheet's shares are what draw it.
         folded: stacked ? isFolded(here) : null,
+        // The model's own fold, so the chevron and a sash shoved shut leave
+        // the same stack — `panes.test.ts` says they do. A bar the stylesheet
+        // still owns is left to the `:has([aria-expanded])` rules, which is
+        // what it answers with an unchanged layout.
         setFolded: (folded) => {
           if (!stacked) return;
-          const want = folded ? SECTION_HEADER : (defaultStack(bar, viewport.barHeight)[index] ?? here);
-          commit(setSectionHeight(shown, bar, index, want, viewport));
+          commit(setFolded(shown, id, folded, viewport));
         },
         sash:
           before === undefined || previous === undefined ? null : (
@@ -4772,6 +4792,7 @@ export function App() {
             changed={pulsingFiles}
             queried={queriedFiles}
             onFocus={(file) => goTo(file, 'file')}
+            inGraph={(path) => viewFiles.has(path)}
             onCategory={goToCategory}
             onCategories={revealCategories}
             onChanges={goToChanges}
