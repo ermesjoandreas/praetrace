@@ -1377,7 +1377,9 @@ export function App() {
     let cancelled = false;
     fetchDiff(from, to).then(
       (reply) => {
-        if (!cancelled) setDiffRow({ key, row: { state: 'ready', since: diffTarget.since, counts: reply.counts } });
+        if (!cancelled) {
+          setDiffRow({ key, row: { state: 'ready', since: diffTarget.since, counts: reply.counts, caveat: reply.caveat } });
+        }
       },
       (cause: unknown) => {
         if (!cancelled) setDiffRow({ key, row: { state: 'blocked', why: cause instanceof Error ? cause.message : String(cause) } });
@@ -3511,6 +3513,15 @@ export function App() {
    */
   const viewCommit = useCallback(
     (sha: string) => {
+      // The front page is live only — a commit's graph is served without the
+      // facts its entry points are read from — so from there a commit opens as
+      // that commit's whole-project diagram, the same place the front page's
+      // own "Draw the whole project" row goes. Keeping `/` and setting `at`
+      // landed on a refusal and one row.
+      if (isFrontPage(window.location.search)) {
+        navigate(new URLSearchParams(rootDiagramSearch(sha)));
+        return;
+      }
       const params = new URLSearchParams(window.location.search);
       // Two filters need a working tree — "changed" against the base, "since"
       // against the clock — and a commit has neither, so carrying them would
@@ -4985,7 +4996,7 @@ export function App() {
           ? {
               countsTitle: `${diffCounts.added} files added, ${diffCounts.removed} removed (drawn as ghosts) and ${diffCounts.touched} changed in shape since ${
                 diffSince ?? 'the base'
-              }${diffCounts.context > 0 ? `, with ${diffCounts.context} unchanged files drawn dimmed as the far ends of changed lines` : ''}. A file whose declarations and resolved references did not move is not here — git is the tool for that edit.`,
+              }${diffCounts.context > 0 ? `, with ${diffCounts.context} unchanged files drawn dimmed as the far ends of changed lines` : ''}. A file whose declarations and resolved references did not move is not here — git is the tool for that edit.${diffRowNow.state === 'ready' ? ` ${diffRowNow.caveat}` : ''}`,
             }
           : {})}
         languages={languageSummary}

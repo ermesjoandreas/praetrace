@@ -1,3 +1,4 @@
+import { checkIgnored } from './git.js';
 import { applyBatch, type GraphStore } from '../graph/store.js';
 import type { ParserPool } from '../parser/pool.js';
 import type { ParsedFile } from '../parser/types.js';
@@ -7,6 +8,13 @@ import type { FileChange } from './watch.js';
 export interface UpdaterOptions {
   store: GraphStore;
   pool: ParserPool;
+  /**
+   * The project root, for asking git which of a batch's files it ignores.
+   * The boot scan keeps build output out of the graph; without this the
+   * first build after boot would write it straight back in. Absent means
+   * nothing is asked, which is what a project without git wants.
+   */
+  root?: string;
   /**
    * An agent writes several files in a row, editors save through temp files, and
    * a hook and the watcher both report the same edit. Coalescing turns all of
@@ -32,6 +40,7 @@ export interface ProjectUpdater {
 export function createUpdater({
   store,
   pool,
+  root,
   debounceMs = 80,
   onApplied,
   onError,
@@ -100,8 +109,15 @@ export function createUpdater({
       (change) => change.kind === 'changed' && !isShadowedDeclaration(change.filePath, files),
     );
 
+    // One git call per batch, not per file: the same rule the boot scan
+    // applied, or an esbuild that writes `functions/lib/index.js` on every
+    // save would put 184 symbols of bundle into a graph the scan kept clean.
+    const candidates = [...edited, ...revealed.values()];
+    const ignored = root === undefined ? new Set<string>() : await checkIgnored(root, candidates.map((file) => file.filePath));
     const results = await Promise.allSettled(
-      [...edited, ...revealed.values()].map((file) => pool.parse(file.filePath, file.absolutePath)),
+      candidates
+        .filter((file) => !ignored.has(file.filePath))
+        .map((file) => pool.parse(file.filePath, file.absolutePath)),
     );
 
     const updated: ParsedFile[] = [];

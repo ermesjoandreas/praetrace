@@ -52,7 +52,7 @@ const GIT_WORD: Record<GitFileStatus, string> = {
  */
 export type DiffRow =
   | { state: 'reading'; since: string }
-  | { state: 'ready'; since: string; counts: DiffCounts }
+  | { state: 'ready'; since: string; counts: DiffCounts; caveat: string }
   | { state: 'blocked'; why: string };
 
 /** "+12 −3", the diff's own two numbers: symbols added and removed since the base. */
@@ -202,7 +202,13 @@ function StructuralDiff({ row, on, onToggle }: { row: DiffRow; on: boolean; onTo
       title={diffTitle(row, on)}
     >
       <i className="codicon codicon-git-compare" aria-hidden="true" />
-      <span className="scm-diff-name">Structural diff{row.state === 'blocked' ? '' : ` · since ${row.since}`}</span>
+      {/* The one thing the diff cannot tell from a real change — two
+          same-named symbols swapping order moves the `~2` suffix and reads
+          as a remove and an add — rides every reply, and this is where a
+          reader can find it. */}
+      <span className="scm-diff-name" title={row.state === 'ready' ? row.caveat : undefined}>
+        Structural diff{row.state === 'blocked' ? '' : ` · since ${row.since}`}
+      </span>
       {row.state === 'ready' ? (
         <DiffCount counts={row.counts} />
       ) : (

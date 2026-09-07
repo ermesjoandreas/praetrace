@@ -6,8 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
+  checkIgnored,
   detachedLabel,
   fetchRemote,
+  ignoredBy,
+  listIgnored,
   parseNameStatus,
   parseNumstat,
   parseUntracked,
@@ -216,3 +219,59 @@ test('with no sha to name, a detached HEAD still says what it is', () => {
   assert.equal(detachedLabel(''), 'detached HEAD');
   assert.equal(detachedLabel(undefined), 'detached HEAD');
 });
+
+test('ignoredBy: an entry with a trailing slash covers everything under it, a file entry only itself', () => {
+  const ignored = new Set(['functions/lib/', 'next-env.d.ts']);
+  assert.equal(ignoredBy(ignored, 'functions/lib/index.js'), true);
+  assert.equal(ignoredBy(ignored, 'functions/lib/deep/er.js'), true);
+  assert.equal(ignoredBy(ignored, 'next-env.d.ts'), true);
+  assert.equal(ignoredBy(ignored, 'functions/src/index.ts'), false);
+  assert.equal(ignoredBy(ignored, 'lib/index.js'), false);
+});
+
+// The rule itself, against a real repository: build output a commit can
+// never hold must not be in the graph, or the structural diff reads +184
+// on an untouched tree and the front page names the bundle as the entry.
+test('listIgnored and checkIgnored read .gitignore the way git does, and a project without git ignores nothing', async () => {
+  const run = promisify(execFile);
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'codemap-ignored-'));
+  try {
+    await run('git', ['init', '-q'], { cwd: dir });
+    await writeFile(path.join(dir, '.gitignore'), 'lib/\nnext-env.d.ts\n');
+    await mkdir(path.join(dir, 'lib'), { recursive: true });
+    await mkdir(path.join(dir, 'src'), { recursive: true });
+    await writeFile(path.join(dir, 'lib', 'index.js'), 'module.exports = 1;\n');
+    await writeFile(path.join(dir, 'src', 'index.ts'), 'export const a = 1;\n');
+    await writeFile(path.join(dir, 'next-env.d.ts'), '');
+
+    const ignored = await listIgnored(dir);
+    assert.ok(ignored !== null);
+    assert.equal(ignoredBy(ignored, 'lib/index.js'), true);
+    assert.equal(ignoredBy(ignored, 'next-env.d.ts'), true);
+    assert.equal(ignoredBy(ignored, 'src/index.ts'), false);
+
+    // A directory is one entry, not a walk: `--directory` is what keeps this
+    // from listing node_modules file by file on a real project.
+    assert.ok(ignored.has('lib/'));
+    assert.ok(!ignored.has('lib/index.js'));
+
+    assert.deepEqual([...(await checkIgnored(dir, ['lib/index.js', 'src/index.ts', 'next-env.d.ts']))].sort(), [
+      'lib/index.js',
+      'next-env.d.ts',
+    ]);
+    // Exit 1 from check-ignore means none of them, and is not an error.
+    assert.deepEqual([...(await checkIgnored(dir, ['src/index.ts']))], []);
+    assert.deepEqual([...(await checkIgnored(dir, []))], []);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+
+  const plain = await mkdtemp(path.join(os.tmpdir(), 'codemap-nogit-'));
+  try {
+    assert.equal(await listIgnored(plain), null);
+    assert.deepEqual([...(await checkIgnored(plain, ['a.ts']))], []);
+  } finally {
+    await rm(plain, { recursive: true, force: true });
+  }
+});
+

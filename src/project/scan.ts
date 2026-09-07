@@ -2,6 +2,7 @@ import type { ProjectFacts } from '../lang/types.js';
 import type { ParsedFile } from '../parser/types.js';
 import type { ParserPool } from '../parser/pool.js';
 import { gatherFacts } from './facts.js';
+import { ignoredBy, listIgnored } from './git.js';
 import { findSourceFiles } from './walk.js';
 
 export interface ScanResult {
@@ -22,7 +23,13 @@ export interface ScanResult {
  * single file.
  */
 export async function scanProject(pool: ParserPool, root: string): Promise<ScanResult> {
-  const sourceFiles = await findSourceFiles(root);
+  // What git ignores is build output no commit can hold, and a graph that
+  // holds it lies twice: the structural diff against any commit reads +184
+  // symbols on an untouched tree (astrupdata's esbuild bundle), and the front
+  // page names the bundle as the entry point while the source under it reads
+  // as "nothing imports it". A project without git keeps every file.
+  const [found, ignored] = await Promise.all([findSourceFiles(root), listIgnored(root)]);
+  const sourceFiles = ignored === null ? found : found.filter((file) => !ignoredBy(ignored, file.filePath));
 
   // The facts are read on this thread while the workers parse, so the
   // configuration files cost nothing the parse was not already waiting for.

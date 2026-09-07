@@ -410,6 +410,7 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
   const updater = createUpdater({
     store,
     pool,
+    root,
     onApplied: (changedFiles) => {
       // Recorded before anything is published, so a client that reloads mid
       // burst still sees the change it just missed.

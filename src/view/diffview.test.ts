@@ -223,3 +223,15 @@ test('the same graph twice draws nothing', () => {
   assert.deepEqual(view.edges, []);
   assert.equal(view.totalFiles, 0);
 });
+
+test('the echoed spec carries the filter as applied: changes-only and since are lifted, and say so', () => {
+  // With "Changes only" on, Structural diff drew boxes git lists as unchanged
+  // while the chip and the View menu said the filter was on, because the
+  // echo repeated the filter asked for rather than the one used.
+  const empty = graphOf([], []);
+  const asked: ViewSpec = { ...spec, filter: { ...NO_FILTER, onlyChanged: true, sinceMs: 600_000 } };
+  const view = diffView(diffGraphs(empty, empty), empty, empty, asked);
+  assert.equal(view.spec.filter.onlyChanged, false);
+  assert.equal(view.spec.filter.sinceMs, 0);
+});
+

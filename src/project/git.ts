@@ -685,3 +685,67 @@ export async function archiveCommit(root: string, sha: string, into: string): Pr
     archive.stdout.pipe(extract.stdin);
   });
 }
+
+/**
+ * What git ignores under the project — build output a commit can never
+ * hold. Null when the project is not in a repository, and every caller reads
+ * null as "nothing is ignored": a project without git keeps every file.
+ *
+ * `--others --ignored` lists ignored files that are NOT tracked, so a tracked
+ * file that happens to match a pattern stays the project's. `--directory`
+ * stops at an ignored directory and lists it once with a trailing slash
+ * rather than walking node_modules file by file; `ignoredBy` reads the slash.
+ * Scoped `-- .` like every other command here, and translated through the
+ * same prefix.
+ */
+export async function listIgnored(root: string): Promise<ReadonlySet<string> | null> {
+  const prefix = await worktreePrefix(root);
+  if (prefix === null) return null;
+  const stdout = await git(root, [
+    'ls-files',
+    '-z',
+    '--others',
+    '--ignored',
+    '--exclude-standard',
+    '--directory',
+    '--',
+    '.',
+  ]);
+  if (stdout === null) return null;
+  const ignored = new Set<string>();
+  for (const gitPath of stdout.split('\0')) {
+    if (gitPath === '') continue;
+    const isDirectory = gitPath.endsWith('/');
+    const filePath = projectPath(isDirectory ? gitPath.slice(0, -1) : gitPath, prefix);
+    if (filePath !== null) ignored.add(isDirectory ? `${filePath}/` : filePath);
+  }
+  return ignored;
+}
+
+/** Whether `filePath` is one of the ignored entries, or sits under an ignored directory. */
+export function ignoredBy(ignored: ReadonlySet<string>, filePath: string): boolean {
+  if (ignored.has(filePath)) return true;
+  let slash = filePath.indexOf('/');
+  while (slash !== -1) {
+    if (ignored.has(filePath.slice(0, slash + 1))) return true;
+    slash = filePath.indexOf('/', slash + 1);
+  }
+  return false;
+}
+
+/**
+ * The live half of the same rule: which of `paths` git ignores, asked once
+ * per batch, so a build that writes `functions/lib/index.js` while the
+ * watcher is on does not land in a graph the boot scan kept it out of.
+ * Empty for a project without git. `check-ignore` exits 1 when none of
+ * them is ignored, which the helper reads as null and this as empty.
+ */
+export async function checkIgnored(root: string, paths: readonly string[]): Promise<Set<string>> {
+  if (paths.length === 0) return new Set();
+  // Not `-z`: check-ignore accepts it only with `--stdin`, which the helper
+  // has no way to feed. Newlines it is, one path per line as given.
+  const stdout = await git(root, ['check-ignore', '--', ...paths]);
+  if (stdout === null) return new Set();
+  return new Set(stdout.split('\n').filter((entry) => entry !== ''));
+}
+

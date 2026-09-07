@@ -141,7 +141,9 @@ export function diffView(
       scope: '',
       focus: null,
       depth: spec.depth,
-      filter: spec.filter,
+      // The filter as applied: `onlyChanged` and `sinceMs` were lifted above,
+      // and echoing the asked-for one claimed a narrowing this view did not do.
+      filter,
       at: spec.at,
       diagram: spec.diagram,
       ...(spec.as === undefined ? {} : { as: spec.as }),

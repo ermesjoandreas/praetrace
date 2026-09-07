@@ -1493,13 +1493,18 @@ the graph can be trusted at a glance on a project that is not this one:
   the badge until the grammar is upgraded.
 - A directory named `target` is skipped everywhere (`IGNORED_DIRECTORIES`), because
   Cargo's build output is 2 818 "unreadable" files on this repository alone and
-  the scan drew generated `.rs` from it as source. Honouring `.gitignore` would be
-  the real answer, and the diff made this load-bearing: the live scan reads
-  gitignored build output on disk and `git archive` does not hold it, so on
-  astrupdata every base → live diff reports `functions/lib/index.js` and
-  `next-env.d.ts` as added — 184 symbols, 226 edges — before the session's own
-  edits, and the front page lists `functions/lib/index.js` as the manifest's
-  `main` while the source it was built from shows under roots.
+  the scan drew generated `.rs` from it as source. That list needs no git and
+  applies first; **what git ignores is dropped after it.** The boot scan removes
+  every file `git ls-files --others --ignored --exclude-standard --directory`
+  lists under the project (`listIgnored`, `ignoredBy` in `project/git.ts`), and
+  the updater asks `git check-ignore` once per batch so a build that runs while
+  the watcher is on cannot write it back. The diff made this load-bearing: the
+  live scan used to read gitignored build output that `git archive` does not
+  hold, so on astrupdata every base → live diff reported `functions/lib/index.js`
+  and `next-env.d.ts` as added — 184 symbols, 226 edges — before the session's
+  own edits, and the front page listed the bundle as the manifest's `main` while
+  the source it was built from showed under roots. A project without git keeps
+  every file it has.
 - **The diff knows only what the graph knows.** An edit that moves no
   declaration and changes no resolved reference is invisible — 2 of
   astrupdata's 41 modified source files over five commits, a className string
