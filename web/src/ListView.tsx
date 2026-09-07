@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { describeUnresolved, type GitFileStatus, type LanguageId, type ViewGraph, type ViewNode } from './api';
 import { LIST_ROW, useListKeys } from './listkeys';
-import { holdOrder, nextSort, rowsOf, sortRows, type ListRow, type Sort, type SortKey } from './listrows';
+import { holdOrder, letterStatus, nextSort, rowsOf, sortRows, type ListRow, type Sort, type SortKey } from './listrows';
 
 /**
  * The slice as rows, where the engine said it is a list.
@@ -77,6 +77,16 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
   csharp: 'c#',
   rust: 'rs',
   python: 'py',
+};
+
+/**
+ * The diff's letter, said the way the box says it: the same three words,
+ * because the row and the box describe the same pair of graphs.
+ */
+const CHANGE_SAID: Record<NonNullable<ListRow['change']>, string> = {
+  added: 'Added since the base — not in the graph this diff is against',
+  removed: 'Removed since the base — a ghost: not on disk, drawn from the graph this diff is against',
+  touched: 'Changed since the base — a symbol came, went or moved, or a line from here did',
 };
 
 const KIND_ICON: Record<ViewNode['kind'], string> = {
@@ -238,6 +248,7 @@ export function ListView({
           if (queried.has(row.id)) classes.push('list-row-queried');
           if (dimmed) classes.push('list-row-aside');
           const tag = !showLanguage ? null : row.language === null ? 'mixed' : LANGUAGE_TAG[row.language];
+          const letter = letterStatus(row);
           return (
             <button
               key={row.id}
@@ -293,9 +304,12 @@ export function ListView({
               <span className="list-cell list-num">{row.in}</span>
               <span className="list-cell list-num">{row.out}</span>
               <span className="list-cell list-git">
-                {row.gitStatus !== null ? (
-                  <span className={`list-letter list-letter-${row.gitStatus}`} title={`${row.gitStatus} vs the git base`}>
-                    {GIT_LETTER[row.gitStatus]}
+                {letter !== null ? (
+                  <span
+                    className={`list-letter list-letter-${letter}`}
+                    title={row.change === undefined ? `${letter} vs the git base` : CHANGE_SAID[row.change]}
+                  >
+                    {GIT_LETTER[letter]}
                   </span>
                 ) : row.gitChanged > 0 ? (
                   <span className="list-letter list-letter-count" title={`${row.gitChanged} of ${row.files} changed vs the git base`}>

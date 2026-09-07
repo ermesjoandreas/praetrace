@@ -226,7 +226,9 @@ function vouchFor(handedOn: PassThrough[]): Pick<FileDetail, 'importedByCoverage
         importedByNote:
           'Every import the scan resolved to this is listed, and no file passes it on to importers of its own; a specifier the scan could not place is counted on the file that wrote it, so the count is a floor.',
       }
-    : { importedByCoverage: 'partial', importedByNote: `${where} The count is a floor.` };
+    : // `handedOnBy` already ends on "so the count is a floor"; saying it twice
+      // was the one sentence every partially-covered file's panel repeated.
+      { importedByCoverage: 'partial', importedByNote: where };
 }
 
 /**

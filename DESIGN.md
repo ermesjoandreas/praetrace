@@ -122,10 +122,18 @@ Each one is a different *kind* of mark, not just a different hue:
 | a named category, drawn as a component | the box's name and icon, and 40% on its edge — the colour its frame wears; slate when none was chosen. Unnamed is plain | the category's own colour |
 | files in no category | the box at 60% opacity, solid — dashed is `.box-external`, which means outside the scope | none |
 | a flow too big to draw unasked | `⚠ 116 boxes — this one is big` in the overlay, beside a secondary "Draw anyway" | warning |
+| a scope shown as a list | a chip in the breadcrumb row, `106 boxes — shown as a list`; a click draws it anyway | badge grey — a list is not a fault |
+| a diagram drawn past the threshold | a chip, `⚠ 106 boxes — drawn anyway ✕`; ✕ drops `as` | warning — the flow's meaning again |
+| a line nobody is asking about, in a scope diagram | every line at 25% opacity; the lines touching the hovered, inspected or picked box drawn whole (`.canvas-faint` / `.edge-near`). Never in a focus or a diff; the following lens's 15% wins | none |
+| a ghost — a file the diff's before graph holds and the tree does not | the box dashed and at 50%, its name struck, a `D` in the title where the git letter sits; its rows struck, each with `D` | none: the git colours on the letters, no hue of its own |
+| a box the diff added, or touched | `A` or `M` where the git letter sits, replacing it | git added, git modified |
+| a line the diff removed | dashed `5 4` at 60% in the kind's own hue; an added one is solid | none |
+| the structural diff is on | a chip beside the frozen chip, `Structural diff since HEAD ✕`, and the Source Control row holding the list-selection fill | badge grey |
 
 `--vsc-warning` means one thing: **the tool's own gap** — cannot read, could not
-parse, too many to place. The flow's size warning is that third meaning again,
-not a fourth. Do not give it one. Coverage is not a fault
+parse, too many to place. The flow's size warning and the drawn-anyway chip
+are that third meaning again, not a fourth. Do not give it one. A list is not
+a gap, so its chip is badge grey. Coverage is not a fault
 and does not get it: a never-executed symbol wears the disabled grey, and a symbol
 with no measurement wears nothing at all, because absent is not zero.
 
@@ -176,6 +184,10 @@ border. Those are the user's own meaning and are not subject to rule 4.
   information or runs something. The vocabulary is VS Code's — "Changes", "Diff
   against HEAD · HEAD~1 · merge base" — never "vs HEAD".
 - The welcome screen covers the canvas, not the window. The chrome stays reachable.
+  So do the front page and the list, for the same reason: the front page at
+  z-index 8 — under the welcome's 20, so Help still opens on top, over the find
+  bar's 6 and the banners' 5 — and the list where the canvas stands, same
+  footprint, no minimap and no controls, because there is no camera.
 - `body` never scrolls. Every region scrolls inside itself.
 
 ---
@@ -198,6 +210,43 @@ row is hovered. Git letters right-aligned in the git colour.
 `web/src/layout.ts`; dagre places every box from them and every group frame is drawn
 around where the boxes land. A pixel of change moves every frame. Member rows are
 UML compartments, not list rows — the 22px rule does not apply to them.
+
+**Ghost** — a box, and nothing new: `.box-ghost` is the outside-the-scope
+box's dashed border at 50% opacity instead of 60%, the title struck through
+in the muted colour, and a `D` in the git colour where a git letter goes. Its
+member rows are struck the same way and open no editor, because there is no
+file. An added or touched box under a diff is an ordinary box wearing `A` or
+`M`; the letter is the whole of the mark, as the git badge is.
+
+**List** — a scope past `LIST_ABOVE` boxes, as the explorer would list it. A
+22px header row on the chrome colour, edged below by the 1px line, holding one
+sort button per column: 11px bold, muted, the active one in the body colour
+with a `codicon-triangle-up` or `-down` and `aria-sort`. Then 22px rows in the
+same grid template as the header — `minmax(0, 1fr) 76px 84px 56px 56px 32px
+44px`: name, kind, members, in, out, git, test — a 16px codicon leading the
+monospace name, tabular figures right-aligned, the git letter centred in its
+colour, the `test` tag muted. Hover `#2A2D2E`, selected `#04395E`, a row
+outside the scope at 60% and a lens-dimmed row at 35%, and the same amber and
+blue pulses a box wears. One Tab stop. Nothing on the row is decoration: every
+number is a count the graph holds, and the column title says where it stops.
+
+**Front page** — one column of `min(760px, 100%)` on the editor colour, made
+of the panels' own sections: 22px headers on chrome, a 1px line under an open
+one, 22px rows edge to edge, no card. A row that leads somewhere is a button
+and wears the link colour on its name; a row that only says something is a
+div in the body colour; a row that leads nowhere is greyed with the reason in
+its title. A path is in the monospace, its directory muted after it; the
+reason a file is an entry point sits muted at the right; the git letter at the
+right in its colour; the two pulses on a row where a box would carry them.
+`--vsc-warning` only for the tool's own gap — cannot read, syntax errors, a
+refused frozen page. One Tab stop, walked with the arrows.
+
+**Structural diff row** — a 22px list row in Source Control between the base
+picker and the file list, led by `codicon-git-compare`, `Structural diff ·
+since HEAD` then `+12 −3` at the right in the git added and deleted colours,
+tabular; `comparing…` muted while reading; greyed with the reason where
+nothing can be compared; the list-selection fill while the diff is on. The
+front page draws the same row from the same numbers.
 
 **Component box** — the box, led by a 16px `codicon-package` and a bold name, a
 27px count line (`META_HEIGHT` in `web/src/layout.ts`: `12 files · 84%`,
@@ -319,6 +368,10 @@ wrong for this app. Each has been considered and refused:
 - **A bottom panel with Problems / Agent log / Diff.** None of those exist. The
   activity table is the agent log, and it is a side bar section.
 - **A second command palette.** ⌘K is one. It is styled as Quick Pick.
+- **A dashboard on the front page.** Stat tiles, cards in a grid, a chart of
+  languages. The front page is the side bars' sections laid in one column —
+  22px headers, 22px rows, edge to edge — and every row is a link into a
+  view. It measured 0 uses of the accent and 0 new hex colours.
 - **A custom Tauri title bar.** An engineering project, not a restyle.
 - **Syntax-highlighted source.** The app never highlights source. A flow box
   carries one line of it, in the member rows' monospace, as a label and no more;
@@ -341,7 +394,13 @@ The checklist a change to `web/` has to pass, with the page in front of you:
 - No `box-shadow` outside menus, the palette, tooltips and the group editor.
 - Chrome `#181818`, canvas `#1F1F1F`, every region edge a 1px `#2B2B2B`.
 - List rows 22px, section headers 22px, member rows 17px, box header 38px;
-  a component box's count line 27px and its provided rows 17px.
+  a component box's count line 27px and its provided rows 17px; `.list-row`,
+  `.list-head` and `.front-row` 22px.
+- One Tab stop in `.listview` and one in `.front`; `aria-sort` on the active
+  list column.
+- `.box-ghost` at opacity 0.5 and dashed; a removed line dashed `5 4` at 0.6;
+  `.canvas-faint .react-flow__edge` at 0.25 and `.edge-near` at 1 — and no
+  `.canvas-faint` in a focus or a diff.
 - Only `#0078D4` as accent; `7aa2f7`, `bb9af7`, `9ece6a`, `e0af68` absent. The
   five lane hexes (`ffb000`, `dc267f`, `994f00`, `40b0a6`, `b66dff`) are expected.
 - Every icon a Codicon that renders — no missing-glyph boxes.

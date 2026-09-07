@@ -43,10 +43,34 @@ export interface ListRow {
   out: number;
   gitStatus: GitFileStatus | null;
   gitChanged: number;
+  /**
+   * Under `spec.diff` only: what happened to this file between the two
+   * graphs. It takes the letter's place, as it does on the box — `?diff=` is
+   * a diagram by rule, but `as=list` still reaches here, and a list that
+   * wore git's letters under a diff of the graphs said the wrong thing about
+   * the right files.
+   */
+  change?: NonNullable<ViewNode['change']>;
   language: LanguageId | null;
   test: boolean;
   parseError: boolean;
   unresolved?: ViewNode['unresolved'];
+}
+
+/**
+ * The diff's three changes as the git status whose letter and colour they
+ * borrow — VS Code's own, the same table the box reads — so the cell, its
+ * colour and the sort all come from one place.
+ */
+const CHANGE_STATUS: Record<NonNullable<ViewNode['change']>, GitFileStatus> = {
+  added: 'added',
+  removed: 'deleted',
+  touched: 'modified',
+};
+
+/** What the Git cell shows: the diff's change where there is one, else git's status. */
+export function letterStatus(row: Pick<ListRow, 'change' | 'gitStatus'>): GitFileStatus | null {
+  return row.change === undefined ? row.gitStatus : CHANGE_STATUS[row.change];
 }
 
 /** The rows for a view, in the view's own order. */
@@ -70,6 +94,7 @@ export function rowsOf(view: Pick<ViewGraph, 'nodes' | 'edges'>): ListRow[] {
     out: outward.get(node.id) ?? 0,
     gitStatus: node.gitStatus,
     gitChanged: node.gitChanged,
+    ...(node.change === undefined ? {} : { change: node.change }),
     language: node.language,
     test: node.test,
     parseError: node.parseError,
@@ -110,10 +135,12 @@ function measure(row: ListRow, key: SortKey): number {
       return row.in;
     case 'out':
       return row.out;
-    case 'git':
+    case 'git': {
       // A changed file first, then by what happened to it; a folder by how
       // many of its files moved. Unchanged is last either way.
-      return row.gitStatus === null ? (row.gitChanged > 0 ? 100 + row.gitChanged : 0) : 200 - GIT_ORDER[row.gitStatus];
+      const status = letterStatus(row);
+      return status === null ? (row.gitChanged > 0 ? 100 + row.gitChanged : 0) : 200 - GIT_ORDER[status];
+    }
     case 'test':
       return Number(row.test);
     default:

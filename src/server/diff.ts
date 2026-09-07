@@ -86,13 +86,17 @@ export async function resolveDiffEnds(
   session: DiffSession,
   from: string,
   to: string,
+  // The keys the caller's URL spelled the two ends under, so a refusal names
+  // the one that was written: `/api/view` reads them off `diff=` and `at=`,
+  // and a 400 saying `from=` there sends the reader to a key it never used.
+  keys: { from: string; to: string } = { from: 'from', to: 'to' },
 ): Promise<
   | { ok: true; before: Graph; after: Graph; from: DiffEnd; to: DiffEnd }
   | { ok: false; status: 400 | 404; error: string }
 > {
-  const before = await resolveEnd(session, from, 'from');
+  const before = await resolveEnd(session, from, 'from', keys.from);
   if (!before.ok) return before;
-  const after = await resolveEnd(session, to, 'to');
+  const after = await resolveEnd(session, to, 'to', keys.to);
   if (!after.ok) return after;
   return { ok: true, before: before.graph, after: after.graph, from: before.end, to: after.end };
 }
@@ -101,6 +105,7 @@ async function resolveEnd(
   session: DiffSession,
   asked: string,
   which: 'from' | 'to',
+  key: string,
 ): Promise<{ ok: true; graph: Graph; end: DiffEnd } | { ok: false; status: 400 | 404; error: string }> {
   const spelled = asked.trim().toLowerCase();
 
@@ -117,7 +122,7 @@ async function resolveEnd(
     ref = spelled;
   } else {
     const takes = which === 'from' ? 'base or a commit id' : 'live or a commit id';
-    return { ok: false, status: 400, error: `${which}= takes ${takes} — not ${asked}` };
+    return { ok: false, status: 400, error: `${key}= takes ${takes} — not ${asked}` };
   }
 
   const sha = await resolveCommit(session.root, ref);

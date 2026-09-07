@@ -58,16 +58,20 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
   (`?diagram=components`), and the activity diagram of one function
   (`GET /api/flow`), read off its syntax tree alone. The sequence diagram was
   measured and refused — see "Not built, and deliberately"
+- The view turned on 2026-09-07 — see "Never draw the hairball" below. A scope
+  past 30 boxes is a list, `/` is a front page, a category is a scope, and the
+  structural diff (VISION.md phase 1) draws what came, went and moved between
+  two graphs, a removed file as a ghost
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
 
 1. **Close the loose ends.** `Session.gitBase()` has no caller; use it or delete
    it. A directory specifier resolves to `index.*` only — `package.json` `main`
-   needs a fact on `ProjectFacts` gathered by `project/facts.ts`. A static call on
-   a class name (`Store.create()`) is not qualified, because the parser cannot tell
-   an imported class from a namespace object without the bindings it now records —
-   it can, so do it.
+   is now read into `ProjectFacts.entryPoints`, but `graph/resolve.ts` is not
+   handed it. A static call on a class name (`Store.create()`) is not qualified,
+   because the parser cannot tell an imported class from a namespace object
+   without the bindings it now records — it can, so do it.
 
 2. **Re-accept the corpus baseline.** `scripts/baseline.mjs` now records
    `depends`, interfaces own their members, and fields carry `optional` — so
@@ -77,18 +81,55 @@ something in the last round of work argued for it:
    `--fetch`, `--check`, read what moved, `--accept`. The oracle fixture in the
    same file reads "every count as recorded" today.
 
-3. **Structural session diff** — VISION.md phase 1. Today the tool knows which
-   *files* differ from a base, and since time travel it can build a commit's whole
-   graph (`project/history.ts`) with the same ids the live one has. Phase 1 is
-   which *symbols and edges* differ: the diff of two graphs is the only part left,
-   and it is also the only way to draw a deleted file as a ghost — a file that is
-   not on disk is not in the live graph, so the current feature honestly cannot
-   show one.
+3. **The diff's three open ends.** The hub holds one graph, so a socket whose
+   spec carries `diff` is pushed the ordinary slice with `diff` dropped from
+   its echo; the page reads the mismatch as "the diff changed" and refetches
+   `/api/view` — right on screen, and one root view thrown away per diff
+   client per save. `live.ts` should resolve the ends with `resolveDiffEnds`
+   and hand `selectView` the before graph. The front page is refused at
+   `?at=` because `Session.graphAt` hands back a `Graph` without the
+   `ProjectFacts` that `history.ts` gathered beside it; keep the commit's
+   facts in the LRU and `server/overview.ts` is a three-line branch. And
+   `DIFF_CAVEAT` — the `~2` hole — is on every `/api/diff` reply and nowhere
+   on the canvas.
+
+4. **A view of the rest of the roots.** The front page lists 12 of
+   astrupdata's 87 roots and "and 75 more" is a count with nothing behind it,
+   on a page whose rule is that every number leads somewhere.
 
 **Not started, and not to be drifted into.** Architecture drift detection
 (VISION.md capability 1), blast radius (capability 3), LLM dataflow inference, and
 anything hosted or multi-user. If a task seems to need one of these, say so and ask
 rather than building it.
+
+## Never draw the hairball
+
+**The view turned on 2026-09-07.** Opened on a real project — astrupdata, 368
+files, Next.js — the root was 12 boxes and fine, and one level in, `lib` was
+**106 boxes and 427 lines**, laid out as one strip zoomed to a smear, while the
+clustering offered "Terminal App, 254 files, 98%": the algorithm saying
+everything imports everything, which is true and worthless. The screenshot
+answered no question a person has. A map of everything never works — every
+tool that tried hit this wall, and Sourcetrail's answer after years is the one
+taken here: **never draw the big graph.** The default view is one symbol and
+its neighbours. The overview is a list. The diagram is something you go to,
+not something you land in.
+
+The engine did not move — the graph, the seven languages, the honesty rules,
+the live update, `?at=` — and the view layer turned, in three moves:
+
+1. A scope past `LIST_ABOVE` (30) boxes is a **list**, not a diagram; below it
+   the lines are faint until a box is asked about; a category is a scope.
+2. `/` is a **front page** — what the project is, where it starts, what it is
+   made of, what changed, what the agent is doing — and every line is a link.
+3. The **structural diff**: what came, went and moved between two graphs,
+   drawn on its own, a removed file as a ghost.
+
+What a CS engineer actually asks, and what answers each: *what is this
+project* — the front page; *what touches this, what does it touch* — the focus
+view; *what did the agent change in the shape* — `?diff=`; *where is X* — ⌘K.
+None of the four was answered by 106 boxes in a directory. The mechanics are
+under "The view layer"; the numbers that decided it are in DECISIONS.md.
 
 ## Many languages
 
@@ -425,10 +466,10 @@ from a review: a function handed to a call is never the symbol's own body
 served that arrow's flow as the flow of `items`), and a `finally` that exits
 on its own replaces every exit it was carrying — an edge out of the finally box
 for the try's `return` was a path no run takes. ER diagrams are out of
-scope. A package diagram is the root view, and exists; a component diagram is
-`?diagram=components` — the categories as boxes, each listing what files outside
-it reach — and it is honest for the reason the package diagram is: the same
-import data, summed one level up.
+scope. A package diagram is the root diagram, `?scope=&as=diagram`, and exists;
+a component diagram is `?diagram=components` — the categories as boxes, each
+listing what files outside it reach — and it is honest for the reason the
+package diagram is: the same import data, summed one level up.
 
 **A cluster id is not a stable identity.** It embeds the member count
 (`src/cli/index.ts~8`), so it changes the moment a file joins or leaves the group,
@@ -473,6 +514,9 @@ src/
                   test pins that `depends` does not
     resolve.ts    module specifier -> file, given the set of known files
     store.ts      holds parse results, derives the graph, emits deltas
+    diff.ts       two graphs -> what came, went and moved; ids are the
+                  identity, `~2` is the hole. Its test builds graphs through
+                  the store so the ids, `~2` included, are the live ones
   git/
     types.ts      GitFileStatus / GitStatus — pure, so the view can name a
                   status without importing the module that shells out
@@ -483,7 +527,8 @@ src/
                   IGNORED_DIRECTORIES, so a module there is invisible to our own
                   scan — which is how it was found
   lang/           one file per language, to the contract in types.ts
-    types.ts      LanguageSupport / LanguageParse / ResolveContext / ProjectFacts
+    types.ts      LanguageSupport / LanguageParse / ResolveContext / ProjectFacts,
+                  and EntryPoint — a file the project starts from, and why
     registry.ts   extension -> language; what "cannot read" is the complement of
     typescript.ts the reference reader the JS one shares: scopes, typed
                   receivers, re-exports, bindings, property-assigned functions
@@ -511,6 +556,14 @@ src/
   project/        the project on disk, and everything that changes it
     walk.ts       boot scan + the ignore/source predicates everything shares,
                   and the census of what no language claims (countUnreadable)
+    facts.ts      what no single file can know: tsconfig paths, packages,
+                  go.mod, crates — and where the project starts: package.json
+                  main/bin/exports and the scripts that run a file of its own,
+                  Next's page/route/layout files under a package that depends
+                  on `next`, Cargo bins, Go `func main` read off the file
+                  head, `__main__.py`. Read once at boot; only files the scan
+                  found, one claim per file, the first wins; build output is
+                  dropped, never mapped dist -> src
     scan.ts       walk + parse everything through the pool
     watch.ts      chokidar; emits raw changes, does not batch
     git.ts        git status against a base -> GitStatus; the log, the remote,
@@ -528,9 +581,18 @@ src/
     port-file.ts  leaves the port where the hook can read it
     updater.ts    the one pipeline: coalesce, parse, patch, publish
   view/           which slice of the graph to draw — pure
-    types.ts      ViewSpec / ViewGraph
+    types.ts      ViewSpec / ViewGraph, LIST_ABOVE and Presentation
     filter.ts     what to leave out; filtering is not navigating
-    select.ts     selectView(graph, spec, now, git, coverage, categories) -> ViewGraph
+    select.ts     selectView(graph, spec, now, git, coverage, categories, before)
+                  -> ViewGraph; presentationOf (list or diagram, the one
+                  rule), categoryOf (a stored id -> its accepted category, or
+                  null — the route's 404 and the view's fallback share it),
+                  boxesOf (one builder for a directory scope and a category scope)
+    diffview.ts   the boxes that differ, and only those; a ghost is the
+                  before graph's. Its test hand-builds graphs
+    overview.ts   the front page as data: roots (no source imports it; tests
+                  do not vote), the manifests' entry points, categories,
+                  changes, agent — pure; capped lists carry their totals
     components.ts the categories as components: which file is whose, and what
                   each provides (partitionByCategory); select.ts draws it
     cluster.ts    label propagation over the import graph
@@ -545,21 +607,35 @@ src/
     index.ts      arg handling + text/JSON output
   server/
     session.ts    one project: store, pool (exposed, for the flow), watcher,
-                  updater, git, an LRU of 16 past commits' graphs, the stored
-                  group names (groups, refreshGroups, clustersOf — held in
-                  memory like coverage, re-read by the view route for a
-                  component diagram and by the two routes that write
+                  updater, git, an LRU of 16 past commits' graphs (graphAt —
+                  hand it a sha, never a ref name: its `spelled` cache pins a
+                  spelling to the sha it resolved to first, right for a sha
+                  and wrong for HEAD), the stored group names (groups,
+                  refreshGroups, clustersOf — held in memory like coverage,
+                  re-read by the view route for a component diagram or a
+                  category scope and by the two routes that write
                   groups.json), and the last suggest run. Swapped whole
-    app.ts        Fastify: static web build, and the API below
+    app.ts        Fastify: static web build, and the API below; `optionalKeys`
+                  reads `as`, `category` and `diff` for both wire formats
     flow.ts       GET /api/flow, registered from app.ts; asks the session for
                   root, store and pool
+    diff.ts       GET /api/diff, and resolveDiffEnds — the one place `base`
+                  and a commit become two graphs, shared with the view route
+    overview.ts   GET /api/overview, live only
     live.ts       connected clients and their view specs; pushes per client,
                   and `groups` to every client after a groups.json write, then
-                  a fresh view to each live client drawing components
+                  a fresh view to each live client drawing components or
+                  scoped to a category
     main.ts       boot scan, wiring, listen
 web/              the browser page (Vite, built into dist/web)
   src/App.tsx     URL <-> view, live updates, breadcrumb, focus, depth, selection
-  src/BoxNode.tsx one box: a file with its symbols, or a folder
+  src/Overview.tsx  the front page: what `/` shows instead of the root diagram
+  src/frontpage.ts  isFrontPage, homeSearch, rootDiagramSearch, manifestGroups,
+                  changesSummary, splitPath — pure, tested
+  src/ListView.tsx  the rows, where the engine said the slice is a list
+  src/listrows.ts rows, sort, holdOrder (mark, do not move), presentationChip,
+                  letterStatus — pure, tested
+  src/BoxNode.tsx one box: a file with its symbols, or a folder — or a ghost
   src/ComponentNode.tsx  one component box: a category's name, count and
                        cohesion, and what it provides
   src/RelationEdge.tsx   every line on the class diagram: the path, and the
@@ -580,7 +656,8 @@ web/              the browser page (Vite, built into dist/web)
   src/GitGraph.tsx     the commit graph: lane numbers into pixels, refs, ages
   src/Activity.tsx     what the agent is doing, and where — describes now, always
   src/ProjectMenu.tsx  folder picker and recents; desktop only
-  src/Welcome.tsx      shown when there is nothing to draw, and from Help
+  src/Welcome.tsx      shown for an empty project, and from Help — over the
+                       front page, never instead of it
   src/MenuBar.tsx      the menus
   src/StatusBar.tsx    branch, git base, counts, languages, the agent — what the
                        project is, read at the bottom the way an editor does it
@@ -622,7 +699,28 @@ GET  /api/view          the slice for a ViewSpec, given as a query string.
                         fileCount, hiddenTests and parseErrors for the whole graph.
                         ?diagram=classes|components picks the diagram: 400 for
                         anything else, and under components scope and focus are
-                        ignored and echoed cleared rather than 404'd
+                        ignored and echoed cleared rather than 404'd.
+                        ?as=list|diagram overrides the threshold: 400 for
+                        anything else. ?category=<storedId> is a scope by
+                        membership: 404 `no such category: X` or `category "X"
+                        was rejected`. ?diff=base|<sha> draws only what differs
+                        between that graph and this one — always a diagram,
+                        scope/focus/category dropped from the echo — and the
+                        reply carries `diff: { from, to }` with the resolved
+                        shas; 400 for a spelling that is neither (named
+                        `diff=`), 404 for an unknown commit or no git. The
+                        view carries `presentation`: list or diagram
+GET  /api/overview      the front page in one fetch: project (files, tests,
+                        languages, what cannot be read), entry points (the
+                        manifests' and the graph's roots, capped with totals),
+                        categories, changes, agent. Live only: ?at= answers
+                        400 with a sentence, because a commit's graph is
+                        served without the facts its entry points are read from
+GET  /api/diff          from=<sha|base>&to=<sha|live>, absent is base -> live:
+                        counts and the whole lists of what differs — files,
+                        symbols, edges, every kind, no cap — with `caveat`, the
+                        `~2` sentence, on every reply. 400 for a spelling
+                        neither end takes, 404 for an unknown commit
 GET  /api/flow          the activity diagram of one function or method, ?id=.
                         404 for an id the graph has not got; 200 with
                         { flow: null, reason } for one it has but cannot draw —
@@ -673,8 +771,9 @@ GET  /api/coverage      what the test suite executed, or { coverage: null }
                         every groups.json write — to every client, frozen ones
                         too, because a name lives outside the commit; the page
                         refetches /api/clusters on it, and a live client drawing
-                        components is pushed an `update` right after, so the box
-                        wears the name the panel just got
+                        components or scoped to a category is pushed an
+                        `update` right after, so the box wears the name the
+                        panel just got and a scope whose members moved is redrawn
 ```
 
 ---
@@ -719,14 +818,20 @@ chokidar watcher ─────────────────────
 
 ## The view layer
 
-The page never draws the whole project. `selectView(graph, spec, now, git)` reduces
-the graph to a slice, and the spec lives in the URL, so navigation is links: the
-back button works and a view is shareable.
+The page never draws the whole project unasked. `selectView(graph, spec, now,
+git, coverage, categories, before)` reduces the graph to a slice, and the spec
+lives in the URL, so navigation is links: the back button works and a view is
+shareable.
 
 ```
-/                            root, auto-descends past single-child directories
-/?scope=src/graph            the files in one directory
-/?focus=<file>&depth=1       a file and its neighbours, imports both ways
+/                            the front page — a list, never a diagram; only `at` may ride it
+/?scope=&as=diagram          the root diagram, drawn whatever its size ("Draw the whole project")
+/?scope=src/graph            the files in one directory — a list past 30 boxes
+/?category=<storedId>        a category's files, wherever they sit, by the same rule
+/?as=list  ·  /?as=diagram   overrides the threshold either way
+/?focus=<file>&depth=1       a file and its neighbours, imports both ways — always a diagram
+/?diff=base  ·  /?diff=<sha> only what differs between that graph and this one — always a diagram
+/?at=<sha>&diff=<older sha>  the same, between two commits
 /?changed=1                  only what differs from the git base
 /?at=<sha>                   the whole diagram as of that commit — not a highlight
 /?tests=0                    without tests, fixtures and stories; hiddenTests says how many
@@ -735,6 +840,77 @@ back button works and a view is shareable.
                              category listing what files outside it reach, the
                              imports between categories summed onto one line per pair
 ```
+
+**`/` is the front page, and it is recognised by key presence.** `isFrontPage`
+in `web/src/frontpage.ts` answers yes to a URL whose only key is `at`, and no
+to every other: `?scope=` with an empty value is the root *diagram* — the key
+is what makes it one — and `?tests=0` alone is that diagram with tests hidden,
+because a filter filters a diagram. Every URL that worked before this page
+existed lands where it did; only a bare `/` moved. The root crumb, Go › Whole
+project and "Up one level" from a top-level directory land on the front page
+and drop the filters on the way in (`homeSearch`); Go › "Draw the whole
+project" is `rootDiagramSearch`, `?scope=&as=diagram`, which asks for the big
+graph on purpose. What the page shows is under "The rest of the page".
+
+**Above `LIST_ABOVE` boxes a scope is a list, not a diagram.** `LIST_ABOVE` is
+30, in `src/view/types.ts`. `ViewGraph.presentation` carries the rule as
+applied, decided once in `presentationOf` (`view/select.ts`) over the *echoed*
+spec: `as` wins; a focus and a diff are always diagrams, because there the
+lines are the answer; else `nodes.length` above 30 is a list. External boxes
+count, because they are drawn: lib is 53 boxes inside and 53 dimmed
+directories outside. Decided server-side and never re-derived on the page, so
+a live push cannot redraw a list as a diagram. The list is the explorer's
+shape — `web/src/ListView.tsx`, the arithmetic in `listrows.ts` with its test
+— one 22px row per box carrying kind, members, imports in, imports out, the
+git letter and the test tag; every column header sorts; one Tab stop; click
+inspects, double-click focuses a file and scopes a folder. In and out are the
+view's own lines summed by `weight`, and a floor: a call through an untyped
+receiver is not in the graph, and the column title is the only place that
+says so. `?as=` rides the helpers built from the live URL, and a navigation to
+a new place drops it on purpose.
+
+**A category is a scope.** `?category=<storedId>` shows a stored, accepted
+category's files the way `?scope=` shows a directory's — list or diagram by
+the same rule — because "show me the Data Pipeline" is the question the
+categories exist to answer, and nothing answered it. The stored id, never the
+cluster id, which embeds the member count. Members are never folded into
+folders and are labelled by whole path; membership is honoured after the
+filter, so `totalFiles` is how many survived. `categoryOf` is one lookup the
+view falls back from and the route refuses with, so the two cannot disagree:
+a rejected category is a stored memory that this is *not* a piece of the
+architecture, and is refused by name. `category` wins over `scope`; `focus`
+wins over it. The crumb carries `category` and wears the package icon.
+
+**Below the threshold a scope diagram draws its lines faint.** Every line at
+0.25 opacity, and the lines touching the hovered, inspected or picked box
+drawn whole — `.canvas-faint` / `.edge-near`, a DOM class the page toggles on
+the line elements with no render, because a hover that renders re-renders
+every edge. Never in a focus, where the lines are the answer, and never in a
+diff; the following lens's 0.15 wins.
+
+**The structural diff is a diff of two graphs.** `diffGraphs(before, after)`
+in `src/graph/diff.ts` is set arithmetic over ids: symbols added and removed,
+files touched — same id, and the declaration moved or an edge *from* it came
+or went; an edge *to* a file does not touch it — edges added and removed, by
+(from, kind, to). `contains` is not diffed: a symbol's container is spelled in
+its id. `src/view/diffview.ts` draws the boxes that differ and only those:
+added ones from `after`, removed ones as **ghosts** from `before` — the only
+place a file no longer on disk still exists, which is the ghost this file once
+said could not be drawn — touched ones with the rows `before` had appended and
+struck, every changed edge as a line lifted onto files, and a far end the diff
+does not name as context (`external`, no `change`). `sinceMs` and `onlyChanged`
+are lifted, coverage is not joined. `selectView` draws a diff only when handed
+the before graph, its seventh argument; handed one graph it draws the ordinary
+slice and drops `diff` from the echo — never the working tree under a diff's
+name. Both ends resolve through `resolveDiffEnds` in `server/diff.ts`, shared
+with `/api/diff` so the canvas and the lists cannot disagree: `base` is the
+session's git base, resolved to a sha *before* it reaches `graphAt`; a commit
+is a hex id as `?at=` takes it; frozen, the diff is between two commits.
+Scope, focus and category are dropped from the echo. `diff.from.sha` on the
+reply is what a ghost's panel reads `/api/detail?at=` from. Always a diagram —
+a diff is small by construction, which is the point of one — and it redraws
+on every save, because the diff changed. The one hole is `~2`, under Known
+limitations.
 
 **What a test is** is decided from the path alone, by `isTestFile` in
 `view/tests.ts`: `*.test.*`, `*.spec.*`, `*.stories.*`, `*_test.go`,
@@ -791,10 +967,15 @@ only in the Categories section.
 with its filter nested (`onlyChanged`, `edgeKinds`, `sinceMs`, `hideTests`). Reading one with the other's
 parser silently yields the default filter — no error, just a diagram that quietly
 widens back to everything. Keep `toSpec` and `toSocketSpec` apart. `diagram` is
-the one key both read under the same name, because the page sends the socket
+one key both read under the same name, because the page sends the socket
 the spec the server echoed; a socket that sent it was pushed component boxes,
 and a reader that dropped it would push the class diagram to a page drawing
-components.
+components. `as`, `category` and `diff` are the other three: optional on
+`ViewSpec` — absent, never null, so a spec written before they existed is
+still a spec and JSON drops nothing — and read for both formats by one
+`optionalKeys(raw)` in `app.ts`. The price of optional is that a reader which
+forgets one compiles, so it is checked by sending the server's own echo back
+over the socket, not by the type.
 
 ## Git status
 
@@ -830,6 +1011,16 @@ error, and every caller treats `null` as "no git here".
 - **The commit graph's lanes are a pure function**, `view/lanes.ts`, with the test
   beside it. One bug lived there already: a merge whose second parent joined a
   lane that was already open dropped that lane's thread through the row.
+- **Source Control has a "Structural diff · since HEAD  +12 −3" row** between
+  the base picker and the file list — symbols added and removed, from
+  `/api/diff`, refetched whenever the graph moves, the base changes or the
+  commit on screen does. Clicking it opens `?diff=`, and it holds the
+  list-selection fill while the diagram is one. The base picker applies to
+  it: the diff is against whatever the working tree is compared with. Frozen
+  at `?at=`, the diff is against the commit's first parent from the log, and
+  the row and View › Structural diff are greyed with the reason for a root
+  commit, a commit past the 300-commit log, or a project with no git. The
+  front page's Changes section draws the same row from the same numbers.
 
 ## Architectural groups
 
@@ -882,7 +1073,9 @@ governs membership.
   that toggles the filter, then boxes and files, "N tests hidden" (a button that
   shows them) while `tests=0`, "N files with syntax errors" and "not read: …" for
   what the tool cannot fully read, the language summary and the agent's
-  connection. Every item is information or runs something.
+  connection. Every item is information or runs something. Under a diff the
+  boxes read `+A −R ~T since <base>` — added, removed (the ghosts), changed in
+  shape — and on the front page it shows files only, there being no boxes.
 - **The menu bar.** Two rows: menus and project on top, breadcrumb and filter chips
   below. **Nothing in a menu is decoration.** Every item runs something the app can
   already do, and an item that needs a selection is greyed with the reason in its
@@ -896,9 +1089,35 @@ governs membership.
   signature)" are checked items greyed with "No class or interface in view to
   draw one from" when every box is a file box without one — unless already on,
   when the item is the way back off. The breadcrumb row ends in the `Components`
-  crumb, which holds the accent while on.
-- **The welcome screen.** Shown from Help, and when there is genuinely nothing to
-  draw. **Not** when a filter emptied the view. It covers the canvas, not the
+  crumb, which holds the accent while on. View › "Show as list" is a checked
+  item — also in the canvas menu and the palette — greyed on the front page
+  ("already a list") and under a diff; View › "Structural diff" is checked
+  while `?diff=` is on and greyed with the reason where nothing can be
+  compared; Go › "Draw the whole project" opens the root diagram. Zoom, Fit,
+  Re-layout, Expand and ⌘F are greyed on the front page and while a list is up,
+  each with the way out in its tooltip. Three more chips in the breadcrumb
+  row: "N boxes — shown as a list" (click draws it anyway), "⚠ N boxes — drawn
+  anyway ✕" (✕ drops `as`), "shown as a list ✕"; and "Structural diff since
+  HEAD ✕" beside the frozen chip while a diff is on.
+- **The front page** (`web/src/Overview.tsx`) is what `/` shows instead of the
+  root diagram: `GET /api/overview`, refetched on `revision`, `groupsRevision`,
+  the newest agent call and a project switch, its row order held across
+  refetches. Sections in the side bars' own shape: the project (root, files
+  with tests counted, languages, what cannot be read, syntax errors); entry
+  points — the manifests' with the reason on every row, folded by reason at
+  nine or more, because 57 rows on astrupdata is the hairball as a list — then
+  the graph's own roots, twelve with the total; the named categories with size
+  and cohesion or "by hand", the unnamed and the orphans counted; changes
+  against the base, with the structural diff row; the agent. **Every row is a
+  link**: an entry point to `?focus=`, a category to `?category=`, the changes
+  to `?changed=1`, the unnamed to the Categories section, the diff to
+  `?diff=`, "Draw the whole project" to `?scope=&as=diagram` with the box
+  count on it. A number that leads nowhere is furniture, and the two that do —
+  a language, a root past the twelfth — say so in their titles. It covers the
+  canvas at z-index 8, under the welcome screen's 20, never the window.
+- **The welcome screen.** Shown from Help, and when there is genuinely no
+  project to draw. **Not** when a filter emptied the view, and not for a
+  project that has nothing but a front page. It covers the canvas, not the
   window — it used to position against the viewport and painted over the menu bar,
   both side bars and the status bar, which buried every way back out.
 - **Search.** ⌘K searches the **whole graph**, not the slice on screen — the
@@ -945,8 +1164,9 @@ governs membership.
   welcome screen (both cover the canvas at z-index 20, never together), the find
   bar, then the page — the selection, the following lens, a frozen commit.
 - **The change feed** is the session's own history, the last 200 batches in memory,
-  discarded with the session. It is *not* session history — that is VISION.md phase 1
-  and it gets a schema designed for it rather than a ring buffer promoted into one.
+  discarded with the session. It is *not* session history: phase 1's diff is a
+  diff of two graphs and keeps nothing, and persisted history, if it comes,
+  gets a schema designed for it rather than a ring buffer promoted into one.
 
 ## Live updates
 
@@ -970,10 +1190,24 @@ Every connected client is sent a view **computed for its own spec**. The behavio
 - **Dragging a frame locks it**, the way pulling a corner does; the lock button only
   releases. A frame that had to be locked before it could be moved was the wrong
   order, and it was reported as such.
+- **A list re-sorts nothing under the reader's cursor.** `holdOrder` in
+  `web/src/listrows.ts` keeps the order across an update: a count that changed
+  changes on its row and the row pulses where it stands, a row that has gone is
+  dropped, a new row lands after the nearest standing row the sort puts before
+  it. Only a header click or a new view sorts afresh. Measured: lib sorted by
+  In, two imports added, 106 rows in the same order with three counts changed
+  in place. The front page holds its roots and its changed files the same way.
 - A socket whose spec names a commit is not pushed `update` at all — a frozen view
   is frozen — and the page refuses `update` frames while frozen as well. Because
   that push was what bumped `revision`, the page polls changes, git status and the
   log every 3 s while frozen so the left bar keeps describing now.
+- A socket whose spec carries `diff` is pushed the ordinary slice with no
+  `diff` in its echo, because the hub holds one graph; the page reads the
+  mismatch as "the diff changed", refetches `/api/view` and keeps the pulse.
+  Measured: route echo `diff: "base"` with 9 nodes, hub push `undefined` with
+  12. The proper push is item 3 under "What to build next".
+- A `groups` write pushes `update` to a client scoped to a category as well as
+  to one drawing components: a groups.json write can move a category's members.
 - A change landing outside the current view is not drawn; it increments a
   "N changes outside" badge that focuses the most recent one when clicked.
 
@@ -1246,7 +1480,11 @@ the graph can be trusted at a glance on a project that is not this one:
   path as written — 33 of query's "ours-only" edges are those two, and all 33 are
   true.
 - Two symbols sharing a name in one file are disambiguated by document order
-  (`path#name~2`), so their ids shift if their relative order changes.
+  (`path#name~2`), so their ids shift if their relative order changes — and
+  the diff reads the first of two overloads removed as the second removed and
+  the first moved, and a swap as every edge moved. Pinned in
+  `graph/diff.test.ts`, stated as `caveat` on every `/api/diff` reply, and
+  not yet said anywhere on the canvas.
 - A file with a syntax error still loses symbols — tree-sitter is error-tolerant —
   but the box carries a warning badge and the status bar counts them
   (`ParsedFile.hasError`). The flag is the grammar's word, not the compiler's:
@@ -1256,7 +1494,54 @@ the graph can be trusted at a glance on a project that is not this one:
 - A directory named `target` is skipped everywhere (`IGNORED_DIRECTORIES`), because
   Cargo's build output is 2 818 "unreadable" files on this repository alone and
   the scan drew generated `.rs` from it as source. Honouring `.gitignore` would be
-  the real answer.
+  the real answer, and the diff made this load-bearing: the live scan reads
+  gitignored build output on disk and `git archive` does not hold it, so on
+  astrupdata every base → live diff reports `functions/lib/index.js` and
+  `next-env.d.ts` as added — 184 symbols, 226 edges — before the session's own
+  edits, and the front page lists `functions/lib/index.js` as the manifest's
+  `main` while the source it was built from shows under roots.
+- **The diff knows only what the graph knows.** An edit that moves no
+  declaration and changes no resolved reference is invisible — 2 of
+  astrupdata's 41 modified source files over five commits, a className string
+  and a comment; git is the tool for those. A file that lost an edge to a
+  deleted file reads as touched though git calls it unchanged. A member row is
+  only ever added or removed, never touched. A change in `roles` or `guessed`
+  alone is not a change. `/api/diff` answers the whole lists with no cap — 235
+  edges for HEAD~1 → live on astrupdata. `?diff=base&at=<sha>` is that commit
+  against the session's base, and empty at HEAD. `changed=1` and `since=` do
+  nothing under a diff, and their chips show anyway; `?diff=&as=list` reaches
+  the list, which wears the diff's letters but pulses nothing. `keepLayout`
+  puts a new box beside its most connected neighbour, under a diff often
+  outside the camera — Fit to screen was needed to see the ghost after a save.
+- **Facts are read once at boot.** An entry point added after opening shows
+  under "nothing imports it" until the project is reopened; a removed one is
+  filtered out, because the overview reads the graph. Build output named by a
+  manifest is dropped, never mapped to `src/`. Not listed: Next's
+  `middleware.ts` and `instrumentation.ts`, a Python `__main__` guard (only
+  `__main__.py`). Go `func main` is fixture-tested only, no clone being on
+  hand. Roots count every edge kind but `contains` as reaching, so a file
+  named only in a signature is "reached", while one loaded through a dynamic
+  `import()` or `new Worker(url)` is a root — `src/parser/worker.ts` here —
+  and its "nothing imports it" is literally true. `rootsTotal` on a types-only
+  library is 0.
+- **The front page is live only**, and `/?at=<sha>` prints the refusal. The
+  changes row is greyed when none of the files named on it has a box, but only
+  eight are named, so with more changes and none boxed it still lands on
+  "Nothing to show here". Manifest folds are page-local, so Back returns with
+  them folded. Going home drops the filters, so a filter set three views ago
+  does not survive the trip; the View menu's filter items stay runnable there
+  and open the root diagram under that filter. The Categories reveal finds the
+  section's title button through the DOM, so a change to that markup makes the
+  row scroll and nothing more.
+- **The list's in and out are the view's lines and nothing more**: an edge
+  kind not switched on is not counted, and the cell prints a bare number, not
+  `≥`. Enter on a row is the click; only double-click goes into one, and a
+  bundle or component row goes nowhere, as its box does. No coverage column.
+  A category deleted from groups.json while a client is scoped to it is
+  pushed the root view with `category` absent from the echo while the URL
+  still says `?category=`; the next fetch answers 404 — the deleted-focus
+  entry's shape. There are no route tests, so that 404 was measured by curl
+  and is not pinned.
 - **The language boundary is invisible.** A Python backend and a TypeScript front
   end in one tree draw as two islands, correctly — no import crosses, the
   coupling is HTTP — and nothing on screen separates that from a parse that

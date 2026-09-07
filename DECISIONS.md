@@ -60,6 +60,10 @@ claim about the code can be traced to the run that established it.
 - **Deltas are not stored.** `applyBatch` returns one and nothing reads it. Session
   diff (`VISION.md`, phase 1) is where that changes; the seam is there, the
   storage is not, because unused storage is not worth carrying.
+  **Answered differently on 2026-09-07.** Phase 1 arrived without touching
+  deltas at all: the diff is of two whole graphs — a commit's, built by
+  `history.ts`, and the working tree's — so nothing is stored and git keeps
+  the commits. See "Never draw the hairball" below.
 
 
 ## Verified
@@ -161,7 +165,8 @@ them by project and by date. The schema is shaped for that now, so it arrives
 without a migration — `project` carries a surrogate `id` from day one purely so a
 later `session(project_id REFERENCES project(id))` needs no back-fill. Recents as
 a bare list of paths, which is all this phase needs, would have forced exactly
-that rewrite later.
+that rewrite later. (Phase 1 then arrived as a diff of two graphs in memory
+and wrote no row; the seam is still there for persisted history, unused.)
 
 Item 3's `recent-projects.json` is imported once on first open and then deleted,
 so the two cannot drift. The import assigns distinct descending timestamps: a
@@ -401,3 +406,147 @@ that can be complete rather than a sample, and the only reason it was built.
   when every path in the try returned (`history.ts#graphAt`), and an empty box
   drawn from the statement tree-sitter invents to recover from `if (a || b)`
   with nothing after it (a broken student file).
+
+
+## Never draw the hairball (2026-09-07)
+
+The course change, and the numbers that made it. The rule is in CLAUDE.md
+under the same title; this is what was measured, on a copy of astrupdata —
+368 files, TypeScript, Next.js — and what was decided from it.
+
+### The measurement
+
+The user opened the tool on their own project and said: too many lines, no
+overview, unsure it gives any value at this size. Measured, they were right.
+The root was 12 boxes and fine. One level in, `lib` was **106 boxes** — 53
+files inside and 53 dimmed directories outside, both drawn — **427 lines** over
+125 files, laid out as one strip zoomed to a smear. The Data Pipeline category
+was 96 members and 32 external boxes, 128 in all, and 462 lines. The clustering
+offered "Terminal App, 254 files, 98%", which is the algorithm saying
+everything imports everything: true, and worthless. The screenshot answered no
+question a person has.
+
+Every tool that drew the big graph hit this wall. Sourcetrail's answer after
+years of trying is the one adopted: never draw it. The default view is one
+symbol and its neighbours; the overview is a list; the diagram is something you
+go to. The engine — the graph, the seven languages, the honesty rules, the live
+update, `?at=` — did not move. The view layer turned.
+
+### The list
+
+- **Thirty boxes, decided on the server.** `LIST_ABOVE = 30` is where a
+  diagram of this project's boxes on this project's canvas stopped answering
+  "what is in here" faster than a list would. The rule lives in
+  `presentationOf` over the `ViewGraph`, not on the page: two readers of one
+  threshold is how a live push redraws a list as a diagram, and the page never
+  re-derives it. `nodes.length` counts the external boxes, because they are
+  drawn.
+- **A focus is never a list.** The lines are the answer there; a list of
+  neighbours with the lines taken away says less than the three boxes did. A
+  diff is small by construction and is drawn for the same reason.
+- **The row's numbers are the view's lines**, summed by weight, and a floor
+  said only in the column title. `app/terminal/routes` at 17 boxes was the
+  natural diagram on this copy; `app/terminal` is 41 and lists.
+- **Faint lines are a DOM class, not state.** A hover that renders re-renders
+  every edge, so the page toggles `edge-near` on the line elements. Measured
+  with synthetic mouseover events, three real hovers for the long-task count:
+  17 boxes / 51 lines, 0.118 ms mean and 0.4 ms max per hover; 41 boxes / 115
+  lines, 0.112 ms mean and 0.5 ms max; only class-attribute mutations on the
+  line elements, no mounts, 0 long tasks. "No re-render" is argued from the
+  absence of state and of any non-class mutation, not from React internals.
+- **Mark, do not move, in a list.** `holdOrder` keeps the order across a save.
+  Measured: `lib` sorted by In, two imports added by hand, 106 rows in the same
+  order with three counts changed in place. The DOM was read 3 s after the
+  save, so the counts and the order were seen and the 2.5 s pulse was not.
+
+### The front page
+
+- **What astrupdata names.** 57 manifest entry points — 36 Next pages, 7
+  routes, 4 layouts, 3 fallbacks, 6 scripts, 1 `main` — and 87 roots, of which
+  70 are under `scripts/` and 7 are `app/` components nothing imports, grep-
+  verified dead. `gatherFacts` 2 ms, `overviewOf` 1.7 ms, the route 25 ms.
+  Layouts and fallbacks were named at all because they were the top of the
+  roots list before they were: a layout wraps every page below it and nothing
+  imports one.
+- **Grouped by reason, capped at twelve roots, the page is 38 rows.** 57 rows
+  of entry points is the hairball again, as a list; one row per reason, biggest
+  first, folded at nine or more, is a page. Twelve roots with the total beside
+  them, and the total is a count with no view behind it yet — the one number
+  on the page that leads nowhere, and it says so in its title.
+- **Go `func main` is read in facts, not off the graph.** The parser already
+  reads `package main` as `moduleName`, but a parse result is not a fact —
+  facts are gathered while the workers parse, and the graph carries no module
+  name a pure module could read later — so the head of each `.go` file is
+  read once more as the manifest of itself. Both halves are required: `cmd/foo/`
+  is three files in `package main` and one start. Fixture-tested only; no Go
+  clone was on hand and a test never clones.
+- **The front page drops the filters on the way in.** A filter filters a
+  diagram, and there is none here; the rows build their links afresh, so a
+  `tests=0` set three views ago does not ride into the focus view an entry
+  point opens. `?scope=` with an empty value is how the root diagram is still
+  reached — the key is what makes it a diagram — and `?scope=&as=diagram` is
+  "Draw the whole project", the one row that asks for the big graph on purpose.
+- **A frozen front page is refused, not approximated.** `Session.graphAt`
+  hands back a `Graph` without the `ProjectFacts` `history.ts` gathered beside
+  it. Answering with today's facts filtered to the commit's files would be
+  right for every page that existed then and still does, and silently wrong for
+  one deleted since — the mostly-right picture the tool refuses to draw.
+
+### The structural diff
+
+- **Two graphs, set arithmetic over ids.** Ids are stable across parses, so a
+  node in both graphs is the same declaration and a node in one is one that
+  came or went. `contains` is not diffed: a symbol's container is spelled in
+  its id, and counting both would report a class that gained a method as two
+  changes. `touched` follows outgoing edges only — a file that gained an
+  importer did nothing. `modifiedAt` is left out of "same declaration": a
+  commit's graph is unpacked moments before it is scanned, and a clock would
+  touch every file at every commit.
+- **Measured against git.** astrupdata HEAD~5 → HEAD: files +2 −1 M39 against
+  git's A2 D1 and M41 source files, the two misses a className string and a
+  comment — edits that move no declaration and change no resolved reference,
+  which the diff cannot see and says so; symbols +22 −5, edges +156 −2, 619 ms
+  including two commit builds; HEAD~1 → live 347 ms. base → live with three
+  edits made by hand (a function added, a file deleted, a class with a method
+  added): files {2 added, 1 removed, 6 touched}, symbols {189, 1}, edges
+  {226, 8}, against `git diff --stat HEAD` = 3 files +13 −37 — the same three
+  files plus two gitignored ones, `functions/lib/index.js` and
+  `next-env.d.ts`, which the live scan reads off disk and `git archive` does
+  not hold: 184 of the symbols and 226 of the edges are those two, before the
+  session's own edits. dc7d76f → 2db63b9: files {1 added, 1 touched} against
+  git's 2 files, the same two.
+- **The `~2` hole is pinned, not hidden.** The suffix names a position among
+  namesakes, so removing the first of two overloads reads as the second removed
+  and the first moved, and a swap reads as every edge moved. `graph/diff.test.ts`
+  pins that reading, built through the store so the ids are the live ones, and
+  `DIFF_CAVEAT` rides every `/api/diff` reply for the panel to print.
+- **`session.graphAt` is handed a sha, never a ref.** Its `spelled` cache pins
+  every spelling to the sha it resolved to the first time — right for `7fe7f88`
+  and wrong for `HEAD`, which names a different commit after every commit.
+  `resolveDiffEnds` resolves `base` with `resolveCommit` first, and is shared
+  by `/api/diff` and `/api/view?diff=` so the canvas and the lists cannot be
+  between different commits.
+- **The hub cannot draw a diff yet, and does not pretend to.** `live.ts` holds
+  one graph, so a diff client is pushed the ordinary slice with `diff` dropped
+  from its echo; the page reads the mismatch as "the diff changed" and refetches.
+  Probed: the route's echo `diff: "base"` with 9 nodes, the hub's push
+  `undefined` with 12 — the silent widening CLAUDE.md warns about, caught by
+  the echo rule. The three optional keys are read for both wire formats by one
+  `optionalKeys`, checked the same way: send the server's own spec back.
+- **The ghost.** A removed file is drawn from the before graph — dashed like a
+  box outside the scope, dimmed a little further, its name struck, a `D` —
+  and never a new hue. Its panel reads `/api/detail?at=<from.sha>`, the only
+  graph that still holds it. "Add a method" was driven as a class added with
+  its method, because astrupdata's HEAD holds no class and the copy may not be
+  committed to; a method added to a class already in the base takes the same
+  path in `diffview` and was not seen on screen.
+
+### Verified on the page
+
+On a copy of astrupdata served from a copy of this tree: `.front-row` and
+`.list-row` measure 22px, 0 uses of the accent on the front page, 0 new hex
+colours in the built CSS, one Tab stop in the list and one on the front page.
+The list's per-row in and out matched `/api/detail` on the rows sampled; the
+category 404 was measured by curl and is not pinned, there being no route
+tests. Two interactions were driven with dispatched KeyboardEvents when OS
+keystrokes stopped reaching the tab, and were labelled so in the evidence.

@@ -17,6 +17,17 @@ The insight that shapes everything below: **the graph is not the product.** The 
 is infrastructure. The product is what you do with a live, accurate structural model
 of a codebase while an agent is actively changing it.
 
+**And the graph is not the picture either** (2026-09-07). Opened on a real
+368-file project the tool drew 106 boxes and 427 lines one level in, and the
+person looking at it could not say what it was for. A map of everything never
+works; Sourcetrail's answer after years is the one taken: the overview is a
+list — what the project is, where it starts, by manifests and conventions the
+engine can defend with the reason on every row, what it is made of, what
+changed — and the diagram is something you go to: one symbol and its
+neighbours, one category, or the diff. "Never draw the hairball" in CLAUDE.md
+is the rule; the four capabilities below are what the list and the diagram are
+in service of.
+
 ---
 
 ## Capability 1 — Architecture drift detection
@@ -70,6 +81,18 @@ they come back to a forty-file git diff. Git shows *lines changed*. It does not 
 **Why it matters.** This is probably the most-used feature in daily practice. It is
 also cheap to build: stable node IDs and incremental graph updates are already
 required by the MVP, so the diff is a byproduct rather than new machinery.
+
+**Built on 2026-09-07**, and the prediction held: `diffGraphs` is set
+arithmetic over the ids the MVP already made stable. The first two bullets
+exist — `?diff=base` draws added boxes with an `A`, removed files as ghosts
+read from the graph before, touched files with an `M`, added lines solid and
+removed lines dashed — and a Source Control row and the front page carry the
+counts. "Scoped to an agent session" is answered today by the session's git
+base (HEAD, HEAD~1, the merge base) or by any commit, not by a session boundary
+of its own; the summary sentence and the timeline scrubber are not built, and
+nothing is persisted — the diff is computed from two graphs in memory. The
+one thing ids cannot tell apart is two same-named symbols in one file, and the
+reply says so.
 
 ---
 
@@ -149,7 +172,7 @@ loop that still needs to move fast. The order is: engine → capabilities → sh
 | Phase | What ships | Why this order |
 |---|---|---|
 | 0 — MVP | Live class/dependency graph, TypeScript only, browser UI | Everything else reads from this graph. Nothing is possible before it is correct. |
-| 1 | Session diff (cap. 2) | Cheapest real feature; stable node IDs make it nearly free. Immediately useful daily. |
+| 1 | Session diff (cap. 2) — **built 2026-09-07** as `?diff=`, the diff of two graphs | Cheapest real feature; stable node IDs make it nearly free. Immediately useful daily. Landed after the desktop shell and MCP, not before them. |
 | 2 | Architecture drift detection, reporting mode (cap. 1) | The differentiating feature. Reporting first — trust before enforcement. |
 | 3 | Blast radius (cap. 3) | Reverse-dependency index; also a prerequisite for the best MCP tools. |
 | 4 | MCP server (cap. 4) | Thin layer over everything built in phases 1–3. |
@@ -180,4 +203,6 @@ Kept here so the decision is not silently revisited later:
   once the boxes are already on screen. It is asked to read, never to draw and never
   to decide. See "Explaining what the graph found" in CLAUDE.md.
 - **Persistence and history beyond the session.** Interesting, but it turns an
-  in-memory tool into a database product. Revisit after phase 4.
+  in-memory tool into a database product. Revisit after phase 4. Phase 1
+  arrived without it: a diff of two graphs needs a commit and the working
+  tree, and git already keeps the commits.

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 // The `.ts` extension is what lets Node run this file as it is, the same as
 // `layout.test.ts` beside it: the page is bundled by vite and never compiled
 // into dist/, so there is no listrows.js for `node --test` to find.
-import { holdOrder, nextSort, presentationChip, rowsOf, sortRows, type ListRow } from './listrows.ts';
+import { holdOrder, letterStatus, nextSort, presentationChip, rowsOf, sortRows, type ListRow } from './listrows.ts';
 
 type Node = Parameters<typeof rowsOf>[0]['nodes'][number];
 type Edge = Parameters<typeof rowsOf>[0]['edges'][number];
@@ -138,4 +138,29 @@ test('the chip says how the slice is shown, and only when there is something to 
   assert.equal(forced?.warning, true);
   assert.equal(presentationChip('diagram', 'diagram', 12, 30)?.warning, false);
   assert.equal(presentationChip('list', 'list', 12, 30)?.action, 'drop');
+});
+
+test('under a diff a row wears the diff’s letter where git’s went, and sorts by it', () => {
+  const rows = rowsOf({
+    nodes: [
+      file('lib/same.ts', { gitStatus: 'modified' }),
+      file('lib/gone.ts', { change: 'removed' }),
+      // git says untracked; the diff says added, and the diff is what is drawn.
+      file('lib/new.ts', { change: 'added', gitStatus: 'untracked' }),
+      file('lib/moved.ts', { change: 'touched' }),
+    ],
+    edges: [],
+  });
+  assert.deepEqual(
+    rows.map((row) => letterStatus(row)),
+    ['modified', 'deleted', 'added', 'modified'],
+  );
+  // Changed first, in git's own order of what happened — the diff's letters
+  // sorted among git's, not after them.
+  assert.deepEqual(ids(sortRows(rows, { key: 'git', dir: 'desc' })), [
+    'lib/moved.ts',
+    'lib/same.ts',
+    'lib/new.ts',
+    'lib/gone.ts',
+  ]);
 });

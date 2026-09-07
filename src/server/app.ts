@@ -318,7 +318,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     // is read; git status rides the boxes live and not at a commit, as on
     // every other view. Coverage is not joined — see `diffView`.
     if (spec.diff !== undefined) {
-      const ends = await resolveDiffEnds(session, spec.diff, spec.at ?? 'live');
+      const ends = await resolveDiffEnds(session, spec.diff, spec.at ?? 'live', { from: 'diff', to: 'at' });
       if (!ends.ok) return reply.code(ends.status).send({ error: ends.error });
       const git = spec.at === null ? session.gitStatus() : null;
       return {
