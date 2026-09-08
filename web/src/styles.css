@@ -2859,6 +2859,17 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .project-button:hover { background: var(--vsc-toolbar-hover); color: var(--vsc-fg); }
 .chevron { color: var(--vsc-fg-muted); }
 
+/* A scan is running. Not hoverable, because there is nothing to press. */
+.project-opening { color: var(--vsc-fg); cursor: default; }
+.project-opening:hover { background: none; }
+
+/* VS Code spins codicon-sync for work in flight; the same icon, the same turn. */
+@keyframes codicon-spin { to { transform: rotate(360deg); } }
+.spin { animation: codicon-spin 1.5s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .spin { animation: none; }
+}
+
 .project-menu {
   position: absolute;
   top: calc(100% + 3px);
@@ -2923,6 +2934,10 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
   line-height: 1.5;
 }
 .welcome-warn .codicon { flex: none; margin-top: 2px; }
+
+/* An empty folder is a fact, not a warning: the same weight as the tagline it
+   follows, so it reads as the answer to "why is this blank" and not as a fault. */
+.welcome-note { margin: 0 0 8px; padding: 0 8px; color: var(--vsc-fg); line-height: 1.5; }
 
 .welcome h2 {
   margin: 12px 0 0;

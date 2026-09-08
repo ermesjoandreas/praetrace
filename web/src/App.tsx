@@ -633,6 +633,14 @@ export function App() {
   const [log, setLog] = useState<LogResponse | null>(null);
   const [showWelcome, setShowWelcome] = useState(false);
   /**
+   * The project a switch is on its way to, or null. Opening one is a whole boot
+   * scan on the server — measured at 9 min 13 s for a 3 039-file tree — and
+   * until this existed the page said nothing for all of it: the picker closed,
+   * the old project stayed on screen looking finished, and the only honest
+   * reading was that the click had been ignored.
+   */
+  const [opening, setOpening] = useState<string | null>(null);
+  /**
    * The symbol whose control flow is drawn over the canvas, or null. Nothing
    * is fetched for it until it is set: the flow is a parse, and a page that
    * parsed every function it looked at would violate the spirit of decision 1.
@@ -885,6 +893,9 @@ export function App() {
           specRef.current = JSON.stringify(message.view.spec);
           setData({ root: message.root, view: message.view });
           setError(null);
+          // The project asked for has arrived — including one another tab or
+          // the menu bar asked for, which this client never started.
+          setOpening(null);
           // A path from the previous project means nothing here.
           setSelected(null);
           // Nor does a name guessed for one of its clusters. The effect keyed
@@ -2904,9 +2915,20 @@ export function App() {
   const handleSwitchProject = useCallback((root: string) => {
     // The server pushes a 'project' message on success, which is what clears the
     // URL and swaps the graph; this only has to start it and record the choice.
+    setOpening(root);
     switchProject(root).then(
-      (result) => void rememberProject(result.root).catch(() => undefined),
-      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+      (result) => {
+        // Cleared here as well as on the 'project' message: the POST resolves
+        // only once the new session has finished its boot scan, and a socket
+        // that dropped in the meantime would otherwise leave "Opening…" up for
+        // a project that is already on screen.
+        setOpening(null);
+        void rememberProject(result.root).catch(() => undefined);
+      },
+      (cause: unknown) => {
+        setOpening(null);
+        setError(cause instanceof Error ? cause.message : String(cause));
+      },
     );
   }, []);
 
@@ -4492,7 +4514,7 @@ export function App() {
           editor. */}
       <MenuBar
         menus={menus}
-        trailing={<ProjectMenu root={data?.root ?? '…'} onSwitch={handleSwitchProject} />}
+        trailing={<ProjectMenu root={data?.root ?? '…'} opening={opening} onSwitch={handleSwitchProject} />}
       />
 
       <nav className="breadcrumb">
@@ -4900,6 +4922,9 @@ export function App() {
             }}
             onClose={showWelcome ? () => setShowWelcome(false) : null}
             unreadable={unreadableReport}
+            empty={emptyProject}
+            reads={languageReport?.reads ?? []}
+            opening={opening}
           />
         )}
         {/* The front page, over the root view it stands on and under the

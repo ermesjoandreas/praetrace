@@ -13,6 +13,9 @@ export function Welcome({
   onSearch,
   onClose,
   unreadable,
+  empty,
+  reads,
+  opening,
 }: {
   onOpen: (path: string) => void;
   onSearch: () => void;
@@ -25,6 +28,24 @@ export function Welcome({
    * without it, the one project that most needs telling would be told nothing.
    */
   unreadable: { files: number; kinds: string[]; reads: string[] } | null;
+  /**
+   * True when this screen is up because there is nothing to draw, rather than
+   * because Help opened it. The difference has to be said: an empty diagram and
+   * a deliberately opened help screen looked identical, so a folder of docs, a
+   * folder whose source is all git-ignored, and the empty directory the desktop
+   * app opens on its very first launch all showed a keyboard-shortcut list and
+   * no word about why.
+   */
+  empty: boolean;
+  /** Every language the tool reads — the other half of what an empty screen means. */
+  reads: string[];
+  /**
+   * The project a switch is on its way to, or null. This screen is what the
+   * desktop app's very first launch shows, so it is also what is on screen for
+   * the whole of the first scan — and everything it otherwise says describes
+   * the empty placeholder being left, which during a scan is a lie.
+   */
+  opening: string | null;
 }) {
   const [recents, setRecents] = useState<string[]>([]);
 
@@ -51,7 +72,24 @@ export function Welcome({
         {/* One line, because Help → "What this is" opens this screen. */}
         <p className="welcome-sub">codemaps — a live map of a codebase while an agent changes it.</p>
 
-        {unreadable !== null && (
+        {opening !== null && (
+          <p className="welcome-note">
+            <i className="codicon codicon-sync spin" aria-hidden="true" />{' '}
+            Opening {opening} — reading every file in it. A large project takes a while.
+          </p>
+        )}
+
+        {/* Only when nothing was unreadable: the warning below says the same
+            thing with the numbers, and two sentences about one emptiness read
+            as two separate problems. */}
+        {opening === null && empty && unreadable === null && (
+          <p className="welcome-note">
+            Nothing to draw — no file in this folder is one codemaps reads
+            {reads.length > 0 ? `. It reads ${reads.join(', ')}` : ''}.
+          </p>
+        )}
+
+        {opening === null && unreadable !== null && (
           <p className="welcome-warn">
             <i className="codicon codicon-warning" aria-hidden="true" />
             <span>

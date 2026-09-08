@@ -34,7 +34,7 @@ async function main(): Promise<void> {
   void sweepHistoryDirs();
   host = await startSessionHost(await realRoot(args.find((arg) => !arg.startsWith('--')) ?? '.'), {
     onApplied: (changedFiles) => hub?.publish(changedFiles),
-    onError: (message) => console.error(`codemap: ${message}`),
+    onError: (message) => console.error(`codemaps: ${message}`),
     // A commit or a checkout changed what differs from the base. Published with
     // no changed files, because nothing was written: the badges and the chip
     // are new, and pulsing every box a commit touched would say the agent had
@@ -92,7 +92,7 @@ async function main(): Promise<void> {
 
   // Written before the prose so a supervisor can stop reading at the first line.
   console.log(`${PORT_LINE_PREFIX}${actualPort}`);
-  console.log(`codemap  ${session.root}`);
+  console.log(`codemaps  ${session.root}`);
   console.log(`${session.store.files.size} files · ${session.store.graph.nodes.size} nodes · ${session.store.graph.edges.length} edges`);
   console.log(`\n  ${address}\n`);
   console.log(`watching for changes · hook endpoint at ${address}/api/hook\n`);
@@ -103,7 +103,7 @@ async function main(): Promise<void> {
  * watcher, git, the port file, the hook and the line printed below all mean the
  * same directory by the same name.
  *
- * `codemap /tmp/x` and `codemap /private/tmp/x` are the same project on macOS,
+ * `codemaps /tmp/x` and `codemaps /private/tmp/x` are the same project on macOS,
  * where every `/tmp` and `/var` path is a symlink — and Claude Code reports the
  * resolved spelling. Starting on the other one is what made every hook call
  * land outside the project; see `changeFromHook`, which resolves both sides

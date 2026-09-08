@@ -7,7 +7,20 @@ function shorten(path: string): string {
   return segments.slice(-2).join('/') || path;
 }
 
-export function ProjectMenu({ root, onSwitch }: { root: string; onSwitch: (path: string) => void }) {
+export function ProjectMenu({
+  root,
+  opening,
+  onSwitch,
+}: {
+  root: string;
+  /**
+   * The project a switch is on its way to, or null. Opening one is a whole boot
+   * scan, and on a large tree that is minutes; this is the only place on screen
+   * that says a click was heard, so it names the folder rather than spinning.
+   */
+  opening: string | null;
+  onSwitch: (path: string) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const container = useRef<HTMLDivElement>(null);
@@ -33,12 +46,23 @@ export function ProjectMenu({ root, onSwitch }: { root: string; onSwitch: (path:
 
   return (
     <div className="project" ref={container}>
-      <button type="button" className="project-button" onClick={() => setOpen((was) => !was)} title={root}>
-        {shorten(root)}
-        <i className="codicon codicon-chevron-down chevron" aria-hidden="true" />
-      </button>
+      {opening !== null ? (
+        // Not the same button greyed out: a disabled control still reads as the
+        // thing you just pressed, and what has to be said here is that the
+        // press landed and the scan is running. The menu is not offered while
+        // it is — a second switch queues behind this one on the server.
+        <span className="project-button project-opening" title={opening}>
+          <i className="codicon codicon-sync spin" aria-hidden="true" />
+          Opening {shorten(opening)}…
+        </span>
+      ) : (
+        <button type="button" className="project-button" onClick={() => setOpen((was) => !was)} title={root}>
+          {shorten(root)}
+          <i className="codicon codicon-chevron-down chevron" aria-hidden="true" />
+        </button>
+      )}
 
-      {open && (
+      {open && opening === null && (
         <div className="project-menu">
           <button
             type="button"
