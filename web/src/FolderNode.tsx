@@ -78,6 +78,7 @@ export function FolderNode({ data }: NodeProps<FolderNodeType>) {
         <Handle type="target" position={Position.Left} />
         <div className="box-title">
           {fold}
+          <i className="codicon codicon-folder folder-icon" aria-hidden="true" />
           <span
             className="box-title-text"
             // A box standing for a pile says how many moved, never which way:
@@ -109,6 +110,11 @@ export function FolderNode({ data }: NodeProps<FolderNodeType>) {
           everything on it is 18 or less with no vertical padding. */}
       <div className="folder-label">
         {fold}
+        {/* The one thing on this label that says "directory" without a word.
+            A Codicon in currentColor, not a coloured file-type mark: a folder
+            is not a language and has none. It is the icon VS Code's explorer
+            uses for the same thing, which is where a person learned it. */}
+        <i className="codicon codicon-folder-opened folder-icon" aria-hidden="true" />
         <span className="folder-name" title={data.id}>
           {data.label}
         </span>

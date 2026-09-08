@@ -1455,15 +1455,19 @@ main { display: flex; flex: 1; min-height: 0; }
   position: relative;
   width: 100%;
   height: 100%;
-  border: 1px solid var(--vsc-border);
+  /* An outermost frame is the one a reader finds first, so it carries the
+     stronger of the two structural lines; the ones inside step back to the
+     hairline every region of this window is separated by. Reported as too
+     faint to find at all when every level used the hairline. */
+  border: 1px solid var(--vsc-border-input);
   border-radius: var(--vsc-radius);
-  background: rgba(255, 255, 255, 0.03);
+  background: rgba(255, 255, 255, 0.04);
   /* The frame must never swallow a click meant for a box behind it. */
   pointer-events: none;
 }
-.folder-depth-1 { background: rgba(255, 255, 255, 0.022); }
-.folder-depth-2 { background: rgba(255, 255, 255, 0.018); }
-.folder-depth-3 { background: rgba(255, 255, 255, 0.014); }
+.folder-depth-1 { border-color: var(--vsc-border); background: rgba(255, 255, 255, 0.03); }
+.folder-depth-2 { border-color: var(--vsc-border); background: rgba(255, 255, 255, 0.022); }
+.folder-depth-3 { border-color: var(--vsc-border); background: rgba(255, 255, 255, 0.016); }
 
 /* A folder every box in which is a ghost: the directory is not on disk. Drawn
    the way a ghost box is — dashed, dimmed, its name struck — and in no hue of
@@ -1487,6 +1491,11 @@ main { display: flex; flex: 1; min-height: 0; }
   margin: 5px 0 0 10px;
   pointer-events: auto;
 }
+/* 16px, the size of every icon on this page, and in the label's own colour
+   rather than a hue of its own — a folder is structure, not a category. */
+.folder-icon { flex: none; font-size: 16px; color: var(--vsc-fg-muted); }
+.box-folder-shut .folder-icon { color: var(--vsc-fg-muted); }
+
 .folder-name {
   color: var(--vsc-fg-muted);
   font-family: var(--vsc-font-mono);
