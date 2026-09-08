@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { describeUnresolved, type GitFileStatus, type LanguageId, type ViewGraph, type ViewNode } from './api';
 import { fileIconFor } from './fileicons';
 import { LIST_ROW, useListKeys } from './listkeys';
+import type { Band, Shown } from './marks';
 import { holdOrder, letterStatus, nextSort, rowsOf, sortRows, type ListRow, type Sort, type SortKey } from './listrows';
 
 /**
@@ -36,9 +37,15 @@ interface ListViewProps {
   /** The row the panel describes, and the rows picked for a category. */
   selected: string | null;
   picked: ReadonlySet<string>;
-  /** Touched by the last save; asked about by the agent. The two pulses. */
-  changed: ReadonlySet<string>;
-  queried: ReadonlySet<string>;
+  /**
+   * The two live signals, as the boxes wear them: written lately, and asked
+   * about lately. Marks, not pulses — they stand for minutes, and `pulsing` /
+   * `pulsingAsk` are the short announcement inside them. See `marks.ts`.
+   */
+  marks: ReadonlyMap<string, Shown>;
+  asked: ReadonlyMap<string, Band>;
+  pulsing: ReadonlySet<string>;
+  pulsingAsk: ReadonlySet<string>;
   /**
    * Rows nothing being followed touches, or that ⌘F did not match. Dimmed, as
    * the boxes are; `asideNote` is the graph's own sentence about why a dimmed
@@ -161,8 +168,10 @@ export function ListView({
   viewKey,
   selected,
   picked,
-  changed,
-  queried,
+  marks,
+  asked,
+  pulsing,
+  pulsingAsk,
   aside,
   asideNote,
   showLanguage,
@@ -252,8 +261,13 @@ export function ListView({
           const classes = ['list-row', `list-row-${row.kind}`];
           if (row.external) classes.push('list-row-external');
           if (selected === row.id || picked.has(row.id)) classes.push('list-row-selected');
-          if (changed.has(row.id)) classes.push('list-row-changed');
-          if (queried.has(row.id)) classes.push('list-row-queried');
+          const mark = marks.get(row.id);
+          const askedAt = asked.get(row.id);
+          if (mark !== undefined) classes.push('list-row-changed', `list-row-changed-${mark.band}`);
+          if (mark?.born === true) classes.push('list-row-born');
+          if (askedAt !== undefined) classes.push('list-row-queried', `list-row-queried-${askedAt}`);
+          if (pulsing.has(row.id)) classes.push('list-row-pulse-write');
+          if (pulsingAsk.has(row.id)) classes.push('list-row-pulse-ask');
           if (dimmed) classes.push('list-row-aside');
           // A file row's id is its path, which is what the icon is read off.
           // The tag stays only where there is no icon — a folder's pile, or a
@@ -269,7 +283,9 @@ export function ListView({
               data-row-id={row.id}
               className={classes.join(' ')}
               aria-selected={selected === row.id || picked.has(row.id)}
-              title={rowTitle(row, asideNote, dimmed)}
+              title={
+                (mark === undefined ? '' : `${mark.title}. `) + rowTitle(row, asideNote, dimmed)
+              }
               onClick={(event) => onSelect(row.id, event.shiftKey || event.metaKey || event.ctrlKey)}
               onDoubleClick={() => onOpen(row.id, row.kind)}
               onContextMenu={(event) => {
@@ -285,6 +301,12 @@ export function ListView({
                   <i className={`codicon codicon-${KIND_ICON[row.kind]}`} aria-hidden="true" />
                 )}
                 <span className="list-label">{row.label}</span>
+                {/* A box that was not here a moment ago. The one thing on this
+                    page that says a file arrived rather than moved, and it is
+                    a word rather than a hue because the amber already means
+                    "written" and this is a kind of written, not a rival to
+                    it. */}
+                {mark?.born === true && <span className="list-new">new</span>}
                 {row.external && <span className="list-tag">outside</span>}
                 {/* The same marks the box's title carries, for the same
                     reasons: a warning is the tool's own gap, and the count of

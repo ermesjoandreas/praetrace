@@ -5,6 +5,7 @@ import { FOLD_MANIFEST_AT, changesSummary, manifestGroups, splitPath, type Entry
 import { relativeTime } from './GitGraph';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { holdOrder } from './listrows';
+import type { Band, Shown } from './marks';
 import { Section } from './Section';
 import { DiffCount, diffTitle, type DiffRow } from './SourceControl';
 
@@ -50,9 +51,15 @@ interface OverviewProps {
   rootBoxes: number | null;
   /** Which base the changes are against, as the status bar names it. */
   baseLabel: string;
-  /** Files touched by the last save, and files the agent just asked about: the two pulses. */
-  changed: ReadonlySet<string>;
-  queried: ReadonlySet<string>;
+  /**
+   * The two live signals, as the boxes wear them: written lately, and asked
+   * about lately, each in two strengths, with the short announcement inside
+   * them kept separate. See `marks.ts`.
+   */
+  marks: ReadonlyMap<string, Shown>;
+  asked: ReadonlyMap<string, Band>;
+  pulsing: ReadonlySet<string>;
+  pulsingAsk: ReadonlySet<string>;
   /** A file and its neighbours. Every file row leads here. */
   onFocus: (file: string) => void;
   /**
@@ -117,8 +124,10 @@ export function Overview({
   at,
   rootBoxes,
   baseLabel,
-  changed,
-  queried,
+  marks,
+  asked,
+  pulsing,
+  pulsingAsk,
   onFocus,
   inGraph,
   onCategory,
@@ -174,9 +183,22 @@ export function Overview({
     overview !== null &&
     (overview.changes.files.some((file) => file.inGraph) || overview.changes.total > overview.changes.files.length);
 
-  /** The marks a file row wears: the file system's amber, the agent's blue. */
-  const marksOf = (file: string): string =>
-    `${changed.has(file) ? ' front-row-changed' : ''}${queried.has(file) ? ' front-row-queried' : ''}`;
+  /**
+   * The marks a file row wears: the file system's amber, the agent's blue, in
+   * the strength the age gives them, with the pulse — which is over in two
+   * seconds — as its own class on top.
+   */
+  const marksOf = (file: string): string => {
+    const mark = marks.get(file);
+    const askedAt = asked.get(file);
+    return (
+      (mark === undefined ? '' : ` front-row-changed front-row-changed-${mark.band}`) +
+      (mark?.born === true ? ' front-row-born' : '') +
+      (askedAt === undefined ? '' : ` front-row-queried front-row-queried-${askedAt}`) +
+      (pulsing.has(file) ? ' front-row-pulse-write' : '') +
+      (pulsingAsk.has(file) ? ' front-row-pulse-ask' : '')
+    );
+  };
 
   const fileRow = (
     file: string,
@@ -195,7 +217,7 @@ export function Overview({
         type="button"
         {...LIST_ROW}
         className={`front-row front-link front-depth-${depth}${marksOf(file)}`}
-        title={title}
+        title={marks.has(file) ? `${marks.get(file)?.title}. ${title}` : title}
         onClick={() => onFocus(file)}
       >
         {icon !== null ? (
@@ -204,6 +226,8 @@ export function Overview({
           <i className="codicon codicon-file" aria-hidden="true" />
         )}
         <span className="front-name">{name}</span>
+        {/* The same word the box wears: this file was not here a moment ago. */}
+        {marks.get(file)?.born === true && <span className="front-new">new</span>}
         <span className="front-where">{where}</span>
         {extra.detail !== undefined && <span className="front-why">{extra.detail}</span>}
         {extra.why !== undefined && <span className="front-why">{extra.why}</span>}

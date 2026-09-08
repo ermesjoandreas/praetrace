@@ -45,8 +45,8 @@ export type PaneId = BarId | SectionId;
  * not read across.
  */
 export const SECTIONS: Record<BarId, readonly SectionId[]> = {
-  leftbar: ['repository', 'sourceControl', 'categories', 'activity'],
-  sidebar: ['followed', 'detail'],
+  leftbar: ['repository', 'sourceControl', 'categories', 'detail'],
+  sidebar: ['followed', 'activity'],
 };
 
 /** Which bar a section stands in. The mapping lives here rather than in six
@@ -60,25 +60,40 @@ export function isBar(pane: PaneId): pane is BarId {
 }
 
 /** Today's widths, so a first run looks exactly as it did before there were
- * sashes. 300px is VS Code's own side bar; 330 is what Detail needs for a
- * path and a symbol row on one line. */
+ * sashes. 300px is VS Code's own side bar; 330 was measured for Detail, which
+ * has since changed places with Activity, and it is kept because Activity's
+ * five columns want it as much — a path, a directory, a writer's name and a
+ * +/- on one 22px row. */
 export const DEFAULT_WIDTH: Record<BarId, number> = { leftbar: 300, sidebar: 330 };
 
 /**
  * Today's shares, the ones written up in `styles.css` against a 1083px screen:
- * Repository 45%, Categories 15%, Activity 20%, and Source Control whatever is
+ * Repository 45%, Categories 15%, Detail 20%, and Source Control whatever is
  * left because it is the one list that is always long. The side bar is
- * Following 45% and Detail the rest. They are only consulted when a pane is
- * reset — while a bar's stack is `null` the stylesheet is still in charge and
- * these numbers are not applied to anything.
+ * Following 45% and Activity the rest.
+ *
+ * Detail and Activity were exchanged, and each took the share of the slot it
+ * moved into rather than carrying its own along: the numbers describe the
+ * *place* — the last section of a four-deep column, the bottom half of a
+ * two-deep one — and not the panel that happens to stand there.
+ *
+ * The last slot then grew from 20% to 30%, at Repository's expense, because
+ * Detail is the panel with the most rows in it — a path, a count, and three
+ * lists — and a slot sized for a feed of 22px rows showed six of them. The
+ * 5 points come off Repository because it is the one section whose content is
+ * a fixed height (about 410px), so its share is the one that decides least.
+ *
+ * They are only consulted when a pane is reset — while a bar's stack is `null`
+ * the stylesheet is still in charge and these numbers are not applied to
+ * anything.
  */
 const DEFAULT_SHARE: Record<SectionId, number> = {
-  repository: 0.45,
-  sourceControl: 0.2,
+  repository: 0.4,
+  sourceControl: 0.15,
   categories: 0.15,
-  activity: 0.2,
+  detail: 0.3,
   followed: 0.45,
-  detail: 0.55,
+  activity: 0.55,
 };
 
 /** VS Code's own minimum side bar width. Below it the bar stops being a bar:
@@ -153,8 +168,8 @@ export interface Layout {
  * two — so the side bar is usually one section, with no internal border and
  * nothing to arrange. Heights are held back until Following comes back, and
  * the pair somebody set is waiting for it when it does; a stack applied to a
- * bar missing a section would leave Detail at 55% of a side bar that is all
- * Detail, and 45% of it empty.
+ * bar missing a section would leave Activity at 55% of a side bar that is all
+ * Activity, and 45% of it empty.
  */
 export function stackApplies(bar: BarId, rendered: number): boolean {
   return rendered === SECTIONS[bar].length;
@@ -433,11 +448,20 @@ export function clampLayout(layout: Layout, viewport: Viewport): Layout {
 
 export const STORAGE_KEY = 'codemap.layout';
 
-/** Bumped whenever the shape below changes meaning. A stored layout under any
+/**
+ * Bumped whenever the shape below changes meaning. A stored layout under any
  * other version is dropped for the default rather than read optimistically:
  * the cost of losing an arrangement once is a window to rearrange, and the
- * cost of misreading one is a window that cannot be. */
-export const LAYOUT_VERSION = 1;
+ * cost of misreading one is a window that cannot be.
+ *
+ * 2 is Detail and Activity changing places. A stack is an array of pixels read
+ * by position, and both bars kept their length — four and two — so a layout
+ * stored under 1 would have been accepted whole and would have handed
+ * Activity's height to Detail and Detail's to Activity, silently, in a window
+ * nobody had rearranged since. That is exactly the case this number exists
+ * for: the shape did not change, the MEANING of the third slot did.
+ */
+export const LAYOUT_VERSION = 2;
 
 interface StoredLayout {
   version: number;

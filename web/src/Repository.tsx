@@ -1,11 +1,14 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
+  fetchMcpStatus,
   installHook,
+  installMcp,
   isDesktop,
   pickProject,
   requestFetch,
   type FetchResponse,
   type HookStatus,
+  type McpStatus,
   type RepoInfo,
 } from './api';
 import { relativeTime } from './GitGraph';
@@ -25,6 +28,10 @@ import { Section } from './Section';
  * and when an action here changes what the server would answer — a fetch moves
  * ahead/behind, an install flips the hook — the result is handed back up rather
  * than kept, because the log and the menu bar read the same facts.
+ *
+ * `.mcp.json` is the one exception, and it is kept here: nothing else on the
+ * page reads it, so putting it in `RepoInfo` would make every consumer of that
+ * answer re-render for a file only these two rows describe.
  *
  * No arrow keys, unlike every other list in the left bar. These rows are a `dl`
  * of facts: a label and a value, nothing to select and nothing for Enter to
@@ -61,6 +68,15 @@ export function Repository({
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  const [mcp, setMcp] = useState<McpStatus | null>(null);
+  const [mcpInstalling, setMcpInstalling] = useState(false);
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  /**
+   * Whether this page is the one that wrote the file. The restart sentence is
+   * only true at the moment of writing — on the next reload the config is
+   * simply installed, and a permanent "restart" would be noise.
+   */
+  const [mcpJustWritten, setMcpJustWritten] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
   // "4 min ago" has to keep moving on its own; nothing else re-renders this
@@ -74,6 +90,27 @@ export function Repository({
   useEffect(() => {
     setFetchError(null);
     setInstallError(null);
+    setMcpError(null);
+    setMcpJustWritten(false);
+  }, [repo.root]);
+
+  // `.mcp.json` is a file in the project, so it is read per project — and the
+  // answer to a root we have already left is dropped rather than shown under
+  // the new one's name.
+  useEffect(() => {
+    let current = true;
+    setMcp(null);
+    fetchMcpStatus().then(
+      (status) => {
+        if (current) setMcp(status);
+      },
+      (cause: unknown) => {
+        if (current) setMcpError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+    return () => {
+      current = false;
+    };
   }, [repo.root]);
 
   const runFetch = () => {
@@ -103,6 +140,22 @@ export function Repository({
       (cause: unknown) => {
         setInstalling(false);
         setInstallError(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+  };
+
+  const runMcpInstall = () => {
+    setMcpInstalling(true);
+    setMcpError(null);
+    installMcp().then(
+      (status) => {
+        setMcpInstalling(false);
+        setMcp(status);
+        setMcpJustWritten(true);
+      },
+      (cause: unknown) => {
+        setMcpInstalling(false);
+        setMcpError(cause instanceof Error ? cause.message : String(cause));
       },
     );
   };
@@ -272,8 +325,13 @@ export function Repository({
           <Row label="Hook calls" title={hookCallsTitle(repo.hookCalls)}>
             <HookCalls calls={repo.hookCalls} />
           </Row>
+          {/* Above the calls row, in the order the two facts are needed: the
+              config is what decides whether an agent can ask at all, and "never
+              asked" under a project with no .mcp.json was reporting silence
+              from tools that were never offered. */}
+          <McpRow status={mcp} justWritten={mcpJustWritten} />
           <Row
-            label="MCP"
+            label="MCP calls"
             title={
               agent.lastAt === null
                 ? 'No agent has used codemap through MCP in this session'
@@ -287,6 +345,7 @@ export function Repository({
           </Row>
         </dl>
         {installError !== null && <p className="repo-error">{installError}</p>}
+        {mcpError !== null && <p className="repo-error">{mcpError}</p>}
         {!hook.installed && (
           <div className="repo-actions">
             <button
@@ -301,6 +360,27 @@ export function Repository({
               }
             >
               {installing ? 'Writing…' : 'Install hook'}
+            </button>
+          </div>
+        )}
+        {/* Under the hook's button and in its shape, in the order the rows
+            above name them. A config that is already current has no button, for
+            the reason the hook's has none: it could never do anything. */}
+        {mcp !== null && !mcp.installed && (
+          <div className="repo-actions">
+            <button
+              type="button"
+              className="repo-button repo-primary"
+              onClick={runMcpInstall}
+              disabled={mcpInstalling || mcp.unreadable || mcp.script === null}
+              title={mcpInstallTitle(mcp)}
+            >
+              {/* The restart is in the button's own words, before it is pressed.
+                  Claude Code reads .mcp.json when a session starts, so a write
+                  mid-session changes nothing until the agent is restarted —
+                  the one part of this that no button can do, and the part a
+                  person is most likely to read as the install having failed. */}
+              {mcpInstalling ? 'Writing…' : 'Install MCP · restart Claude Code'}
             </button>
           </div>
         )}
@@ -344,6 +424,105 @@ function HookCalls({ calls }: { calls: { accepted: number; refused: number } | u
       {calls.accepted} answered
       {calls.refused > 0 && ` · ${calls.refused} refused`}
     </span>
+  );
+}
+
+/**
+ * Whether an agent starting in this project would be handed codemap's tools.
+ *
+ * The row exists because the answer was invisible and the failure silent. A
+ * project's hook can be installed and answering while `.mcp.json` is simply
+ * absent, and then the agent has no tools at all — with nothing on screen
+ * saying which of the two channels was missing. "Not configured" is the whole
+ * fix, one press away.
+ *
+ * "Names a script that is not there" is the same finding for a config that
+ * looks right: a `.mcp.json` copied between projects keeps `scripts/mcp.mjs`,
+ * which resolves against the project Claude Code starts the server in, so in
+ * any repository but codemap's own it names nothing and the server never
+ * starts.
+ */
+function McpRow({ status, justWritten }: { status: McpStatus | null; justWritten: boolean }) {
+  if (status === null) {
+    return (
+      <Row label="MCP" title="Reading .mcp.json">
+        …
+      </Row>
+    );
+  }
+
+  if (status.unreadable) {
+    return (
+      <Row
+        label="MCP"
+        title={`${status.configPath} is not valid JSON, so codemap cannot be merged into it without writing over servers it cannot see`}
+      >
+        <span className="repo-missing">
+          <i className="codicon codicon-error" aria-hidden="true" />
+          .mcp.json is not valid JSON
+        </span>
+      </Row>
+    );
+  }
+
+  if (status.installed) {
+    return (
+      <Row
+        label="MCP"
+        title={`${status.configPath} names ${status.script ?? 'a script'}${beside(status.others)}. Claude Code reads it when a session starts.`}
+      >
+        <span className="repo-ok">
+          <i className="codicon codicon-check" aria-hidden="true" />
+          {/* Twenty-six characters, because the value column is 155px and
+              ellipsis is what the row does to anything longer — a restart
+              instruction cut off mid-word is worse than no restart
+              instruction. The title carries the sentence. */}
+          {justWritten ? 'installed · restart Claude' : 'installed'}
+        </span>
+      </Row>
+    );
+  }
+
+  // Nothing to point at: the packaged app ships dist/ without scripts/mcp.mjs.
+  // The reason names the directory searched, which is the fixable half.
+  if (status.script === null) {
+    return (
+      <Row label="MCP" title={status.reason ?? 'No MCP script to point .mcp.json at'}>
+        <span className="repo-missing">
+          <i className="codicon codicon-warning" aria-hidden="true" />
+          no script to point at
+        </span>
+      </Row>
+    );
+  }
+
+  return (
+    <Row
+      label="MCP"
+      title={`${status.configPath} has no codemap server${beside(status.others)}, so an agent here is offered no codemap tools`}
+    >
+      <span className="repo-missing">
+        <i className="codicon codicon-close" aria-hidden="true" />
+        not configured
+      </span>
+    </Row>
+  );
+}
+
+/** What else is in the file, said in a title, so a merge is visibly a merge. */
+function beside(others: readonly string[]): string {
+  if (others.length === 0) return '';
+  return `, beside ${others.join(', ')}`;
+}
+
+function mcpInstallTitle(status: McpStatus): string {
+  if (status.unreadable) {
+    return `${status.configPath} is not valid JSON, so codemap cannot be merged into it`;
+  }
+  if (status.script === null) return status.reason ?? 'No MCP script to point .mcp.json at';
+  return (
+    `Writes ${status.script} into ${status.configPath}, keeping every server already there${beside(status.others)}. ` +
+    'Claude Code reads .mcp.json when a session starts, so the agent must be restarted once before the tools appear.'
   );
 }
 

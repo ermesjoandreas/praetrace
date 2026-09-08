@@ -1,4 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import { WidthHandles } from './BoxNode';
+import type { Placement } from './placement';
 import {
   describeUnresolved,
   type ComponentFacts,
@@ -43,6 +45,8 @@ export type ComponentData = {
   /** Symbol ids any of them relate to, so a row knows whether to light or fade. */
   related: ReadonlySet<string>;
   onFollow: (id: string, on: boolean) => void;
+  /** A width the reader pulled — live, then final. See `BoxData.onResize`. */
+  onResize: (box: Placement, done: boolean) => void;
 };
 
 export type ComponentNodeType = Node<ComponentData, 'component'>;
@@ -140,137 +144,142 @@ export function ComponentNode({ data }: NodeProps<ComponentNodeType>) {
   if (data.aside) classes.push('box-aside');
 
   return (
-    <div className={classes.join(' ')} data-color={data.color ?? undefined}>
-      <Handle type="target" position={Position.Left} />
+    /* Siblings of the box, for the reason BoxNode gives: the box clips what
+       overflows it and the right-hand line stands at 100% of the node. */
+    <>
+      <WidthHandles onResize={data.onResize} />
+      <div className={classes.join(' ')} data-color={data.color ?? undefined}>
+        <Handle type="target" position={Position.Left} />
 
-      <div className="box-title">
-        <i className="codicon codicon-package box-kind" aria-hidden="true" />
-        <span className="box-title-text" title={title}>
-          {data.label}
-        </span>
-        {/* A box standing for many files says how many of them moved, not
-            which way any single one did. */}
-        {data.gitChanged > 0 && (
-          <span
-            className="box-git box-git-count"
-            title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
-          >
-            {data.gitChanged}
+        <div className="box-title">
+          <i className="codicon codicon-package box-kind" aria-hidden="true" />
+          <span className="box-title-text" title={title}>
+            {data.label}
           </span>
-        )}
-        {data.parseError && (
-          <span className="box-warning" title="A file in here has a syntax error; symbols may be missing">
-            <i className="codicon codicon-warning" aria-hidden="true" />
-          </span>
-        )}
-        {data.unresolved !== undefined && (
-          <span
-            className="box-unresolved"
-            title={`${describeUnresolved(data.unresolved)} across the ${data.files.length} files in here named something codemap could not find, so some of their coupling is not drawn`}
-          >
-            <i className="codicon codicon-question" aria-hidden="true" />
-            {data.unresolved.imports + data.unresolved.calls}
-          </span>
-        )}
-        {tag !== null && (
-          <span
-            className="box-lang"
-            title={data.language === null ? `${data.files.length} files, in more than one language` : `language: ${data.language}`}
-          >
-            {tag}
-          </span>
-        )}
-        {data.test && (
-          <span className="box-test" title="Every file in here is a test, fixture or story">
-            test
-          </span>
-        )}
-      </div>
-
-      <div className="box-meta" title={meta.title}>
-        {meta.text}
-      </div>
-
-      {/* The interface. Member rows, because that is what a UML compartment
-          is, and every control on one is sized to the 17px line. A row's name
-          and its mark do one thing between them — follow the symbol — the way
-          a label and its checkbox do: the mark shows the state, the name is
-          the bigger target. */}
-      <ul
-        className="box-members box-provides"
-        title={
-          symbols.length === 0
-            ? 'Nothing here is reached by name from outside — a floor: a call through an untyped receiver is not tracked, and an import names no symbol'
-            : `What files outside this category reach, most reached first — a floor: a call through an untyped receiver is not tracked, and an import names no symbol`
-        }
-      >
-        {symbols.map((symbol) => {
-          const picked = data.following.has(symbol.id);
-          const related = data.related.has(symbol.id);
-          const aside = data.following.size > 0 && !picked && !related;
-          return (
-            <li
-              key={symbol.id}
-              className={[
-                'member',
-                `member-${symbol.kind}`,
-                symbol.owner === null ? '' : 'member-nested',
-                picked ? 'member-picked' : '',
-                related ? 'member-related' : '',
-                aside ? 'member-aside' : '',
-                symbol.guessed === true ? 'member-guessed' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
+          {/* A box standing for many files says how many of them moved, not
+              which way any single one did. */}
+          {data.gitChanged > 0 && (
+            <span
+              className="box-git box-git-count"
+              title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
             >
-              <button
-                type="button"
-                className="member-name"
-                title={`${spell(symbol)} — reached from ${symbol.reachedFrom} ${
+              {data.gitChanged}
+            </span>
+          )}
+          {data.parseError && (
+            <span className="box-warning" title="A file in here has a syntax error; symbols may be missing">
+              <i className="codicon codicon-warning" aria-hidden="true" />
+            </span>
+          )}
+          {data.unresolved !== undefined && (
+            <span
+              className="box-unresolved"
+              title={`${describeUnresolved(data.unresolved)} across the ${data.files.length} files in here named something codemap could not find, so some of their coupling is not drawn`}
+            >
+              <i className="codicon codicon-question" aria-hidden="true" />
+              {data.unresolved.imports + data.unresolved.calls}
+            </span>
+          )}
+          {tag !== null && (
+            <span
+              className="box-lang"
+              title={data.language === null ? `${data.files.length} files, in more than one language` : `language: ${data.language}`}
+            >
+              {tag}
+            </span>
+          )}
+          {data.test && (
+            <span className="box-test" title="Every file in here is a test, fixture or story">
+              test
+            </span>
+          )}
+        </div>
+
+        <div className="box-meta" title={meta.title}>
+          {meta.text}
+        </div>
+
+        {/* The interface. Member rows, because that is what a UML compartment
+            is, and every control on one is sized to the 17px line. A row's name
+            and its mark do one thing between them — follow the symbol — the way
+            a label and its checkbox do: the mark shows the state, the name is
+            the bigger target. */}
+        <ul
+          className="box-members box-provides"
+          title={
+            symbols.length === 0
+              ? 'Nothing here is reached by name from outside — a floor: a call through an untyped receiver is not tracked, and an import names no symbol'
+              : `What files outside this category reach, most reached first — a floor: a call through an untyped receiver is not tracked, and an import names no symbol`
+          }
+        >
+          {symbols.map((symbol) => {
+            const picked = data.following.has(symbol.id);
+            const related = data.related.has(symbol.id);
+            const aside = data.following.size > 0 && !picked && !related;
+            return (
+              <li
+                key={symbol.id}
+                className={[
+                  'member',
+                  `member-${symbol.kind}`,
+                  symbol.owner === null ? '' : 'member-nested',
+                  picked ? 'member-picked' : '',
+                  related ? 'member-related' : '',
+                  aside ? 'member-aside' : '',
+                  symbol.guessed === true ? 'member-guessed' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <button
+                  type="button"
+                  className="member-name"
+                  title={`${spell(symbol)} — reached from ${symbol.reachedFrom} ${
                   symbol.reachedFrom === 1 ? 'file' : 'files'
                 } outside this category${
                   symbol.guessed === true
                     ? ', every one of them resolved by a name match nothing in the referring file asked for'
                     : ''
                 }. ${picked ? 'Stop following it' : 'Follow it: what reaches it, and what it uses'}`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  data.onFollow(symbol.id, !picked);
-                }}
-              >
-                {spell(symbol)}
-              </button>
-              <span className="member-reach" aria-label={`reached from ${symbol.reachedFrom} files`}>
-                {symbol.reachedFrom}
-              </span>
-              <button
-                type="button"
-                className="member-pick"
-                aria-pressed={picked}
-                title={picked ? 'Stop following this symbol' : `Show what reaches ${symbol.name}, and what it uses`}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  data.onFollow(symbol.id, !picked);
-                }}
-              />
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    data.onFollow(symbol.id, !picked);
+                  }}
+                >
+                  {spell(symbol)}
+                </button>
+                <span className="member-reach" aria-label={`reached from ${symbol.reachedFrom} files`}>
+                  {symbol.reachedFrom}
+                </span>
+                <button
+                  type="button"
+                  className="member-pick"
+                  aria-pressed={picked}
+                  title={picked ? 'Stop following this symbol' : `Show what reaches ${symbol.name}, and what it uses`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    data.onFollow(symbol.id, !picked);
+                  }}
+                />
+              </li>
+            );
+          })}
+          {symbols.length === 0 && <li className="member member-more">nothing reached by name</li>}
+          {/* A count, not a way in: the server cut the list at a box's worth and
+              the page never holds the rest, so there is nothing to unfold. The
+              twelve drawn are the ones reached from the most places. */}
+          {more > 0 && (
+            <li
+              className="member member-more"
+              title={`${total} symbols in here are reached from outside; these ${symbols.length} are the ones reached from the most files`}
+            >
+              +{more} more
             </li>
-          );
-        })}
-        {symbols.length === 0 && <li className="member member-more">nothing reached by name</li>}
-        {/* A count, not a way in: the server cut the list at a box's worth and
-            the page never holds the rest, so there is nothing to unfold. The
-            twelve drawn are the ones reached from the most places. */}
-        {more > 0 && (
-          <li
-            className="member member-more"
-            title={`${total} symbols in here are reached from outside; these ${symbols.length} are the ones reached from the most files`}
-          >
-            +{more} more
-          </li>
-        )}
-      </ul>
+          )}
+        </ul>
 
-      <Handle type="source" position={Position.Right} />
-    </div>
+        <Handle type="source" position={Position.Right} />
+      </div>
+    </>
   );
 }

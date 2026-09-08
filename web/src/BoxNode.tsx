@@ -1,4 +1,11 @@
-import { Handle, Position, type Node, type NodeProps } from '@xyflow/react';
+import {
+  Handle,
+  NodeResizeControl,
+  Position,
+  ResizeControlVariant,
+  type Node,
+  type NodeProps,
+} from '@xyflow/react';
 import type { MouseEvent } from 'react';
 import {
   describeUnresolved,
@@ -11,6 +18,8 @@ import {
 } from './api';
 import { fileIconFor } from './fileicons';
 import { MAX_MEMBERS } from './layout';
+import { MAX_BOX_WIDTH, MIN_BOX_WIDTH, type Placement } from './placement';
+import type { Band, Shown } from './marks';
 
 export type BoxData = {
   label: string;
@@ -36,8 +45,23 @@ export type BoxData = {
   files: string[];
   external: boolean;
   focused: boolean;
-  changed: boolean;
-  queried: boolean;
+  /**
+   * Written lately, and what by. Null when nothing here has been touched
+   * inside the mark's window — see `marks.ts`, which decides how long that is
+   * and why it is minutes rather than the two and a half seconds it was.
+   */
+  mark: Shown | null;
+  /** How lately the agent asked codemaps about a file in here. */
+  asked: Band | null;
+  /**
+   * Announce it as well as mark it: the short attention pulse, for the reader
+   * who is watching right now. Off for every box in a batch too big to
+   * follow — see `PULSE_MAX`. Separate from the mark because they answer
+   * different questions: the pulse says "now", the mark says "lately".
+   */
+  pulsing: boolean;
+  /** The same, for the agent's question. */
+  pulsingAsk: boolean;
   /** Its own git status. null for folder boxes and for unchanged files. */
   gitStatus: GitFileStatus | null;
   /** How many of `files` differ from the base. 0 or 1 for a file box. */
@@ -130,6 +154,17 @@ export type BoxData = {
    * three were looking at, so the gesture goes on it.
    */
   onExplain: (path: string) => void;
+  /**
+   * A width the reader pulled, live while the edge is being dragged and again
+   * when it is let go. Both, because the canvas is controlled: React Flow
+   * reports a resize and applies nothing, so a box that only heard about the
+   * end would sit still under the pointer and then jump.
+   *
+   * It carries `x` as well as `width` because the left edge moves the box
+   * while it sizes it, and a placement is one record: where the box is and how
+   * wide it is.
+   */
+  onResize: (box: Placement, done: boolean) => void;
 };
 
 export type BoxNodeType = Node<BoxData, 'box'>;
@@ -217,6 +252,45 @@ function rowsToShow(members: ViewMember[]): ViewMember[] {
   return [...members].sort((a, b) => Number(marked(b)) - Number(marked(a))).slice(0, MAX_MEMBERS);
 }
 
+/**
+ * The two edges of a box, and nothing else.
+ *
+ * **Width only, deliberately.** A box's height is what it holds — `boxHeight`
+ * is a header plus a row per member — so a handle that stretched one would
+ * make it say it has symbols the file has not got, which is the authoritative
+ * lie this project exists not to tell. Width says nothing about content and
+ * buys something real: a long path and a long symbol name are ellipsised at
+ * 240px. Somebody who wants a taller box wants more members, and that gesture
+ * already exists — the `+N more` row and Expand every box.
+ *
+ * `resizeDirection="horizontal"` keeps the height out of the change React Flow
+ * reports, so a diagonal wobble of the pointer cannot smuggle one in. The
+ * frames' own resize line, in the colour a box's border takes on hover rather
+ * than a category's: a box belongs to no category here, and the accent is
+ * spoken for.
+ */
+export function WidthHandles({ onResize }: { onResize: (box: Placement, done: boolean) => void }) {
+  const size = (done: boolean) => (_: unknown, box: { x: number; y: number; width: number }) =>
+    onResize({ x: box.x, y: box.y, width: box.width }, done);
+  return (
+    <>
+      {(['left', 'right'] as const).map((side) => (
+        <NodeResizeControl
+          key={side}
+          position={side}
+          variant={ResizeControlVariant.Line}
+          resizeDirection="horizontal"
+          minWidth={MIN_BOX_WIDTH}
+          maxWidth={MAX_BOX_WIDTH}
+          className="box-resize-line"
+          onResize={size(false)}
+          onResizeEnd={size(true)}
+        />
+      ))}
+    </>
+  );
+}
+
 export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const shown = data.expanded ? data.members : rowsToShow(data.members);
   const hidden = data.members.length - shown.length;
@@ -284,8 +358,14 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   const classes = ['box', `box-${data.kind}`];
   if (data.external) classes.push('box-external');
   if (data.change !== undefined) classes.push(`box-${data.change === 'removed' ? 'ghost' : data.change}`);
-  if (data.changed) classes.push('box-changed');
-  if (data.queried) classes.push('box-queried');
+  // Two marks, each in two strengths, and the pulse is a third class rather
+  // than part of either: the mark says something happened and stands for
+  // minutes, the pulse says it happened *now* and is over in two seconds.
+  if (data.mark !== null) classes.push('box-changed', `box-changed-${data.mark.band}`);
+  if (data.mark?.born === true) classes.push('box-born');
+  if (data.asked !== null) classes.push('box-queried', `box-queried-${data.asked}`);
+  if (data.pulsing) classes.push('box-pulse-write');
+  if (data.pulsingAsk) classes.push('box-pulse-ask');
   if (data.focused) classes.push('box-focused');
   if (data.aside) classes.push('box-aside');
 
@@ -297,337 +377,356 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
   };
 
   return (
-    <div className={classes.join(' ')}>
-      <Handle type="target" position={Position.Left} />
+    /* The handles are siblings of the box, not children of it: the box clips
+       what overflows it, and the right-hand line stands at 100% of the node. */
+    <>
+      <WidthHandles onResize={data.onResize} />
+      <div className={classes.join(' ')}>
+        <Handle type="target" position={Position.Left} />
 
-      <div className="box-title">
-        {icon !== null && (
-          <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
-        )}
-        <span className="box-title-text" title={title}>
-          {data.label}
-        </span>
-        {/* Under a diff the letter is the diff's, in the same place and the
-            same colours the git badge sits in: the diff is the comparison
-            here, and the git status is still in the title for the reader who
-            wants both. A context box wears the git letter as ever. */}
-        {data.change !== undefined ? (
+        <div className="box-title">
+          {icon !== null && (
+            <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />
+          )}
           <span
-            className={`box-git box-git-${CHANGE_LETTER[data.change].status}`}
-            title={`${CHANGE_LETTER[data.change].said} since ${data.since ?? 'the base'}${
+            className="box-title-text"
+            title={data.mark === null ? title : `${data.mark.title}\n\n${title}`}
+          >
+            {data.label}
+          </span>
+          {/* A box the diagram did not have a moment ago. The one mark on this
+              page that says a file ARRIVED rather than moved, and the answer
+              to the question a person comes back with: not "what is different"
+              but "what appeared". A word rather than a hue — see the rule in
+              DESIGN.md — and it goes before the git letter, because "new" is
+              about this session and the letter is about a git base. */}
+          {data.mark?.born === true && (
+            <span className="box-new" title={data.mark.title}>
+              new
+            </span>
+          )}
+          {/* Under a diff the letter is the diff's, in the same place and the
+              same colours the git badge sits in: the diff is the comparison
+              here, and the git status is still in the title for the reader who
+              wants both. A context box wears the git letter as ever. */}
+          {data.change !== undefined ? (
+            <span
+              className={`box-git box-git-${CHANGE_LETTER[data.change].status}`}
+              title={`${CHANGE_LETTER[data.change].said} since ${data.since ?? 'the base'}${
               data.change === 'removed'
                 ? ' — a ghost: this file is not on disk, and the box is drawn from the graph it is compared against'
                 : data.change === 'added'
                   ? ' — no box for it in the graph it is compared against'
                   : ' — a symbol came, went or moved, or a line it wrote did'
             }${data.gitStatus === null ? '' : `. git: ${data.gitStatus} vs the git base`}`}
-          >
-            {CHANGE_LETTER[data.change].letter}
-          </span>
-        ) : (
-          data.gitStatus !== null && (
-            <span
-              className={`box-git box-git-${data.gitStatus}`}
-              title={`${data.gitStatus} vs the git base`}
             >
-              {GIT_LETTER[data.gitStatus]}
+              {CHANGE_LETTER[data.change].letter}
             </span>
-          )
-        )}
-        {/* A box standing for many files says how many of them moved, not
-            which way any single one did — the direction is a fact about one
-            file, and there is no one file here. */}
-        {data.kind !== 'file' && data.gitChanged > 0 && (
-          <span
-            className="box-git box-git-count"
-            title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
-          >
-            {data.gitChanged}
-          </span>
-        )}
-        {/* A warning, not a tint: the surface already carries amber and blue
-            for this minute's edits, and a broken file is a fact about the
-            parse, not about who touched it. */}
-        {data.parseError && (
-          <span
-            className="box-warning"
-            title={
-              data.kind === 'file'
-                ? 'This file has a syntax error; symbols may be missing'
-                : 'A file in here has a syntax error; symbols may be missing'
-            }
-          >
-            <i className="codicon codicon-warning" aria-hidden="true" />
-          </span>
-        )}
-        {/* Muted, and deliberately not the warning colour: a reference that
-            landed nowhere is the tool reaching its limit, not the file being
-            broken, and 374 of zod's 510 files have one. A count and never a
-            line — an edge to a node we could not name would be the lie this
-            exists to prevent — so the number is the whole mark. */}
-        {data.unresolved !== undefined && (
-          <span
-            className="box-unresolved"
-            title={
-              data.kind === 'file'
-                ? `${describeUnresolved(data.unresolved)} in this file named something codemap could not find, so some of its coupling is not drawn`
-                : `${describeUnresolved(data.unresolved)} across the ${data.files.length} files in here named something codemap could not find, so some of their coupling is not drawn`
-            }
-          >
-            <i className="codicon codicon-question" aria-hidden="true" />
-            {data.unresolved.imports + data.unresolved.calls}
-          </span>
-        )}
-        {tag !== null && (
-          <span
-            className="box-lang"
-            title={
-              data.language === null
-                ? `${data.files.length} files, in more than one language`
-                : `language: ${data.language}`
-            }
-          >
-            {tag}
-          </span>
-        )}
-        {/* As quiet as the language tag, and beside it: what a file is for is
-            the same order of fact as what it is written in. It is here so a
-            box drawn from a suite reads as one, not because it is drawn any
-            differently — tests are in the graph; they just do not vote. */}
-        {data.test && (
-          <span
-            className="box-test"
-            title={
-              data.kind === 'file'
-                ? 'A test, fixture or story — it does not decide categories'
-                : 'Every file in here is a test, fixture or story'
-            }
-          >
-            test
-          </span>
-        )}
-        {/* Wears the same mark a member row uses, because it is the same act on a
-            bigger thing. It deliberately does not light the file's symbols: a
-            click on a box already means "inspect this", and a second meaning
-            for one gesture is worse than a control you have to press. Only on a
-            file box — a folder stands for many paths, and quietly holding all
-            of them would be a different act than the one you asked for. */}
-        {file !== undefined && onDisk && (
-          <>
-            <button
-              type="button"
-              className="box-follow"
-              aria-pressed={data.followed}
-              title={
-                data.followed
-                  ? 'Stop holding on to this file'
-                  : 'Hold on to this file, to explain later — nothing in the diagram dims'
-              }
-              onClick={(event) => {
-                event.stopPropagation();
-                data.onFollowFile(file, !data.followed);
-              }}
-            />
-            {/* The sparkle is VS Code's own mark for "a model did this", and
-                the tooltip says what it costs before it is pressed — the one
-                thing on this box that spends money must not be the one thing
-                that is coy about it. */}
-            <button
-              type="button"
-              className="box-explain"
-              title="Ask Claude what this file is for — it spends your Claude quota"
-              aria-label="Explain this file"
-              onClick={(event) => {
-                event.stopPropagation();
-                data.onExplain(file);
-              }}
-            >
-              <i className="codicon codicon-sparkle" aria-hidden="true" />
-            </button>
-            {/* A codicon rather than a glyph: it is monochrome and takes
-                currentColor, so it dims and lights with the button instead of
-                sitting on it as a sticker. The label lives in aria-label now
-                that the button has no text. */}
-            <button
-              type="button"
-              className="box-open"
-              title="Open in editor"
-              aria-label="Open in editor"
-              onClick={open(1)}
-            >
-              <i className="codicon codicon-link-external" aria-hidden="true" />
-            </button>
-          </>
-        )}
-      </div>
-
-      {/* A file gets its compartment of members; everything else stands for a
-          pile of files and gets a count. Written as "is it a file" rather than
-          "is it a folder" so a bundle takes the same branch a folder does — it
-          carries no members either, and an empty list would draw a box with
-          nothing in it.
-
-          The bundle's title is the paths themselves: its label already says how
-          many and which way ("258 dependents"), and which files it stands for is
-          the one thing left that a reader wants from it. */}
-      {data.kind !== 'file' ? (
-        <div className="box-meta" title={bundled}>
-          {/* A bundle's label is "260 dependents", and the reader who arrived
-              here by following a symbol read those 260 as the symbol's. They
-              are files, and they import the file in focus — which is a much
-              weaker claim than using anything in it. One line, because the box
-              is measured for one: the rest of the sentence is in the title. */}
-          {data.kind === 'bundle'
-            ? data.bundleOf === 'dependencies'
-              ? 'files it imports'
-              : 'files that import it'
-            : `${data.files.length} ${data.files.length === 1 ? 'file' : 'files'}`}
-        </div>
-      ) : (
-        <ul className="box-members">
-          {shown.map((member, index) => (
-            <li
-              key={`${member.owner ?? ''}${member.name}-${index}`}
-              // Which row a right-click landed on: React Flow hands App the box, and App reads this off the row.
-              data-member-id={member.id}
-              // Indented under the class that holds it. A flat list would put a
-              // method beside the class it belongs to as though they were peers.
-              className={[
-                'member',
-                `member-${member.kind}`,
-                member.owner === null ? '' : 'member-nested',
-                member.isStatic ? 'member-static' : '',
-                member.isAbstract ? 'member-abstract' : '',
-                data.following.has(member.id) ? 'member-picked' : '',
-                data.related.has(member.id) ? 'member-related' : '',
-                member.change === undefined ? '' : `member-${member.change}`,
-                data.following.size > 0 &&
-                !data.following.has(member.id) &&
-                !data.related.has(member.id)
-                  ? 'member-aside'
-                  : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-            >
-              <span className="member-vis" aria-hidden="true">
-                {member.owner === null ? '' : VISIBILITY[member.visibility ?? 'public']}
-              </span>
-
-              {/* UML's guillemets, on the class's own row and in front of the
-                  name rather than on a line above it: layout.ts measures a box
-                  from its row count, and a second line for one class would move
-                  every box under it. Text and muted, like the visibility mark.
-                  The title names the line that said it, because a «table»
-                  nobody can check is the convention this project refuses. */}
-              {member.stereotype !== undefined && (
-                <span
-                  className="member-stereotype"
-                  title={`a ${member.stereotype.name}, by the word of ${member.stereotype.statedBy} in ${member.stereotype.statedIn}. A class without this mark may still be one: only a declaration puts it here`}
-                >
-                  {`«${member.stereotype.name}»`}
-                </span>
-              )}
-
-              <button
-                type="button"
-                className="member-name"
-                // A removed row's line is the before graph's, and the file
-                // may not even be there: nothing to open, and the title says.
-                onClick={member.change === 'removed' ? undefined : open(member.line)}
-                title={
-                  member.change === 'removed'
-                    ? `${member.owner === null ? '' : `${member.owner}.`}${member.name} — removed since ${data.since ?? 'the base'}; it was at line ${member.line} then`
-                    : // An alias says so here rather than taking a column: the box
-                      // is measured for a dozen names, and two rows at one line
-                      // otherwise read as two functions. See `ViewMember.aliasOf`.
-                      member.aliasOf === undefined
-                      ? `${member.owner === null ? '' : `${member.owner}.`}${member.name}${
-                          member.change === 'added' ? ` — added since ${data.since ?? 'the base'};` : ' —'
-                        } open at line ${member.line}`
-                      : `${member.name} is another name for ${member.aliasOf}, one body — open at line ${member.line}`
-                }
+          ) : (
+            data.gitStatus !== null && (
+              <span
+                className={`box-git box-git-${data.gitStatus}`}
+                title={`${data.gitStatus} vs the git base`}
               >
-                {member.kind === 'function' || member.kind === 'method'
-                  ? `${member.name}()`
-                  : member.name}
-              </button>
-
-              {/* Only `never`, and never `covered`. The muted dot is worth its
-                  pixel because it is rare — 99 of zod's 4201 symbols — and
-                  because it is the one answer worth acting on; a mark on
-                  everything the suite did run would fill the diagram with dots
-                  that say "measured". Absent is the common answer and means
-                  unknown, so it is drawn as nothing rather than as 0%. Muted
-                  and not the warning colour: code the tests never reach is a
-                  fact about the suite, not a fault in the file. */}
-              {member.coverage === 'never' && (
-                <span
-                  className="member-never"
-                  role="img"
-                  title="never executed by the test suite"
-                  aria-label="never executed by the test suite"
-                />
-              )}
-
-              {/* The diff's letter on a row, the way the box wears one in its
-                  title: text, in the git colour, at the right — the left
-                  gutter is the visibility column and a mark there read as a
-                  fourth visibility symbol. */}
-              {member.change !== undefined && (
-                <span
-                  className={`member-change box-git-${CHANGE_LETTER[member.change].status}`}
-                  aria-label={CHANGE_LETTER[member.change].said}
-                >
-                  {CHANGE_LETTER[member.change].letter}
-                </span>
-              )}
-
-              {/* On the right, where the box already puts its editor link, and
-                  because the left gutter is the visibility column — a mark that
-                  means something different sitting in it read as a fourth
-                  visibility symbol. */}
+                {GIT_LETTER[data.gitStatus]}
+              </span>
+            )
+          )}
+          {/* A box standing for many files says how many of them moved, not
+              which way any single one did — the direction is a fact about one
+              file, and there is no one file here. */}
+          {data.kind !== 'file' && data.gitChanged > 0 && (
+            <span
+              className="box-git box-git-count"
+              title={`${data.gitChanged} of ${data.files.length} changed vs the git base`}
+            >
+              {data.gitChanged}
+            </span>
+          )}
+          {/* A warning, not a tint: the surface already carries amber and blue
+              for this minute's edits, and a broken file is a fact about the
+              parse, not about who touched it. */}
+          {data.parseError && (
+            <span
+              className="box-warning"
+              title={
+                data.kind === 'file'
+                  ? 'This file has a syntax error; symbols may be missing'
+                  : 'A file in here has a syntax error; symbols may be missing'
+              }
+            >
+              <i className="codicon codicon-warning" aria-hidden="true" />
+            </span>
+          )}
+          {/* Muted, and deliberately not the warning colour: a reference that
+              landed nowhere is the tool reaching its limit, not the file being
+              broken, and 374 of zod's 510 files have one. A count and never a
+              line — an edge to a node we could not name would be the lie this
+              exists to prevent — so the number is the whole mark. */}
+          {data.unresolved !== undefined && (
+            <span
+              className="box-unresolved"
+              title={
+                data.kind === 'file'
+                  ? `${describeUnresolved(data.unresolved)} in this file named something codemap could not find, so some of its coupling is not drawn`
+                  : `${describeUnresolved(data.unresolved)} across the ${data.files.length} files in here named something codemap could not find, so some of their coupling is not drawn`
+              }
+            >
+              <i className="codicon codicon-question" aria-hidden="true" />
+              {data.unresolved.imports + data.unresolved.calls}
+            </span>
+          )}
+          {tag !== null && (
+            <span
+              className="box-lang"
+              title={
+                data.language === null
+                  ? `${data.files.length} files, in more than one language`
+                  : `language: ${data.language}`
+              }
+            >
+              {tag}
+            </span>
+          )}
+          {/* As quiet as the language tag, and beside it: what a file is for is
+              the same order of fact as what it is written in. It is here so a
+              box drawn from a suite reads as one, not because it is drawn any
+              differently — tests are in the graph; they just do not vote. */}
+          {data.test && (
+            <span
+              className="box-test"
+              title={
+                data.kind === 'file'
+                  ? 'A test, fixture or story — it does not decide categories'
+                  : 'Every file in here is a test, fixture or story'
+              }
+            >
+              test
+            </span>
+          )}
+          {/* Wears the same mark a member row uses, because it is the same act on a
+              bigger thing. It deliberately does not light the file's symbols: a
+              click on a box already means "inspect this", and a second meaning
+              for one gesture is worse than a control you have to press. Only on a
+              file box — a folder stands for many paths, and quietly holding all
+              of them would be a different act than the one you asked for. */}
+          {file !== undefined && onDisk && (
+            <>
               <button
                 type="button"
-                className="member-pick"
-                aria-pressed={data.following.has(member.id)}
+                className="box-follow nodrag"
+                aria-pressed={data.followed}
                 title={
-                  data.following.has(member.id)
-                    ? 'Stop following this symbol'
-                    : `Show what ${member.name} uses, and what uses it — hold on to several at once`
+                  data.followed
+                    ? 'Stop holding on to this file'
+                    : 'Hold on to this file, to explain later — nothing in the diagram dims'
                 }
                 onClick={(event) => {
                   event.stopPropagation();
-                  data.onFollow(member.id, !data.following.has(member.id));
+                  data.onFollowFile(file, !data.followed);
                 }}
               />
-            </li>
-          ))}
-          {/* The count was a label, which meant the twelfth symbol was the last
-              one the diagram would ever admit to. It is the way in now. */}
-          {(hidden > 0 || data.expanded) && (
-            <li className="member member-more">
+              {/* The sparkle is VS Code's own mark for "a model did this", and
+                  the tooltip says what it costs before it is pressed — the one
+                  thing on this box that spends money must not be the one thing
+                  that is coy about it. */}
               <button
                 type="button"
-                className="member-expand"
-                title={
-                  data.expanded
-                    ? 'Show the first ' + MAX_MEMBERS + ' again'
-                    : 'Show all ' + data.members.length + ' — the box grows and the diagram re-lays out'
-                }
+                className="box-explain nodrag"
+                title="Ask Claude what this file is for — it spends your Claude quota"
+                aria-label="Explain this file"
                 onClick={(event) => {
                   event.stopPropagation();
-                  data.onExpand(data.files[0] ?? data.label, !data.expanded);
+                  data.onExplain(file);
                 }}
               >
-                {data.expanded ? 'show fewer' : '+' + hidden + ' more'}
+                <i className="codicon codicon-sparkle" aria-hidden="true" />
               </button>
-            </li>
+              {/* A codicon rather than a glyph: it is monochrome and takes
+                  currentColor, so it dims and lights with the button instead of
+                  sitting on it as a sticker. The label lives in aria-label now
+                  that the button has no text. */}
+              <button
+                type="button"
+                className="box-open nodrag"
+                title="Open in editor"
+                aria-label="Open in editor"
+                onClick={open(1)}
+              >
+                <i className="codicon codicon-link-external" aria-hidden="true" />
+              </button>
+            </>
           )}
-        </ul>
-      )}
+        </div>
 
-      <Handle type="source" position={Position.Right} />
-    </div>
+        {/* A file gets its compartment of members; everything else stands for a
+            pile of files and gets a count. Written as "is it a file" rather than
+            "is it a folder" so a bundle takes the same branch a folder does — it
+            carries no members either, and an empty list would draw a box with
+            nothing in it.
+
+            The bundle's title is the paths themselves: its label already says how
+            many and which way ("258 dependents"), and which files it stands for is
+            the one thing left that a reader wants from it. */}
+        {data.kind !== 'file' ? (
+          <div className="box-meta" title={bundled}>
+            {/* A bundle's label is "260 dependents", and the reader who arrived
+                here by following a symbol read those 260 as the symbol's. They
+                are files, and they import the file in focus — which is a much
+                weaker claim than using anything in it. One line, because the box
+                is measured for one: the rest of the sentence is in the title. */}
+            {data.kind === 'bundle'
+              ? data.bundleOf === 'dependencies'
+                ? 'files it imports'
+                : 'files that import it'
+              : `${data.files.length} ${data.files.length === 1 ? 'file' : 'files'}`}
+          </div>
+        ) : (
+          <ul className="box-members">
+            {shown.map((member, index) => (
+              <li
+                key={`${member.owner ?? ''}${member.name}-${index}`}
+                // Which row a right-click landed on: React Flow hands App the box, and App reads this off the row.
+                data-member-id={member.id}
+                // Indented under the class that holds it. A flat list would put a
+                // method beside the class it belongs to as though they were peers.
+                className={[
+                  'member',
+                  `member-${member.kind}`,
+                  member.owner === null ? '' : 'member-nested',
+                  member.isStatic ? 'member-static' : '',
+                  member.isAbstract ? 'member-abstract' : '',
+                  data.following.has(member.id) ? 'member-picked' : '',
+                  data.related.has(member.id) ? 'member-related' : '',
+                  member.change === undefined ? '' : `member-${member.change}`,
+                  data.following.size > 0 &&
+                  !data.following.has(member.id) &&
+                  !data.related.has(member.id)
+                    ? 'member-aside'
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+              >
+                <span className="member-vis" aria-hidden="true">
+                  {member.owner === null ? '' : VISIBILITY[member.visibility ?? 'public']}
+                </span>
+
+                {/* UML's guillemets, on the class's own row and in front of the
+                    name rather than on a line above it: layout.ts measures a box
+                    from its row count, and a second line for one class would move
+                    every box under it. Text and muted, like the visibility mark.
+                    The title names the line that said it, because a «table»
+                    nobody can check is the convention this project refuses. */}
+                {member.stereotype !== undefined && (
+                  <span
+                    className="member-stereotype"
+                    title={`a ${member.stereotype.name}, by the word of ${member.stereotype.statedBy} in ${member.stereotype.statedIn}. A class without this mark may still be one: only a declaration puts it here`}
+                  >
+                    {`«${member.stereotype.name}»`}
+                  </span>
+                )}
+
+                <button
+                  type="button"
+                  className="member-name"
+                  // A removed row's line is the before graph's, and the file
+                  // may not even be there: nothing to open, and the title says.
+                  onClick={member.change === 'removed' ? undefined : open(member.line)}
+                  title={
+                    member.change === 'removed'
+                      ? `${member.owner === null ? '' : `${member.owner}.`}${member.name} — removed since ${data.since ?? 'the base'}; it was at line ${member.line} then`
+                      : // An alias says so here rather than taking a column: the box
+                        // is measured for a dozen names, and two rows at one line
+                        // otherwise read as two functions. See `ViewMember.aliasOf`.
+                        member.aliasOf === undefined
+                        ? `${member.owner === null ? '' : `${member.owner}.`}${member.name}${
+                          member.change === 'added' ? ` — added since ${data.since ?? 'the base'};` : ' —'
+                        } open at line ${member.line}`
+                        : `${member.name} is another name for ${member.aliasOf}, one body — open at line ${member.line}`
+                  }
+                >
+                  {member.kind === 'function' || member.kind === 'method'
+                    ? `${member.name}()`
+                    : member.name}
+                </button>
+
+                {/* Only `never`, and never `covered`. The muted dot is worth its
+                    pixel because it is rare — 99 of zod's 4201 symbols — and
+                    because it is the one answer worth acting on; a mark on
+                    everything the suite did run would fill the diagram with dots
+                    that say "measured". Absent is the common answer and means
+                    unknown, so it is drawn as nothing rather than as 0%. Muted
+                    and not the warning colour: code the tests never reach is a
+                    fact about the suite, not a fault in the file. */}
+                {member.coverage === 'never' && (
+                  <span
+                    className="member-never"
+                    role="img"
+                    title="never executed by the test suite"
+                    aria-label="never executed by the test suite"
+                  />
+                )}
+
+                {/* The diff's letter on a row, the way the box wears one in its
+                    title: text, in the git colour, at the right — the left
+                    gutter is the visibility column and a mark there read as a
+                    fourth visibility symbol. */}
+                {member.change !== undefined && (
+                  <span
+                    className={`member-change box-git-${CHANGE_LETTER[member.change].status}`}
+                    aria-label={CHANGE_LETTER[member.change].said}
+                  >
+                    {CHANGE_LETTER[member.change].letter}
+                  </span>
+                )}
+
+                {/* On the right, where the box already puts its editor link, and
+                    because the left gutter is the visibility column — a mark that
+                    means something different sitting in it read as a fourth
+                    visibility symbol. */}
+                <button
+                  type="button"
+                  className="member-pick"
+                  aria-pressed={data.following.has(member.id)}
+                  title={
+                    data.following.has(member.id)
+                      ? 'Stop following this symbol'
+                      : `Show what ${member.name} uses, and what uses it — hold on to several at once`
+                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    data.onFollow(member.id, !data.following.has(member.id));
+                  }}
+                />
+              </li>
+            ))}
+            {/* The count was a label, which meant the twelfth symbol was the last
+                one the diagram would ever admit to. It is the way in now. */}
+            {(hidden > 0 || data.expanded) && (
+              <li className="member member-more">
+                <button
+                  type="button"
+                  className="member-expand"
+                  title={
+                    data.expanded
+                      ? 'Show the first ' + MAX_MEMBERS + ' again'
+                      : 'Show all ' + data.members.length + ' — the box grows and the diagram re-lays out'
+                  }
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    data.onExpand(data.files[0] ?? data.label, !data.expanded);
+                  }}
+                >
+                  {data.expanded ? 'show fewer' : '+' + hidden + ' more'}
+                </button>
+              </li>
+            )}
+          </ul>
+        )}
+
+        <Handle type="source" position={Position.Right} />
+      </div>
+    </>
   );
 }

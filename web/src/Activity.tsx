@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
-import type { AgentCall, ChangeEntry } from './api';
+import type { AgentCall } from './api';
 import { Section } from './Section';
+/* The wire shape, imported rather than restated: `by` rides on every entry of
+   `GET /api/changes`, and a type-only import of `src/` is erased by Vite the
+   way `api.ts`'s own are. `api.ts`'s `ChangeEntry` omits the field, and a
+   value of that type is assignable here because `by` is optional. */
+import type { ChangeEntry } from '../../src/server/session.js';
+import type { Attribution } from '../../src/project/hook.js';
 
 /**
  * What the agent is doing, right now, and where.
@@ -54,6 +60,18 @@ interface Row {
    * send the diagram to a path that does not exist.
    */
   note: { words: string; files: string[] } | null;
+  /**
+   * Who claimed this file, when anything did.
+   *
+   * Null is the word for unattributed and is drawn as one — never as a blank,
+   * and never as a guess. Three things can reach this feed and they know three
+   * different amounts: Claude Code's hook names itself, a tool that posts to
+   * `/api/hook` names whatever it likes, and the file watcher knows *nothing*
+   * — a file that changed on disk looks identical whether Cursor, a build
+   * script, a `git checkout` or a person in an editor wrote it. See
+   * `docs/AGENTS.md`.
+   */
+  by: Attribution | null;
 }
 
 function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
@@ -69,6 +87,10 @@ function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
         tool: null,
         times: 1,
         note: null,
+        // The batch's own claim, per file — a batch can hold both a file the
+        // hook named and one only the watcher saw, and one name over the pair
+        // would be wrong about half of it.
+        by: entry.by?.[file] ?? null,
       })),
     ),
     ...agentCalls.map((call) => ({
@@ -78,6 +100,10 @@ function build(changes: ChangeEntry[], agentCalls: AgentCall[]): Row[] {
       tool: call.tool,
       times: 1,
       note: call.note === undefined ? null : { words: call.note, files: call.files ?? [] },
+      // A question came through MCP, so the agent is the row's whole subject
+      // already: the tool name is in the row and the row is blue. This column
+      // answers "who wrote this file", and a question wrote nothing.
+      by: null,
     })),
   ];
   return collapse(rows.sort((a, b) => b.at - a.at));
@@ -120,8 +146,31 @@ function same(a: Row, b: Row): boolean {
     a.kind === b.kind &&
     a.target === b.target &&
     a.tool === b.tool &&
+    // Two agents taking turns on one file is two things happening, and folding
+    // them would put one name over the other's work.
+    (a.by?.agent ?? null) === (b.by?.agent ?? null) &&
     (a.note?.words ?? null) === (b.note?.words ?? null)
   );
+}
+
+/** What the source column says, and what it says when nobody said. */
+const UNCLAIMED = 'unknown';
+
+function whoOf(by: Attribution | null): string {
+  return by === null ? UNCLAIMED : by.agent;
+}
+
+function whyWho(by: Attribution | null): string {
+  if (by === null) {
+    return 'Unattributed — nothing claimed this change. codemap saw the file change on disk, and a file that changed on disk looks the same whether an agent, a build script or a person in an editor wrote it.';
+  }
+  const how =
+    by.how === 'declared'
+      ? 'it named itself in the request'
+      : "it arrived wearing Claude Code's own hook envelope";
+  return `${by.agent}${by.subagent === null ? '' : ` · ${by.subagent}`}${
+    by.tool === null ? '' : ` — ${by.tool}`
+  }. Known because ${how}${by.session === null ? '' : `; session ${by.session.slice(0, 8)}`}.`;
 }
 
 /** The directory a path sits in — the "where" column, and empty at the root. */
@@ -187,6 +236,18 @@ export function Activity({
   const rows = showAll ? all : all.slice(0, MAX_ROWS);
   const live = all.length > 0 && now - (all[0]?.at ?? 0) < 6000;
 
+  /**
+   * Whether to draw the source column at all.
+   *
+   * In a project with no hook installed and no tool posting to `/api/hook`,
+   * every row would read `unknown` — a column of one word repeated eighty
+   * times, spending 44px of a 300px panel to say nothing anybody can act on.
+   * It appears the moment one change is claimed, and from then on an
+   * unattributed row says so in a word beside the ones that are named, which
+   * is where the distinction is worth its width.
+   */
+  const claimed = all.some((row) => row.by !== null);
+
   return (
     <Section
       title="Activity"
@@ -220,6 +281,7 @@ export function Activity({
               <col className="col-mark" />
               <col className="col-what" />
               <col className="col-where" />
+              {claimed && <col className="col-who" />}
               <col className="col-lines" />
             </colgroup>
             <tbody>
@@ -247,7 +309,7 @@ export function Activity({
                       <td className="activity-mark">
                         <i className="codicon codicon-comment" aria-hidden="true" />
                       </td>
-                      <td className="activity-words" colSpan={3}>
+                      <td className="activity-words" colSpan={claimed ? 4 : 3}>
                         {row.note.words}
                         {row.times > 1 && <span className="activity-times">×{row.times}</span>}
                       </td>
@@ -282,6 +344,25 @@ export function Activity({
                     <td className="activity-where">
                       {row.kind === 'change' ? whereOf(row.target) : (row.target ?? '')}
                     </td>
+                    {/* Who wrote it, or that nobody said. Never a guess and
+                        never a blank: a blank in a column of names reads as
+                        "not applicable", and what is true here is stronger and
+                        stranger than that — the change happened, and codemap
+                        cannot know who made it. */}
+                    {claimed && (
+                      <td
+                        className={
+                          row.kind !== 'change'
+                            ? 'activity-who'
+                            : row.by === null
+                              ? 'activity-who activity-who-unknown'
+                              : 'activity-who'
+                        }
+                        title={row.kind === 'change' ? whyWho(row.by) : ''}
+                      >
+                        {row.kind === 'change' ? whoOf(row.by) : ''}
+                      </td>
+                    )}
                     <td className="activity-lines">
                       {path !== null && lines?.[path] !== undefined && (
                         <>

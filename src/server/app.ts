@@ -23,7 +23,7 @@ import {
   type RemoteStatus,
   readBranch,
 } from '../project/git.js';
-import { changeFromHook, couplingNote, type HookPayload } from '../project/hook.js';
+import { attributionOf, changeFromHook, couplingNote, type HookPayload } from '../project/hook.js';
 import { portFilePath } from '../project/port-file.js';
 import { countUnreadable } from '../project/walk.js';
 import {
@@ -51,8 +51,10 @@ import { search } from '../view/search.js';
 import { categoryOf, projectLanguages, selectView } from '../view/select.js';
 import type { LanguageCount, Presentation, ViewGraph, ViewSpec } from '../view/types.js';
 import type { LiveHub } from './live.js';
+import { registerAskRoutes } from './ask.js';
 import { registerDiffRoute, resolveDiffEnds, type DiffEnd } from './diff.js';
 import { registerFlowRoute } from './flow.js';
+import { registerMcpInstallRoutes } from './mcp-install.js';
 import { registerOverviewRoute } from './overview.js';
 import type { AgentCall, ExplainRun, SessionHost, SuggestResult } from './session.js';
 
@@ -118,6 +120,9 @@ const MAX_LOG = 1000;
  */
 const MAX_AGENT_NOTE = 200;
 
+/** As `hook.ts` clips a declared name, and for the same reason: it is a name. */
+const MAX_AGENT_NAME = 40;
+
 /**
  * What the PostToolUse hook gets back.
  *
@@ -134,6 +139,15 @@ const MAX_AGENT_NOTE = 200;
 export interface HookResponse {
   /** Whether the payload named a source file inside the project. */
   accepted: boolean;
+  /**
+   * What this change will be shown as having been written by, when the payload
+   * said anything. Absent means it will be drawn as unattributed.
+   *
+   * Echoed back purely so a third-party caller can check its integration
+   * without reading our source or watching the page — see `docs/AGENTS.md`.
+   * Claude Code ignores every field here but `hookSpecificOutput`.
+   */
+  agent?: string;
   hookSpecificOutput?: { hookEventName: 'PostToolUse'; additionalContext: string };
 }
 
@@ -260,10 +274,11 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     if (typeof tool !== 'string' || tool === '') return;
 
     const rawTarget = request.headers['x-codemap-arg'];
-    const call = {
+    const call: AgentCall = {
       at: Date.now(),
       tool,
       target: typeof rawTarget === 'string' && rawTarget !== '' ? rawTarget : null,
+      ...agentHeader(request.headers),
     };
     host.current().recordAgentCall(call);
     hub.agentActed(call);
@@ -440,6 +455,18 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
   // of, what changed and what the agent is doing — a list, never a diagram.
   // Its own module for the reason the flow has one; see view/overview.ts.
   registerOverviewRoute(app, () => host.current());
+
+  // A conversation about the categories: the one place a model is asked a
+  // question of the user's own rather than one this tool wrote. It reads and
+  // decides nothing — see the header of `server/ask.ts`. The hub goes in
+  // directly rather than through a callback the way explain's does, because
+  // it is already here and a second pair of options would only be a second
+  // thing for `main.ts` to forget to wire.
+  registerAskRoutes(app, () => host.current(), hub);
+
+  // `.mcp.json`, read and written: the MCP half of /api/hook-status and
+  // /api/hook-install, which live below because the hook endpoint is here.
+  registerMcpInstallRoutes(app, () => host.current());
 
   /**
    * What has been explained, for the ids the panel is showing.
@@ -793,20 +820,37 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
 
   app.post('/api/hook', async (request, reply): Promise<HookResponse> => {
     const session = host.current();
-    const change = await changeFromHook((request.body ?? {}) as HookPayload, session.root);
+    const payload = (request.body ?? {}) as HookPayload;
+    const change = await changeFromHook(payload, session.root);
     // Recorded before anything is done with it, so a payload that is refused is
     // counted exactly as loudly as one that lands. That asymmetry is the bug
     // this exists for: a refusal is silent everywhere else, because the hook
     // must never fail the agent's tool call.
     session.recordHookCall(change !== null);
-    if (change) session.queue(change);
+    // The one thing the watcher can never supply: this request said who sent
+    // it. Read whether or not the change is usable, so that a payload naming a
+    // file outside the project still costs nothing to parse and still cannot
+    // throw — `attributionOf` reads strings off an unknown and does no I/O.
+    const by = attributionOf(payload);
+    if (change) session.queue(change, by);
 
     // Read from the graph as it stands, which is the file as it was a moment
     // before this edit. The agent's tool call is held open until this answers,
     // so waiting for the re-parse would put the parser's queue on the agent's
     // critical path — and who imports a file does not change because its body
     // did. What is known now is both fast and true.
-    const context = change === null ? '' : couplingNote(session.store.graph, change.filePath);
+    // The categories through the session, exactly as `/api/clusters` gets them,
+    // so the sentence the agent reads and the frame the person sees can never
+    // name one file two different things. Measured at 0.45 ms on a 368-file
+    // project, which is nothing against a tool call.
+    const context =
+      change === null
+        ? ''
+        : couplingNote(
+            session.store.graph,
+            change.filePath,
+            session.clustersOf(session.store.graph).clusters,
+          );
 
     // A hook must never fail the agent's tool call, so a payload we cannot use
     // is still a success. `accepted` is unchanged, and `hookSpecificOutput` is
@@ -815,6 +859,7 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
     reply.code(200);
     return {
       accepted: change !== null,
+      ...(by === null ? {} : { agent: by.agent }),
       ...(context === ''
         ? {}
         : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } }),
@@ -840,6 +885,10 @@ export function buildApp({ host, hub, onProjectChanged, onExplainRun, onExplainD
       at: Date.now(),
       tool: 'note_change',
       target: null,
+      // The one call the `onRequest` mark does not build, so it reads the
+      // agent header itself — see the route's own comment for why the tool
+      // mark is absent here but this is not.
+      ...agentHeader(request.headers),
       // Clipped rather than refused. The tool asks for 200 characters and a
       // few over is not worth a second round trip on the agent's dime — but a
       // paragraph would take over the panel it is a row in.
@@ -1389,6 +1438,25 @@ function readId(raw: unknown): string {
 function readStrings(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw.filter((value: unknown): value is string => typeof value === 'string');
+}
+
+/**
+ * The name the MCP client gave for itself, as a field to spread onto an
+ * `AgentCall`, or nothing.
+ *
+ * `x-codemap-agent` carries the client's own `clientInfo.name` from the MCP
+ * initialize handshake, forwarded by `scripts/mcp.mjs`. It is a claim and is
+ * recorded as one — the same standing as a declared `agent` on a hook payload,
+ * and the same rule: never inferred, and absent when nothing said.
+ *
+ * Fastify hands a repeated header as an array; a name arriving twice is a
+ * caller we cannot read, so it is dropped rather than guessed between.
+ */
+function agentHeader(headers: Record<string, unknown>): { agent?: string } {
+  const raw = headers['x-codemap-agent'];
+  if (typeof raw !== 'string') return {};
+  const agent = raw.trim().slice(0, MAX_AGENT_NAME);
+  return agent === '' ? {} : { agent };
 }
 
 /**

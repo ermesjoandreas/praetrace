@@ -77,7 +77,8 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 - Coverage read from what CI already wrote — never run, never instrumented, and
   absent is never zero
 - The hook answers: after every edit it tells the agent what the file it just
-  wrote is coupled to
+  wrote is coupled to, which category holds it, and which categories it reached
+  out of that one into
 - An oracle: the TypeScript checker as a re-runnable test, `scripts/oracle.mjs`
   over any repository and `src/oracle/checker.test.ts` over a pinned fixture
 - Python, the seventh language, and a baseline that pins what the graph draws
@@ -674,6 +675,11 @@ src/
                   throws, never writes; a person accepts, and that is the write
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
     hook-install.ts  detect, preview and merge the hook into settings.json
+    mcp-install.ts  the same three, for .mcp.json: the script is found from
+                  this module's own compiled location and never from cwd,
+                  written relative inside codemap's own checkout and absolute
+                  anywhere else, and "installed" means the script the entry
+                  names is really on disk
     port-file.ts  leaves the port where the hook can read it
     updater.ts    the one pipeline: coalesce, parse, patch, publish
   view/           which slice of the graph to draw — pure
@@ -718,6 +724,8 @@ src/
     diff.ts       GET /api/diff, and resolveDiffEnds — the one place `base`
                   and a commit become two graphs, shared with the view route
     overview.ts   GET /api/overview, live only
+    mcp-install.ts  GET /api/mcp-status and POST /api/mcp-install; asks the
+                  session for the root and nothing else
     live.ts       connected clients and their view specs; pushes per client,
                   and `groups` to every client after a groups.json write, then
                   a fresh view to each live client drawing components or
@@ -740,7 +748,9 @@ web/              the browser page (Vite, built into dist/web)
                   ReactFlowProvider, dagre top-to-bottom, the engine's notDrawn
                   under it
   src/GroupNode.tsx a group frame: name, colour, size, membership
-  src/Sidebar.tsx the right side bar: Following (with its readings) and Detail
+  src/Sidebar.tsx the right side bar: Following (with its readings), and
+                  Activity placed into it by App. `DetailPanel` is exported
+                  from here too and stands at the foot of the LEFT bar
   src/Categories.tsx   the left bar's third section, a tree: one folded row per
                        group with its count and cohesion or "by hand", the files
                        under it once unfolded, the editor (name, colour, members,
@@ -750,7 +760,8 @@ web/              the browser page (Vite, built into dist/web)
                        Code hook and MCP, and the buttons that act on them
   src/SourceControl.tsx  Changes (the per-file list, the base picker) and Graph
   src/GitGraph.tsx     the commit graph: lane numbers into pixels, refs, ages
-  src/Activity.tsx     what the agent is doing, and where — describes now, always
+  src/Activity.tsx     what the agent is doing, where, and who — describes now,
+                       always. The right bar's second section since the swap
   src/ProjectMenu.tsx  folder picker and recents; desktop only
   src/Welcome.tsx      shown for an empty project, and from Help — over the
                        front page, never instead of it
@@ -770,6 +781,12 @@ web/              the browser page (Vite, built into dist/web)
                   the rows out of the DOM
   src/Sash.tsx    one draggable border, reporting a size in pixels
   src/panes.ts    how wide the bars are and how the sections divide them — pure
+  src/placement.ts where a person put a box and how wide they made it: the view
+                  key, the merge with a computed layout, the two ways back and
+                  the localStorage shape with its version and its caps — pure,
+                  and the only I/O is the two storage calls
+  src/marks.ts    how long a live signal stands and how it weakens — pure, and
+                  the one place the two durations are decided
   src/AgentStatus.tsx  what the agent is doing, and how long ago
   src/layout.ts   dagre for a view's first layout, keepLayout for every save after;
                   componentHeight, and layoutFlow / flowBoxSize for the flow
@@ -861,6 +878,11 @@ GET  /api/git           the current git status
 POST /api/git-base      change the base the working tree is compared against
 GET  /api/hook-status   is a working hook installed
 POST /api/hook-install  merge ours into whatever is there
+GET  /api/mcp-status    is .mcp.json naming a script that is really there —
+                        with the other servers in the file, and the preview
+POST /api/mcp-install   merge ours into whatever is there. 400, never an
+                        overwrite, for a .mcp.json that is not valid JSON or a
+                        build with no scripts/mcp.mjs beside it
 POST /api/hook          the PostToolUse payload. Always 200, and answers with
                         what the file just written is coupled to, as
                         `hookSpecificOutput.additionalContext`
@@ -915,6 +937,27 @@ chokidar watcher ─────────────────────
   outside; it gives no ratio, because the graph cannot see a method called through
   an untyped receiver and a denominator would be a number it cannot support. The
   route still always answers 200 and never makes the agent wait.
+- **And it says where the file sits in the architecture.** One more sentence:
+  which category holds the file, and which categories it reaches out of that one
+  into. A person drew that architecture and an agent that knows it can write code
+  that fits; the crossing is the half the agent cannot work out from its own
+  edit, because it would have to know where every file it imported lives.
+  **A fact, never a verdict.** Nobody has declared which category may reach
+  which — codemap holds no such rule and will not invent one — so the sentence
+  says where the edge went and stops. Calling a crossing wrong would be a model
+  deciding architecture, which is what decision 5 forbids, and there is a test
+  named for it. The categories are the rows `/api/clusters` answers with, so the
+  hook and the diagram read one list — but they do not yet read it the same
+  way, and the one case where they disagree is under Known limitations;
+  only an accepted name counts, the most specific category wins (a group
+  found inside another says more than the one around it), and a project nobody
+  has named anything in gets exactly the note it got before. Being in a category
+  with nothing else to say is still silence. Measured over astrup — 358 files,
+  eleven real categories, ten of them nested: 207 notes, median 182 characters,
+  longest 387, none over the ceiling; one note traded its list of importer paths
+  for the category clause, which is the ladder working (paths are the expensive
+  half, a category name is not); and 43 files that were silent now speak, every
+  one of them because it crossed a boundary. 0.45 ms on the round trip.
 
 ## The view layer
 
@@ -1154,11 +1197,23 @@ governs membership.
 
 ## The rest of the page
 
-- **The left bar** is Repository › Source Control › Categories › Activity, 300px.
+- **The left bar** is Repository › Source Control › Categories › Detail, 300px,
+  and the right bar is Following › Activity, 330px. Left is what the project
+  *is* — everything you go and open; right is what is happening to it, which is
+  what you glance at. Detail and Activity changed places on 2026-09-08, and
+  `panes.ts`'s `LAYOUT_VERSION` went to 2 for it: both bars kept their length,
+  so a stored stack would have been read by position and would have handed one
+  pane's height to the other in silence.
   The Repository panel absorbed the hook banner: hook, MCP and port file are rows,
   and "Install hook" is a button under them, hidden once installed. Activity
   describes *now* even while the diagram is frozen: the agent is still working in
   the working tree.
+- **Activity says who wrote each change, or says plainly that nobody claimed it.**
+  A `who` column, drawn only once something has claimed a change — in a project
+  where nothing does it would be one word repeated eighty times — and a change
+  the watcher merely noticed reads `unknown`. Never a blank and never a guess:
+  the watcher cannot tell an agent from a build script from a person in an
+  editor. `docs/AGENTS.md` is how another tool gets its own name on the map.
 - **A category on the page is a group in the code.** The section, its menu items
   and the frame on the canvas say "category" — the user's word. The file stays
   `.codemap/groups.json`, the API stays `/api/clusters` and `/api/groups`, the MCP
@@ -1273,9 +1328,39 @@ governs membership.
 Every connected client is sent a view **computed for its own spec**. The behaviour is
 *mark, do not move*:
 
-- A touched box pulses and holds a warm tint. The camera does not move.
+- **A mark outlasts a glance.** A written box holds the amber border and title
+  for **two minutes**, weakening once at twenty seconds; a box the agent asked
+  about holds blue for one minute, weakening at ten. Both numbers, and the
+  banding, live in `web/src/marks.ts` with their test. They used to be one
+  number, 2 500 ms, and that was the whole of a real bug report: the socket
+  pushed correctly the entire time, and the mark was gone before anyone looked
+  up from their terminal, so the diagram simply had one more box than it had —
+  which reads as "nothing appeared until I refreshed".
+- **A box that was not there a moment ago says so**, with a `new` tag in its
+  title for as long as the mark stands. It is decided on the client, from the
+  files the incoming view has that the outgoing one did not, because nothing in
+  the graph carries a birthday and git's `A` is against a base rather than
+  against a minute ago. It is sticky: a file that appeared and was then edited
+  twice is still, to somebody coming back, a new file.
+- **The pulse is not the mark.** The 1.1s×2 border animation announces, for the
+  reader watching right now, and is skipped entirely when a batch would light
+  more than `PULSE_MAX` (8) boxes — a `git checkout` or a codemod. Forty things
+  flashing at once is a fault light, not information; the marks still land on
+  all forty, the amber reads as a heat map, and the list of what arrived is
+  Activity's job.
+- **The minimap is the arrow to work off screen.** A marked node is drawn in its
+  mark's colour there, so a diagram wider than the window still says where the
+  heat is, and a click on a minimap node centres the camera on it at the zoom
+  the reader chose. `pannable` alone only moves the camera by dragging the
+  viewport rectangle, so the heat could be seen and not reached — half an
+  arrow. That is deliberately not a second mechanism beside the "N changes
+  outside" badge, which counts what has no box at all, names the files and
+  their writers in its title, and clears itself when it is clicked. The camera
+  never moves on its own; a click is a person asking.
+
 - **dagre runs for a view's first layout — once its clusters have arrived — and
-  for View › Re-layout, and for nothing else.** A save that adds a box keeps every
+  for View › Re-layout, and for nothing else. A person is the third thing that
+  moves a box, and a hand placement wins over every computed position.** A save that adds a box keeps every
   existing box where it stands and puts the new one beside its most connected
   neighbour: to the right on a 40px grid, first free slot, below when the row is
   full; a box connected to nothing starts a new row under the diagram
@@ -1290,6 +1375,60 @@ Every connected client is sent a view **computed for its own spec**. The behavio
 - **Dragging a frame locks it**, the way pulling a corner does; the lock button only
   releases. A frame that had to be locked before it could be moved was the wrong
   order, and it was reported as such.
+- **A box is moved by its title bar, and sized by its side.** `nodesDraggable`
+  is on and every box carries `dragHandle: '.box-title'` — the way a window
+  moves by its title bar and a frame moves by its label. Not the whole box:
+  every member row is already a control, and the three buttons in the title
+  wear `nodrag` so a press on one stays a press. Dragging one of several
+  picked boxes moves them all, which is React Flow's own gesture and the same
+  selection "Create category from selection…" reads. **A click is a drag of no
+  distance** — d3 fires its start and its end for a press that never moved —
+  so a placement is written only when the reported position differs from where
+  the box is drawn; without that, every box somebody clicked to inspect was
+  pinned where it already stood.
+- **Width is the only size a box has, and height stays derived.** A box's
+  height is a header plus a row per member, so a stretched one would claim
+  symbols the file has not got; width says nothing about content and shows
+  more of a long path. Two `NodeResizeControl` lines, left and right,
+  `resizeDirection="horizontal"`, bounded by `MIN_BOX_WIDTH` 160 and
+  `MAX_BOX_WIDTH` 720. Somebody who wants a taller box wants more members, and
+  `+N more` and Expand every box already do that. The canvas is controlled, so
+  React Flow reports a resize and applies nothing: the width is held in state
+  on every frame of the pull and written to the browser once, when the edge is
+  let go.
+- **A hand placement lives in the browser, never in the project.** All the
+  arithmetic is `web/src/placement.ts`, tested beside itself: `localStorage`
+  under `codemap.placements`, keyed by project root and by view — the diagram,
+  the focus, the category, the scope and whether a diff is on, and *not* the
+  filters, the depth, the commit or `as`, because those change which boxes are
+  drawn and not where the drawn ones belong. A list gets no key at all, so
+  `?as=list` cannot store anything by construction. A frame's geometry goes in
+  `.codemap/groups.json` because a category is a piece of architecture; one
+  person's arrangement of one view on one screen is not, and writing it into a
+  repository somebody opened only to read is the objection the `.codemap/`
+  consent gate exists for. A placement is kept until it is dropped, never
+  until its box is off screen: hiding tests, filtering to changes, navigating
+  away and an agent deleting a file all cost nothing, and a box that comes
+  back is where it was left.
+- **`applyPlacements` runs after the layout and before the frames**, and the
+  applied positions are what the layout cache records. After the layout,
+  because a placement wins over dagre, over `keepLayout` and over the growth
+  push a box that expanded gives the column under it. Before the frames,
+  because a frame is drawn tight around where its members actually landed — a
+  locked frame is a placement of its own and still wins. Recorded, because
+  `keepLayout` places the next new box beside its most connected neighbour and
+  has to be told where that neighbour actually is: measured on astrupdata, a
+  new file importing a box somebody had dragged to (1553, 958) landed at
+  (1840, 960), which is its right-hand slot on the grid.
+- **Two ways back, and both say what they drop.** View › Re-layout (⇧⌘L) reads
+  `Re-layout · drops 3 placed boxes` and clears the whole view's placements —
+  the whole view and not only the drawn half, or turning a filter off would put
+  the arrangement back. A box's own right-click menu offers "Put this box
+  back", greyed with "This box is where the layout put it" when it has not been
+  moved; it drops the one placement and forgets the box's rectangle, so
+  `keepLayout` places it the way it places a box that has just arrived. That
+  slot is regularly off screen on a wide diagram, so the camera is moved to it
+  — and only then.
 - **A list re-sorts nothing under the reader's cursor.** `holdOrder` in
   `web/src/listrows.ts` keeps the order across an update: a count that changed
   changes on its row and the row pulses where it stands, a row that has gone is
@@ -1330,6 +1469,23 @@ asked about it), and a status that names the tool and how long ago.
 `scripts/mcp.mjs` exposes codemap to whichever agent is working in the project.
 `.mcp.json` wires it up.
 
+**And the app writes that file too, on a press, the way it writes the hook.**
+Both channels were built and only one of them was one button away, which is how
+a project with a working `settings.json` and no `.mcp.json` looked connected
+while the agent had no tools at all — measured, once, and it was one file.
+`project/mcp-install.ts` detects, previews and merges: every other MCP server in
+the file keeps its entry, an unparseable config is refused rather than
+overwritten, and the packaged `.app` — which ships `dist/` without
+`scripts/mcp.mjs` — greys the button and names the directory it looked in.
+**`installed` is a claim about a script that is really on disk**, resolved
+against the project root because that is the working directory Claude Code
+spawns a server in: so codemap's own committed `["scripts/mcp.mjs"]` reads as
+current and the identical line copied into another project reads as not
+installed, which is exactly the failure the button exists for. The one thing no
+button can do is said in the button's own words before it is pressed — **Claude
+Code reads `.mcp.json` when a session starts, so the agent must be restarted
+once.**
+
 The direction is the point. An MCP server is called **by** an agent and can never
 call one, so *through MCP* the app cannot reach the agent already working in the
 project. What it can do is offer that agent the unnamed groups, and `name_group`
@@ -1358,9 +1514,34 @@ list_groups     the clusters, named and unnamed; "by hand" for a drawn one,
 name_group      accept one with a name
 describe_file   declares / used by / uses
 search_symbols  subsequence search over the whole project
+describe_changes  what the shape did since a commit — files, symbols and the
+                file pairs coupling crossed, off /api/diff. `since` is a commit
+                id or the session's own base; the other end is always the
+                working tree, because "what have I done" has no second date
+list_dependents what leans on a file (/api/detail) or a symbol (/api/symbol),
+                grouped by file. `path#name` for a member is resolved through
+                the file's box when the owner was not written — no other tool
+                hands out a member's id, and the refusal lists the real ones
+describe_blind_spots  where the map of one file stops: unresolved imports and
+                calls off the box in /api/view, and the parse error flag
 note_change     the agent says what it just changed, and why — at most 200
                 characters, session memory, never .codemap/
 ```
+
+**Every answer says what it does not know, and that is not decoration.** The
+three read-only tools above print the graph's own `importedByNote`,
+`coverageNote` and diff `caveat` verbatim rather than a summary of them, so a
+method with no callers reads "an empty list means unknown, not none" and never
+"0 in" — the same failure the explain prompt was fixed for. Lists are capped
+and the cap says how many were dropped: a truncated list nobody is told is
+truncated is read as the whole answer. `describe_blind_spots` is the one that
+exists only to admit a gap, and it is worth more than it sounds — it is what
+tells a box with few edges apart from coupling the tool lost.
+
+**One tool call is one row in the timeline.** A tool that has to ask twice —
+`list_dependents` resolving `path#name` against the file's box — marks the
+first request only, because a second row under the same name reads as the agent
+asking the same thing twice. See *Seeing the agent*.
 
 It holds no graph of its own; it talks to a running codemap over HTTP and finds it
 through the same `.claude/codemap.port` file the hook reads.
@@ -1534,6 +1715,21 @@ measured with `scripts/corpus.mjs` against zustand, type-fest, zod, vuejs/core a
 TanStack/query — 32 to 925 files each — and they are the ones that decide whether
 the graph can be trusted at a glance on a project that is not this one:
 
+- **A mark is this page's memory and nothing else's.** It lives in `App.tsx`
+  state, so a reload loses every mark and a project switch clears them on
+  purpose; two tabs on one project mark independently. The server's change feed
+  is what survives, and it is the session's, not the project's. A file the
+  agent wrote while the page was on another project is never marked at all.
+- **A component box wears the two signals as booleans**, not as bands, and gets
+  no `new` tag and no pulse: `ComponentNode` reads `changed` / `queried`, and a
+  component stands for a pile of files rather than for one. So on the component
+  diagram a write from two minutes ago and one from two seconds ago look the
+  same.
+- **`new` is new to the diagram, not new to the project.** It is decided from
+  the view the page held a moment ago, so a file that arrives in a batch the
+  page could not place against a previous view — a structural diff, an `update`
+  that raced a navigation — is marked as an edit. There is nothing dishonest in
+  it, but it is not a birthday.
 - **A monorepo's structure is drawn now** — workspace packages, tsconfig paths and
   barrels all resolve (TanStack: `react-query → query-core ×35`, 276 of 280
   `zod/v4` imports). What is still missing: `package.json` `main` for a directory
@@ -1680,6 +1876,20 @@ the graph can be trusted at a glance on a project that is not this one:
   them: the panel asked a person to name one architecture twice, ripgrep as
   twelve rows for ten pieces and serilog as three for two. A nesting that says
   something — zustand's 23 as 10 + 10 + 3 — is untouched.
+- **Which single category holds a file is answered twice, and the two answers
+  can differ.** `categoryFacts` in `project/hook.ts` sorts every accepted
+  category by depth, then size, then name and lets the first claim the file;
+  `partitionByCategory` in `view/components.ts` claims in two passes — leaves,
+  then outers — and within a pass takes the list in the order it was handed.
+  They agree on nesting and disagree on a tie. Reproduced: two hand-drawn
+  categories at the same depth both listing `tasky/progress.py`, "Planning"
+  (first in the list) and "Ops" (first alphabetically) — the component diagram
+  drew the file in Planning while the hook told the agent "It is in the Ops
+  category, and reaches into Planning". Both sentences are true of the graph
+  and they read as a contradiction, which is what the one-list rule above
+  exists to prevent. Unifying them is not a sort: the leaf/outer split is not
+  the same order as `depth`, and pass 2 is what gives a rejected leaf's files
+  back to the outer that was accepted. Whoever fixes it owns both files.
 - **The UML marks stop where the source does.** The near-end multiplicity is
   never drawn; role text stops at three roles and counts the rest, and a folder
   or bundle line concatenates every file line's roles, so two fields named `run`

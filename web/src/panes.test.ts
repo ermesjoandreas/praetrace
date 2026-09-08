@@ -5,6 +5,7 @@ import { test } from 'node:test';
 // into dist/, so there is no panes.js for `node --test` to find.
 import {
   adoptStack,
+  barOf,
   clampLayout,
   defaultLayout,
   defaultStack,
@@ -44,11 +45,11 @@ test('a first run is today’s numbers, and the stylesheet still owns the stacks
   assert.ok(isDefaultLayout(layout), 'nothing has been moved, so Reset layout is greyed');
 });
 
-test('the default stack is today’s shares — 45 / 20 / 15 / 20 — and fills the bar exactly', () => {
+test('the default stack is today’s shares — 40 / 15 / 15 / 30 — and fills the bar exactly', () => {
   const sizes = defaultStack('leftbar', screen.barHeight);
   assert.equal(sum(sizes), screen.barHeight);
   const shares = sizes.map((size) => Math.round((size / screen.barHeight) * 100));
-  assert.deepEqual(shares, [45, 20, 15, 20]);
+  assert.deepEqual(shares, [40, 15, 15, 30]);
 });
 
 // --- dragging a bar ----------------------------------------------------------
@@ -189,7 +190,7 @@ test('folding by chevron and shoving the sash shut leave the same stack', () => 
 });
 
 test('the last section folds through the sash above it, the only one it has', () => {
-  const folded = setFolded(adopted(), 'activity', true, screen);
+  const folded = setFolded(adopted(), 'detail', true, screen);
   assert.deepEqual(folded.stack.leftbar, [400, 300, 150 + 154 - SECTION_HEADER, SECTION_HEADER]);
 });
 
@@ -272,10 +273,19 @@ test('double-clicking a section’s sash resets that pane and leaves the ones be
 
 test('the last section has no sash under it and is reset through the one above', () => {
   const moved = resizeSection(adopted(), 'leftbar', 2, 280, screen);
-  const back = resetPane(moved, 'activity', screen);
+  const back = resetPane(moved, 'detail', screen);
   const sizes = back.stack.leftbar;
+  const before = moved.stack.leftbar;
   assert.ok(sizes !== null && sizes !== undefined);
-  assert.equal(sizes[3], defaultStack('leftbar', screen.barHeight)[3]);
+  assert.ok(before !== null && before !== undefined);
+  // Its own share, or everything its one neighbour has to give — the reset is
+  // pairwise, like the drag, so the pane above it is never pushed past its own
+  // header to make room. Both halves of that are worth pinning: the share is
+  // what a reset means, and the clamp is what stops it moving a border two
+  // panes away.
+  const want = defaultStack('leftbar', screen.barHeight)[3] ?? 0;
+  const pair = (before[2] ?? 0) + (before[3] ?? 0);
+  assert.equal(sizes[3], Math.min(want, pair - SECTION_HEADER));
   assert.equal(sum(sizes), screen.barHeight);
 });
 
@@ -288,6 +298,29 @@ test('Reset layout hands the stacks back to the stylesheet', () => {
   const arranged = resizeSection(resizeBar(defaultLayout(), 'leftbar', 500, screen), 'leftbar', 1, 400, screen);
   assert.equal(isDefaultLayout(arranged), false);
   assert.ok(isDefaultLayout(defaultLayout()));
+});
+
+test('Detail stands at the bottom of the left bar and Activity in the side bar', () => {
+  // The exchange, pinned. It is not cosmetic: `barOf` decides which stack a
+  // section is resized in, and a stored array is read by position, so getting
+  // this wrong applies one pane's height to another with nothing on screen to
+  // say so.
+  assert.deepEqual(SECTIONS.leftbar, ['repository', 'sourceControl', 'categories', 'detail']);
+  assert.deepEqual(SECTIONS.sidebar, ['followed', 'activity']);
+  assert.equal(barOf('detail'), 'leftbar');
+  assert.equal(barOf('activity'), 'sidebar');
+});
+
+test('a layout stored before the exchange is dropped rather than applied to the wrong panes', () => {
+  // Both bars kept their length, so nothing about the SHAPE of a stored stack
+  // says it was written when the last slot meant Activity. The version is the
+  // only thing that does, and this is what it is for.
+  const before = JSON.stringify({
+    version: 1,
+    width: { leftbar: 500, sidebar: 400 },
+    stack: { leftbar: [400, 300, 150, 154], sidebar: [500, 504] },
+  });
+  assert.deepEqual(parseLayout(before, screen), defaultLayout());
 });
 
 test('a bar nobody has touched still reports a stack, for the keyboard and for a reset', () => {

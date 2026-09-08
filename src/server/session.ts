@@ -5,6 +5,8 @@ import type { GitStatus } from '../git/types.js';
 import { applyBatch, createStore, setProjectFacts, type GraphStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
 import { createParserPool, type ParserPool } from '../parser/pool.js';
+import type { Attribution } from '../project/hook.js';
+import { ask, type AskContext, type AskDeltaKind, type AskFailure } from '../project/ask.js';
 import { coverageStamp, readCoverage } from '../project/coverage.js';
 import {
   explain,
@@ -39,6 +41,14 @@ export interface AgentCall {
   /** What it asked about — a path, a query — when the tool had one. */
   target: string | null;
   /**
+   * Which agent asked, when the MCP client named itself at initialize —
+   * `claude-code`, `cursor-vscode`, whatever it calls itself. Absent when it
+   * did not, and never inferred: this is the client's own `clientInfo.name`
+   * passed straight through, the same standing as a hook payload's declared
+   * `agent`. See `Attribution`.
+   */
+  agent?: string;
+  /**
    * The agent's own words about what it just changed, when it left any.
    *
    * Every other entry here is a question codemap answered; this is the one the
@@ -60,6 +70,19 @@ export interface AgentCall {
 export interface ChangeEntry {
   at: number;
   files: string[];
+  /**
+   * Who claimed the files in this batch anybody claimed, keyed by path. A file
+   * in `files` and not in here was written by nobody we can name — see
+   * `Attribution`, and the absence is deliberately the whole of what says so.
+   *
+   * Per file rather than per batch because a batch can hold both: the hook
+   * names one file while the watcher is the only thing that saw another, and
+   * one name over the pair would be wrong about half of it.
+   *
+   * A plain object rather than a Map: this is served as JSON by
+   * `GET /api/changes`, and a Map serialises to `{}`.
+   */
+  by?: Record<string, Attribution>;
 }
 
 /** Why a run ended with no answers, in the words `explain()` reports them. */
@@ -115,6 +138,79 @@ export interface SuggestResult {
 }
 
 /**
+ * One question and the answer to it.
+ *
+ * `answer` grows as the words arrive rather than being set at the end: the
+ * deltas go to the socket for the page that is watching, and this is what a
+ * page that reloaded halfway through reads instead. A turn that failed keeps
+ * whatever words it got — the money is spent either way, and half an answer
+ * is worth more than the sentence that replaced it.
+ */
+export interface AskTurn {
+  at: number;
+  question: string;
+  answer: string;
+  /**
+   * What the model is working through, while it is working through it.
+   *
+   * Kept only while the turn runs and dropped the moment the answer lands:
+   * measured, haiku thinks for about twelve seconds before it writes a word,
+   * and a page with nothing to draw for twelve seconds is the unmoving
+   * spinner this feature streams to avoid. It is never the answer and is
+   * never stored as one — see `AskDeltaKind`.
+   */
+  thinking?: string;
+  state: 'running' | 'done' | 'failed' | 'cancelled';
+  finishedAt?: number;
+  /** What this turn cost. Present once it has ended and produced words. */
+  costUsd?: number;
+  ms?: number;
+  /**
+   * Wall clock from the press to the first characters on screen, and to the
+   * first character of the answer itself.
+   *
+   * Reported apart from `ms` because they are the numbers a person actually
+   * experiences: a whole answer takes as long as explain's does, and whether
+   * this feels fast is decided entirely by these two.
+   */
+  firstTokenMs?: number;
+  firstAnswerMs?: number;
+  reason?: AskFailure;
+  detail?: string;
+}
+
+/**
+ * A conversation about the categories, held for this session and no longer.
+ *
+ * Session state, like a suggest run and for the same reason: nothing a model
+ * says is a fact about the project, so nothing here is written to
+ * `.codemap/`. A project switch opens a new session, which has no
+ * conversation — a follow-up about the previous project would be answered
+ * against the wrong categories, and that is exactly the confidently wrong
+ * answer this tool exists not to give.
+ *
+ * `sessionId` is the CLI's, and it is the whole of what makes a follow-up a
+ * follow-up: the transcript lives in the CLI's own store, so resuming costs a
+ * question rather than the categories again — measured on eleven categories,
+ * $0.0112 against $0.0257.
+ *
+ * It is recorded only from a turn that answered. A turn that timed out or was
+ * killed carries no session out with it, even though the CLI named one on its
+ * first line, so the next question sends the categories again and starts a
+ * fresh conversation on the CLI's side. That costs a first turn's price and
+ * loses what was said before it — the alternative is resuming a session whose
+ * last exchange is half an answer, and paying to be confused.
+ */
+export interface AskConversation {
+  id: string;
+  at: number;
+  sessionId: string | null;
+  turns: AskTurn[];
+  /** Every turn added up: what this conversation has cost so far. */
+  costUsd: number;
+}
+
+/**
  * Deliberately in memory and deliberately short. This answers "what has the
  * agent been doing while I was away", which is the whole premise; it is not
  * session history. That is VISION.md phase 1, and it gets a schema designed for
@@ -139,6 +235,30 @@ const GIT_POLL_MS = 3000;
 const MAX_PAST_GRAPHS = 16;
 
 /**
+ * How long a name survives an unattributed change to the same file.
+ *
+ * One edit reaches this tool twice — the hook says so and the watcher sees it —
+ * and which arrives first is not decidable. Measured against a real Claude Code
+ * payload on this machine: the file was written, chokidar fired 46 ms later,
+ * the 80 ms debounce flushed that as its own batch, and the hook's POST landed
+ * at 84 ms and became a second one. Two batches 112 ms apart for one edit, in
+ * either order depending on how busy the tree is.
+ *
+ * So a change naming nobody, arriving within this of a change that named
+ * somebody, is treated as the second sighting of that one edit rather than as
+ * evidence that the name is now wrong. It is a rule about pairing events, not
+ * about who wrote the file: it can never invent a name, only decline to forget
+ * one for a moment.
+ *
+ * A second is nine times the measured spread and still two orders of magnitude
+ * short of a person opening an editor, which is the case it must not swallow —
+ * a hand edit seconds after the agent's correctly drops the agent's name. The
+ * cost, stated plainly: a human save inside the same second as an agent's, on
+ * the same file, keeps the agent's name.
+ */
+const ATTRIBUTION_GRACE_MS = 1000;
+
+/**
  * Everything scoped to one project root: the graph, the workers that build it,
  * and the watcher feeding it.
  *
@@ -155,10 +275,24 @@ export interface Session {
    * off the main thread like every other parse, through the same queue.
    */
   readonly pool: ParserPool;
-  /** Queue a change from any source. The hook endpoint uses this. */
-  queue(change: FileChange): void;
+  /**
+   * Queue a change from any source. The hook endpoint uses this, and it is the
+   * only caller that can pass `by`: see `Attribution`.
+   */
+  queue(change: FileChange, by?: Attribution | null): void;
   /** What has changed since this project was opened, newest last. */
   history(): readonly ChangeEntry[];
+  /**
+   * Who wrote this file, as of the last change that landed on it — null when
+   * that change named nobody, and null for a file nothing has touched this
+   * session.
+   *
+   * This is what the live push reads, so a box can be marked with a name
+   * without the socket frame having to be handed one through `main.ts`. It
+   * answers about the file rather than about the batch, which is the question
+   * a box on the canvas asks.
+   */
+  writtenBy(filePath: string): Attribution | null;
   /** What the agent has asked, newest last. */
   agentCalls(): readonly AgentCall[];
   recordAgentCall(call: AgentCall): void;
@@ -251,10 +385,41 @@ export interface Session {
     targets: SuggestTarget[],
     named: { name: string; files: string[] }[],
   ): Promise<SuggestResult | Extract<SuggestOutcome, { ok: false }>> | null;
+  /** The conversation this session is holding, or null before the first question. */
+  askConversation(): AskConversation | null;
+  /** Whether a turn is in flight. One press, one subprocess, as everywhere here. */
+  askRunning(): boolean;
+  /**
+   * Ask a question about the categories, or refuse while a turn is in flight.
+   *
+   * The context is handed in on every turn and used only when there is no CLI
+   * session to resume: whether this is a first turn or a follow-up is the
+   * session's fact and not the caller's, and a first turn that failed before
+   * the CLI named a session must still be able to send the categories again.
+   *
+   * Answers immediately with the conversation carrying the running turn. The
+   * answer itself takes far longer than a browser holds a fetch open, so it
+   * arrives through `onDelta` as it is written and `onEnded` when it is done —
+   * neither fires once the session is closed.
+   */
+  startAsk(
+    question: string,
+    context: AskContext,
+    onDelta: (text: string, kind: AskDeltaKind) => void,
+    onEnded: (conversation: AskConversation) => void,
+  ): AskConversation | null;
+  /** Throw the conversation away. True when there was one. */
+  endAsk(): boolean;
   close(): Promise<void>;
 }
 
 export interface SessionHandlers {
+  /**
+   * Deliberately not widened to carry the attribution. `main.ts` wires this
+   * straight into `hub.publish`, and the hub already reads the session — so the
+   * name reaches the socket through `writtenBy`, and this stays the one-line
+   * wire it is.
+   */
   onApplied: (changedFiles: string[]) => void;
   onError: (message: string) => void;
   /** Something outside the working tree moved — a commit, a checkout, a stash. */
@@ -274,6 +439,15 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
 
   const history: ChangeEntry[] = [];
   const agent: AgentCall[] = [];
+
+  /**
+   * Who last wrote each file, for the files anything named — and when.
+   *
+   * Unbounded on purpose, and it costs nothing: it can only ever hold one entry
+   * per file the project has, and `store.files` is already holding every one of
+   * those.
+   */
+  const writers = new Map<string, { by: Attribution; at: number }>();
 
   // Two numbers rather than a log: nothing on screen asks which payload was
   // refused, only whether any were. See Session.hookCalls.
@@ -320,6 +494,9 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
 
   let lastSuggest: SuggestResult | null = null;
   let suggesting = false;
+
+  // Held for exactly as long as the project is open. See `AskConversation`.
+  let conversation: AskConversation | null = null;
 
   /**
    * Reads are queued behind one another rather than sharing the one in flight:
@@ -411,10 +588,33 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     store,
     pool,
     root,
-    onApplied: (changedFiles) => {
+    onApplied: (changedFiles, by) => {
+      const at = Date.now();
+
+      // Who wrote each file now, before the entry is built from it. A change
+      // that named nobody clears the previous name rather than leaving it
+      // standing — a hand edit to a file the agent wrote last is not the
+      // agent's, and a stale name is the one failure here that is a lie rather
+      // than a gap. `ATTRIBUTION_GRACE_MS` is the single exception, and it says
+      // why.
+      for (const filePath of changedFiles) {
+        const named = by.get(filePath);
+        if (named !== undefined) writers.set(filePath, { by: named, at });
+        else if (at - (writers.get(filePath)?.at ?? 0) > ATTRIBUTION_GRACE_MS) {
+          writers.delete(filePath);
+        }
+      }
+
       // Recorded before anything is published, so a client that reloads mid
-      // burst still sees the change it just missed.
-      history.push({ at: Date.now(), files: changedFiles });
+      // burst still sees the change it just missed. The names are the batch's
+      // own, not the map's: the feed is a record of what happened at 14:12, so
+      // a later edit by someone else must not rewrite who did this one.
+      const named = Object.fromEntries(by);
+      history.push({
+        at,
+        files: changedFiles,
+        ...(Object.keys(named).length > 0 ? { by: named } : {}),
+      });
       if (history.length > MAX_HISTORY) history.shift();
       // git is re-read before the publish, not after it: the view about to be
       // sent carries each file's status, and one computed from the previous
@@ -518,8 +718,9 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
     root,
     store,
     pool,
-    queue: (change) => updater.queue(change),
+    queue: (change, by) => updater.queue(change, by),
     history: () => history,
+    writtenBy: (filePath) => writers.get(filePath)?.by ?? null,
     agentCalls: () => agent,
     recordAgentCall: (call) => {
       agent.push(call);
@@ -622,6 +823,96 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       });
     },
 
+    askConversation: () => conversation,
+    askRunning: () => conversation?.turns.at(-1)?.state === 'running',
+
+    startAsk(question, context, onDelta, onEnded) {
+      if (conversation?.turns.at(-1)?.state === 'running') return null;
+
+      const held: AskConversation = conversation ?? {
+        id: `ask-${Date.now().toString(36)}`,
+        at: Date.now(),
+        sessionId: null,
+        turns: [],
+        costUsd: 0,
+      };
+      conversation = held;
+
+      const turn: AskTurn = { at: Date.now(), question, answer: '', state: 'running' };
+      held.turns.push(turn);
+
+      void ask(
+        {
+          question,
+          // The categories only when there is no session to resume — which is
+          // the first turn, and a later one whose predecessor never got far
+          // enough for the CLI to name a session.
+          context: held.sessionId === null ? context : null,
+          resume: held.sessionId,
+        },
+        {
+          onDelta: (text, kind) => {
+            // A turn the user ended, or a project switched away from, must not
+            // keep typing into a panel: the money is spent, the words are not
+            // wanted. Kept on the turn as well as pushed, so a page that
+            // reloads mid-answer reads what has arrived so far.
+            if (closed || turn.state !== 'running') return;
+            if (kind === 'thinking') turn.thinking = (turn.thinking ?? '') + text;
+            else turn.answer += text;
+            onDelta(text, kind);
+          },
+        },
+      ).then((outcome) => {
+        if (closed || turn.state !== 'running') return;
+        turn.finishedAt = Date.now();
+        // Working notes, not an answer, and the turn is over. Dropped whether
+        // it ended well or badly: keeping them would put the model's reasoning
+        // in a transcript beside its reply, where a reader would take the two
+        // for one thing.
+        delete turn.thinking;
+
+        if (!outcome.ok) {
+          turn.state = 'failed';
+          turn.reason = outcome.reason;
+          turn.detail = outcome.detail;
+        } else {
+          turn.state = 'done';
+          // The whole answer replaces the accumulated deltas: they are the
+          // same words, but a dropped chunk would leave a hole nobody could
+          // see, and this is the CLI's own copy of what it said.
+          turn.answer = outcome.text;
+          turn.costUsd = outcome.costUsd;
+          turn.ms = outcome.ms;
+          if (outcome.firstTokenMs !== null) turn.firstTokenMs = outcome.firstTokenMs;
+          if (outcome.firstAnswerMs !== null) turn.firstAnswerMs = outcome.firstAnswerMs;
+          // A floor, and not the whole bill: the price rides on the CLI's
+          // closing line, which a turn that timed out or was killed never
+          // printed. That turn spent money this cannot see, so the total under
+          // the transcript is what the answers that arrived cost, and a failed
+          // turn adds nothing to it rather than a number that was guessed.
+          held.costUsd += outcome.costUsd;
+          if (outcome.sessionId !== null) held.sessionId = outcome.sessionId;
+        }
+
+        onEnded(held);
+      });
+
+      return held;
+    },
+
+    endAsk() {
+      if (conversation === null) return false;
+      // A turn still in flight is abandoned rather than killed, as explain's
+      // is: this stops the answer being used, not the money being spent.
+      const last = conversation.turns.at(-1);
+      if (last?.state === 'running') {
+        last.state = 'cancelled';
+        last.finishedAt = Date.now();
+      }
+      conversation = null;
+      return true;
+    },
+
     async close() {
       closed = true;
       // What aborting a run amounts to here: the answer is refused, and the run
@@ -635,6 +926,16 @@ async function openSession(root: string, handlers: SessionHandlers): Promise<Ses
       // answer is refused by the `closed` check where it would have been kept.
       lastSuggest = null;
       suggesting = false;
+      // The conversation is about the categories of the project being switched
+      // away from. Answering a follow-up about it against the next project's
+      // graph is the confidently wrong answer this tool exists not to give, so
+      // it goes with the session; a turn in flight is abandoned like explain's.
+      const asking = conversation?.turns.at(-1);
+      if (asking?.state === 'running') {
+        asking.state = 'cancelled';
+        asking.finishedAt = Date.now();
+      }
+      conversation = null;
       clearInterval(poll);
       // A build still running settles into nothing: `closed` is checked before
       // it stores, so clearing here cannot be undone by a late arrival.

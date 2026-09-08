@@ -4,7 +4,8 @@ import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promis
 import os from 'node:os';
 import path from 'node:path';
 import type { Graph, GraphEdge, GraphNode, NodeKind } from '../graph/types.js';
-import { changeFromHook, couplingNote } from './hook.js';
+import type { GroupSuggestion } from './groups.js';
+import { attributionOf, changeFromHook, couplingNote } from './hook.js';
 
 /** A node named after its id, unless told otherwise: a member's name is bare. */
 function node(id: string, kind: NodeKind, filePath: string, name = id.slice(id.indexOf('#') + 1)): GraphNode {
@@ -229,6 +230,181 @@ test('a path too long even to count against is silence, not half a sentence', ()
   assert.equal(couplingNote(graph, absurd), '');
 });
 
+/** One row of what `/api/clusters` answers, with the defaults an accepted name has. */
+function category(name: string | null, files: string[], extra: Partial<GroupSuggestion> = {}): GroupSuggestion {
+  return {
+    id: `${files[0] ?? ''}~${files.length}`,
+    files,
+    cohesion: 1,
+    name,
+    state: name === null ? 'suggested' : 'accepted',
+    depth: 0,
+    parent: null,
+    ...extra,
+  };
+}
+
+/**
+ * Two layers and an edge between them: the architecture a person drew, and one
+ * file in the upper layer reaching into the lower one.
+ */
+const layers = graphOf(
+  [
+    node('ui/panel.ts', 'file', 'ui/panel.ts'),
+    node('ui/panel.ts#render', 'function', 'ui/panel.ts'),
+    node('ui/app.ts', 'file', 'ui/app.ts'),
+    node('data/store.ts', 'file', 'data/store.ts'),
+    node('data/store.ts#save', 'function', 'data/store.ts'),
+  ],
+  [
+    { from: 'ui/app.ts', to: 'ui/panel.ts', kind: 'imports' },
+    { from: 'ui/panel.ts', to: 'data/store.ts', kind: 'imports' },
+    { from: 'ui/panel.ts#render', to: 'data/store.ts#save', kind: 'calls' },
+  ],
+);
+
+const uiAndData = [category('UI', ['ui/panel.ts', 'ui/app.ts']), category('Data', ['data/store.ts'])];
+
+test('the note says which category the file is in, and which one it reached into', () => {
+  assert.equal(
+    couplingNote(layers, 'ui/panel.ts', uiAndData),
+    'ui/panel.ts is imported by 1 file — ui/app.ts. It is in the UI category, and reaches into Data.',
+  );
+});
+
+test('a crossing is a fact and not a verdict', () => {
+  // Nobody has declared a rule about which category may reach which, so the
+  // sentence says where the edge went and stops. If this ever reads as a
+  // judgement, decision 5 has been broken by wording rather than by code.
+  const note = couplingNote(layers, 'ui/panel.ts', uiAndData);
+  for (const verdict of ['should', 'must', 'violat', 'wrong', 'illegal', 'not allowed']) {
+    assert.ok(!note.toLowerCase().includes(verdict), `the note passes judgement: ${note}`);
+  }
+});
+
+test('a crossing on its own is worth breaking silence for', () => {
+  // Nothing imports the file and nothing reaches its symbols, so before
+  // categories this was silence. Which category it left is exactly the thing
+  // the agent cannot work out from the edit it just made.
+  const alone = graphOf(
+    [
+      node('ui/panel.ts', 'file', 'ui/panel.ts'),
+      node('data/store.ts', 'file', 'data/store.ts'),
+    ],
+    [{ from: 'ui/panel.ts', to: 'data/store.ts', kind: 'imports' }],
+  );
+  assert.equal(
+    couplingNote(alone, 'ui/panel.ts', uiAndData),
+    'ui/panel.ts is in the UI category, and reaches into Data.',
+  );
+});
+
+test('being in a category, with nothing else to say, is not worth saying', () => {
+  // ui/app.ts imports inside its own category and nothing depends on it. A
+  // hook that announced the category after every edit in a named project would
+  // be the noise the ceiling exists to keep out.
+  assert.equal(couplingNote(layers, 'ui/app.ts', uiAndData), '');
+});
+
+test('a call across the boundary counts, not only an import', () => {
+  // Go and Python resolve plenty of edges the import line did not spell, and
+  // an `extends` across a boundary is the same crossing an import is.
+  const calls = graphOf(
+    [
+      node('ui/panel.ts', 'file', 'ui/panel.ts'),
+      node('ui/panel.ts#render', 'function', 'ui/panel.ts'),
+      node('data/store.ts', 'file', 'data/store.ts'),
+      node('data/store.ts#save', 'function', 'data/store.ts'),
+    ],
+    [{ from: 'ui/panel.ts#render', to: 'data/store.ts#save', kind: 'calls' }],
+  );
+  assert.equal(
+    couplingNote(calls, 'ui/panel.ts', uiAndData),
+    'ui/panel.ts is in the UI category, and reaches into Data.',
+  );
+});
+
+test('an unnamed or rejected category is not a category to name', () => {
+  // A cluster nobody has named has no name to say, and a rejection is
+  // somebody's word that it is not a piece of the architecture.
+  const unnamed = [category(null, ['ui/panel.ts', 'ui/app.ts']), category(null, ['data/store.ts'])];
+  assert.equal(couplingNote(layers, 'ui/panel.ts', unnamed), 'ui/panel.ts is imported by 1 file — ui/app.ts.');
+
+  const rejected = uiAndData.map((c) => ({ ...c, state: 'rejected' as const }));
+  assert.equal(couplingNote(layers, 'ui/panel.ts', rejected), 'ui/panel.ts is imported by 1 file — ui/app.ts.');
+
+  // And with no categories at all the note is what it was before they existed.
+  assert.equal(couplingNote(layers, 'ui/panel.ts'), 'ui/panel.ts is imported by 1 file — ui/app.ts.');
+});
+
+test('a category found inside another is the one named, because it says more', () => {
+  const nested = [
+    category('Engine', ['ui/panel.ts', 'ui/app.ts', 'data/store.ts'], { id: 'engine' }),
+    category('Parser', ['ui/panel.ts', 'ui/app.ts'], { depth: 1, parent: 'engine' }),
+    category('Data', ['data/store.ts']),
+  ];
+  assert.equal(
+    couplingNote(layers, 'ui/panel.ts', nested),
+    'ui/panel.ts is imported by 1 file — ui/app.ts. It is in the Parser category, and reaches into Data.',
+  );
+  // And a file the inner one does not hold falls back to the outer's name.
+  assert.equal(
+    couplingNote(layers, 'data/store.ts', [nested[0] as GroupSuggestion, nested[1] as GroupSuggestion]),
+    'data/store.ts is imported by 1 file — ui/panel.ts. save is used from outside it. ' +
+      'It is in the Engine category.',
+  );
+});
+
+test('a file that reaches into many categories names three and counts the rest', () => {
+  // Eleven categories is a real number: ~/Documents/astrup has that many, and
+  // a file there that touched six would otherwise spend the whole ceiling on
+  // a list nobody reads to the end.
+  const names = ['Api', 'Auth', 'Charts', 'Data', 'Email', 'Jobs'];
+  const wide = graphOf(
+    [node('app.ts', 'file', 'app.ts'), ...names.map((n) => node(`${n}.ts`, 'file', `${n}.ts`))],
+    names.map((n) => ({ from: 'app.ts', to: `${n}.ts`, kind: 'imports' as const })),
+  );
+  const many = [category('Shell', ['app.ts']), ...names.map((n) => category(n, [`${n}.ts`]))];
+  assert.equal(
+    couplingNote(wide, 'app.ts', many),
+    'app.ts is in the Shell category, and reaches into Api, Auth, Charts and 3 more.',
+  );
+});
+
+test('the category is the last thing dropped, because it is the cheapest', () => {
+  // The same monorepo paths as above. Four of them will not fit beside two
+  // symbol names; a pair of category names costs a tenth of one path, and is
+  // the half the agent has no other way to ask for.
+  const deep = (n: number): string => `packages/some-workspace-package/src/internal/generated/module-${n}.ts`;
+  const wide = graphOf(
+    [
+      node(deep(0), 'file', deep(0)),
+      node(`${deep(0)}#parseIncomingRequestBody`, 'function', deep(0)),
+      node(`${deep(0)}#serialiseOutgoingResponse`, 'function', deep(0)),
+      ...[1, 2, 3, 4].map((n) => node(deep(n), 'file', deep(n))),
+      ...[1, 2].map((n) => node(`${deep(n)}#handle`, 'function', deep(n), 'handle')),
+    ],
+    [
+      ...[1, 2, 3, 4].map((n) => ({ from: deep(n), to: deep(0), kind: 'imports' as const })),
+      { from: deep(0), to: deep(4), kind: 'imports' },
+      { from: `${deep(1)}#handle`, to: `${deep(0)}#parseIncomingRequestBody`, kind: 'calls' },
+      { from: `${deep(2)}#handle`, to: `${deep(0)}#serialiseOutgoingResponse`, kind: 'calls' },
+    ],
+  );
+  const split = [
+    category('Transport', [deep(0), deep(1), deep(2), deep(3)]),
+    category('Generated', [deep(4)]),
+  ];
+
+  const note = couplingNote(wide, deep(0), split);
+  assert.ok(note.length <= 400, `note was ${note.length} characters`);
+  assert.equal(
+    note,
+    `${deep(0)} is imported by 4 files. parseIncomingRequestBody and serialiseOutgoingResponse ` +
+      'are used from outside it. It is in the Transport category, and reaches into Generated.',
+  );
+});
+
 /**
  * `PostToolUse` arrives with a path Claude Code has already resolved, and the
  * server was started on whatever the shell said. On macOS every `/tmp` and
@@ -305,3 +481,118 @@ test('resolving the links does not widen the project past its own root', async (
     await rm(base, { recursive: true, force: true });
   }
 });
+
+/**
+ * The payload Claude Code 2.1.263 actually sends, as read out of the binary:
+ * the base envelope plus PostToolUse's own fields. Kept whole rather than
+ * trimmed to what `attributionOf` reads, because the point of these tests is
+ * that a real payload is recognised and a payload that is not one is not.
+ */
+const claudeCodePayload = {
+  session_id: '019R7fpd-phLD-4b6A-1Yr4-iR6c00000000',
+  transcript_path: '/Users/x/.claude/projects/-tmp-tasky/019R7fpd.jsonl',
+  cwd: '/tmp/tasky',
+  permission_mode: 'acceptEdits',
+  effort: 'high',
+  hook_event_name: 'PostToolUse',
+  tool_name: 'Edit',
+  tool_input: { file_path: '/tmp/tasky/tasky/models.py' },
+  tool_response: { filePath: '/tmp/tasky/tasky/models.py', success: true },
+  tool_use_id: 'toolu_01ABC',
+  duration_ms: 41,
+};
+
+test('a real Claude Code payload is recognised, and says what it was recognised by', () => {
+  assert.deepEqual(attributionOf(claudeCodePayload), {
+    agent: 'Claude Code',
+    how: 'recognised',
+    tool: 'Edit',
+    subagent: null,
+    session: '019R7fpd-phLD-4b6A-1Yr4-iR6c00000000',
+  });
+});
+
+test('a subagent inside the session is named, because the payload names it', () => {
+  // agent_type is a real field: Claude Code puts the subagent's type in it
+  // when a Task, not the main loop, made the edit.
+  assert.equal(
+    attributionOf({ ...claudeCodePayload, agent_type: 'code-reviewer' })?.subagent,
+    'code-reviewer',
+  );
+});
+
+test('a caller that names itself is taken at its word, and the word is marked as one', () => {
+  assert.deepEqual(attributionOf({ agent: 'Cursor', tool_input: { file_path: '/tmp/a.ts' } }), {
+    agent: 'Cursor',
+    how: 'declared',
+    tool: null,
+    subagent: null,
+    session: null,
+  });
+});
+
+test('a declared name wins over the envelope, so a wrapper is not reported as Claude Code', () => {
+  // The case this protects: something that forwards Claude Code's payload
+  // unchanged but is not Claude Code. It only has to add one field to say so.
+  const forwarded = { ...claudeCodePayload, agent: 'my-relay' };
+  assert.equal(attributionOf(forwarded)?.agent, 'my-relay');
+  assert.equal(attributionOf(forwarded)?.how, 'declared');
+});
+
+test('a payload that says nothing about itself attributes nothing', () => {
+  // The shape every caller before this change sent, and the shape a minimal
+  // third-party integration sends. Accepted as a change, named as nobody.
+  assert.equal(attributionOf({ tool_input: { file_path: '/tmp/tasky/tasky/models.py' } }), null);
+});
+
+test('half of Claude Code’s envelope is not Claude Code', () => {
+  // One field is a shape another tool could arrive at by accident, and the
+  // cost of getting this wrong is printing the wrong product's name over
+  // somebody's work. Both, or neither.
+  assert.equal(attributionOf({ hook_event_name: 'PostToolUse' }), null);
+  assert.equal(attributionOf({ session_id: 'abc' }), null);
+});
+
+test('a name that is not a name is not one', () => {
+  assert.equal(attributionOf({ agent: '   ' }), null);
+  assert.equal(attributionOf({ agent: 42 }), null);
+  assert.equal(attributionOf({ agent: { name: 'x' } }), null);
+  // Whitespace is trimmed rather than carried onto the page.
+  assert.equal(attributionOf({ agent: '  Aider  ' })?.agent, 'Aider');
+});
+
+test('a name is clipped to a name, not a paragraph', () => {
+  const shouting = 'x'.repeat(200);
+  assert.equal(attributionOf({ agent: shouting })?.agent.length, 40);
+});
+
+test('an empty envelope field is as absent as a missing one', () => {
+  // Claude Code always fills both, so this is a foreign caller sending the
+  // shape and not the substance.
+  assert.equal(attributionOf({ ...claudeCodePayload, session_id: '' }), null);
+  assert.equal(attributionOf({ ...claudeCodePayload, hook_event_name: '  ' }), null);
+});
+
+// Reported by the review: the hook said one category and the diagram drew
+// another. A found group and a hand-drawn one both held render.py, neither
+// nested in the other, and the hook's own tie-break took the smaller while
+// partitionByCategory takes the first listed. Two names for one file is the
+// one thing the hook must never do.
+test('the hook names the category the component diagram draws, not a closer-looking one', () => {
+  const graph = graphOf(
+    [
+      node('tasky/render.py', 'file', 'tasky/render.py'),
+      node('tasky/cli.py', 'file', 'tasky/cli.py'),
+      node('tasky/render.py#line', 'function', 'tasky/render.py'),
+    ],
+    [{ from: 'tasky/cli.py', to: 'tasky/render.py', kind: 'imports' }],
+  );
+  // The order /api/clusters answers in: found groups before hand-drawn ones.
+  const found = category('Task core', ['tasky/render.py', 'tasky/cli.py', 'tasky/models.py', 'tasky/storage.py', 'tasky/commands.py']);
+  const drawn = category('Rendering', ['tasky/render.py', 'tests/test_progress.py'], { origin: 'manual' });
+
+  const note = couplingNote(graph, 'tasky/render.py', [found, drawn]);
+  assert.match(note, /Task core/);
+  assert.doesNotMatch(note, /Rendering/);
+});
+

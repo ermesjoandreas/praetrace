@@ -118,6 +118,15 @@
       "relations": "sha256:8275fba71b4ababedd9f89cf6189454b074ce549a96cc435d0a875ac99316a50"
     },
     {
+      "id": "src/report/types.ts",
+      "kind": "file",
+      "short": "This file defines the shape of coverage data that test reports provide: file-level coverage counts and symbol-level coverage states. It exists to let other modules work with coverage information without importing the heavy machinery that reads reports off disk.",
+      "long": "The module lives separately from `project/coverage.ts` for the same reason `git/types.ts` lives apart from `project/git.ts`: it decouples the data shape from the code that loads it. View and server components import these types to pass coverage around without dragging in file-system dependencies. The original name `coverage/` made the module invisible to the static analyzer because codemap skips `coverage` directories (where actual test tools write their output), so it looked like nothing was using it. Renaming to `report/` fixed that invisibility. Anything displaying or storing coverage data depends on these types; without the separation, the entire coverage-reading layer would couple into every page that shows a coverage badge.",
+      "at": 1788879618527,
+      "fingerprint": "sha256:10cc67964d2af049e4d6634bfa30c66765ea4820c522a2308f00d85a84407708",
+      "relations": "sha256:1c215c939e14cd848c67f8ea45424e90fc540af4c4a79bf9677c14308dc6d6b8"
+    },
+    {
       "id": "src/server/app.ts#GroupAction",
       "kind": "symbol",
       "short": "This interface describes a grouped object or action that carries both metadata and visual properties like color, padding, and geometry.",

@@ -104,9 +104,13 @@ Each one is a different *kind* of mark, not just a different hue:
 | signal | mark | colour |
 |---|---|---|
 | picked (you clicked it) | 2px ring around the box | accent |
+| a box can be moved from here | `cursor: grab` on the title bar, `grabbing` while held | none |
+| a box can be made wider from here | a 1px line down the side edge, on hover | line, `#454545` |
 | focused (you navigated here) | the box border and title | strong white |
-| just written | border pulse, holds a tint | git modified, amber |
-| the agent asked about it | border pulse | info blue |
+| just written | the border and the title, for **two minutes**, weakening once after twenty seconds; a 1.1s×2 border pulse on top of it for the first two seconds, and none at all when more than eight boxes land at once | git modified, amber |
+| a box that was not here a moment ago | a `new` tag in the title, beside the git letter, for as long as the mark stands | git modified, amber |
+| the agent asked about it | the same, for one minute, weakening after ten seconds | info blue |
+| where the heat is, off screen | the minimap node in the mark's colour; a click on it centres the camera there at the zoom you were at | git modified / info blue |
 | git status | a letter badge in the title | the git colour |
 | language | the file icon before the name — the Material Icon Theme's, coloured, the one mark on the page that is not a Codicon; a folder box, which stands for a pile, keeps a small muted tag | the theme's own: the file type's meaning, not one of this app's |
 | frozen at a commit | a chip in the breadcrumb row, `Viewing 7fe7f88 · 2 days ago ✕` | badge grey, like the filter chips |
@@ -142,6 +146,19 @@ Blue is the agent's. Amber is the file system's. The accent is yours. Do not giv
 new signal one of those three hues — the frozen chip was blue for a day and shared
 the agent's colour with a state that has nothing to do with the agent.
 
+**A mark is measured against a person looking away, not against a frame.** It used
+to last 2 500 ms, and the report that came back was "nothing appeared live" — the
+socket was pushing correctly the whole time, and the mark was simply gone before
+anyone looked up from their terminal. So a mark lasts minutes and weakens in
+bands rather than fading continuously: a band is a fact a reader can name, it
+changes twice instead of sixty times a second, and the canvas is the one region
+on this page that is expensive to redraw. Where two marks meet, amber wins — the
+agent reading a file and the file changing are two facts, and the one that
+changed the code is the one worth finding. **Mark, do not move** still holds
+over all of it: a mark may be loud, the camera may not move on its own, and the
+one thing on the page that may move it is the minimap, because a click on it is
+a person asking.
+
 Group frames keep the eight colours a person chose for them, at a 6% fill and a 40%
 border. Those are the user's own meaning and are not subject to rule 4. Nor are
 the file icons: their colours are the file type's, and the icon theme's — see
@@ -161,10 +178,10 @@ the file icons: their colours are the file type's, and the icon theme's — see
 │ 300px    │           CANVAS  #1F1F1F            │ 330px         │
 │ chrome   │                                      │ chrome        │
 │ ▾ <repo> │                                      │  ▾ Following  │
-│ ▾ Source │                                      │  ▾ Detail     │
+│ ▾ Source │                                      │  ▾ Activity   │
 │   Control│                                      │               │
 │ ▾ Categories                                    │               │
-│ ▾ Activity                                      │               │
+│ ▾ Detail │                                      │               │
 ├──────────┴──────────────────────────────────────┴───────────────┤
 │ STATUS BAR 22px  ⎇ main ↑2 ↓0 · Changes [4]     55 boxes · TS 55 │ chrome
 └─────────────────────────────────────────────────────────────────┘
@@ -180,8 +197,13 @@ the file icons: their colours are the file type's, and the icon theme's — see
   edged by a 1px line, made of 22px sections with a chevron that really folds. The
   left bar is Repository (titled with the repository's own name), Source Control
   (Changes and Graph as nested 22px headers, indented 8px), Categories (the
-  groups, called categories on the page) and Activity. The side bar is Following
-  and Detail.
+  groups, called categories on the page) and Detail. The side bar is Following
+  and Activity.
+- **Left is what the project is; right is what is happening to it.** Everything
+  in the left column is something you go and open — the repository, its history,
+  its parts, and the box you clicked. Activity is the one you glance at, so it
+  stands in the right bar where the eye rests while an agent works. Detail and
+  Activity were the other way round until 2026-09-08, and this is the swap.
 - The status bar holds what the project *is*: branch, ahead/behind, the changed
   count, boxes and files, languages, the agent's connection. Every item is either
   information or runs something. The vocabulary is VS Code's — "Changes", "Diff
@@ -198,7 +220,7 @@ the file icons: their colours are the file type's, and the icon theme's — see
 ## Components
 
 **Section header** — 22px, a `codicon-chevron-down` that folds the section, the
-title in **title case** at 11px bold (`Following`, `Detail`, `Categories`, `Activity` —
+title in **title case** at 11px bold (`Following`, `Activity`, `Categories`, `Detail` —
 not uppercase; the user's VS Code does not uppercase them), and `.section-actions`
 at the right edge, hidden until hovered and not rendered while folded. Between the
 title and the actions sits `status`, always shown: a count, a short sha,
@@ -212,7 +234,16 @@ row is hovered. Git letters right-aligned in the git colour.
 38px, member rows 17px. Those two numbers are `HEADER_HEIGHT` and `ROW_HEIGHT` in
 `web/src/layout.ts`; dagre places every box from them and every group frame is drawn
 around where the boxes land. A pixel of change moves every frame. Member rows are
-UML compartments, not list rows — the 22px rule does not apply to them.
+UML compartments, not list rows — the 22px rule does not apply to them. The title
+bar is the handle the box is dragged by, `cursor: grab`, the way a window moves
+and the way a frame moves by its label; the buttons in it keep `cursor: pointer`
+and wear `nodrag`. The two side edges are its resize handles: a 5px strip to
+grab and a 1px line to see, in `--vsc-border-menu` — the colour the box's own
+border takes on hover — absent until the box is hovered or picked, and there
+are **no top or bottom handles**, because a box's height is what it holds and a
+handle that added empty space would make it claim symbols the file has not got.
+The same `line` variant the frames use, in the box's own colour rather than a
+category's: a box belongs to no category here, and the accent is spoken for.
 
 **Ghost** — a box, and nothing new: `.box-ghost` is the outside-the-scope
 box's dashed border at 50% opacity instead of 60%, the title struck through
@@ -300,6 +331,16 @@ HEAD says so), and author · age muted, cut from the front so the age survives. 
 selected row is the commit on screen — the list-selection fill only, no ring, so a
 keyboard user can tell it from the focused row. The column is as wide as the busiest
 row and scrolls sideways past the panel; a commit is never drawn without its dot.
+
+**Activity** — the timeline, in the right bar: one 22px row per thing that
+happened, newest first, as `when · mark · what · where · who · +/-`. The `who`
+column is drawn **only once something has claimed a change** — in a project
+where nothing does, it would be one word repeated eighty times — and from then
+on a change nobody claimed says `unknown` in the disabled colour and italic,
+beside the ones that are named. Never a blank, and never a guess: the file
+watcher cannot tell an agent from a build script from a person in an editor, and
+this app does not print a name it was not given. The cell's own title says how
+the name was known.
 
 **Repository panel** — three blocks, Project · Remote · Claude Code, each a list of
 22px label · value rows with a 76px muted label, the full value in the row's title,
@@ -432,6 +473,11 @@ The checklist a change to `web/` has to pass, with the page in front of you:
   five lane hexes (`ffb000`, `dc267f`, `994f00`, `40b0a6`, `b66dff`) are expected.
 - Every icon a Codicon that renders — no missing-glyph boxes — and every file
   icon a 16px `<img>` with a `data:` src, never a request for a `.svg`.
-- Section and row actions absent until hovered.
+- Section and row actions absent until hovered; a box's resize line absent until
+  the box is.
+- No resize handle on a box's top or bottom edge, and no stored height anywhere.
 - A group frame still hugs its members after any change near `layout.ts`.
+- A file written a minute ago still wears `.box-changed` — a mark that is gone
+  when you look back is the bug this page was reported for. Watch one land, do
+  something else for thirty seconds, and look again.
 - `document.body.scrollHeight === innerHeight`.

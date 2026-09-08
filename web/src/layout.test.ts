@@ -4,7 +4,8 @@ import { test } from 'node:test';
 // bundled by vite and never compiled into dist/, so there is no layout.js for
 // `node --test` to find. `allowImportingTsExtensions` in web/tsconfig.json is
 // what lets typecheck accept it. `npm test` runs it beside the dist/ tests.
-import { componentHeight, GRID, keepLayout, layoutNodes, NODE_WIDTH, type Rect } from './layout.ts';
+import { componentHeight, GRID, frameClusters, keepLayout, layoutNodes, NODE_WIDTH, type Rect } from './layout.ts';
+import { applyPlacements } from './placement.ts';
 
 const box = (id: string, height = 80) => ({ id, width: NODE_WIDTH, height });
 const at = (x: number, y: number, height = 80): Rect => ({ x, y, width: NODE_WIDTH, height });
@@ -118,6 +119,65 @@ test('a box that grew pushes the column under it down by the growth, and a fold 
   const after = new Map(grown.map((node) => [node.id, { ...node.position, width: NODE_WIDTH, height: node.height }]));
   const folded = keepLayout(after, [box('a'), box('b'), box('c')], links);
   assert.deepEqual(positionsOf(folded).get('b'), { x: 40, y: 146 });
+});
+
+/**
+ * The three tests below are the seam between `keepLayout` and a hand placement.
+ * The rule they pin is the one App's layout memo has to keep: placements go on
+ * *after* the layout and are recorded *into* the cache, so the next save reads
+ * where the boxes actually are rather than where the layout thought they were.
+ */
+test('a hand placement wins over the growth push, so a placed box does not move when its neighbour grows', () => {
+  // c sits under a in the same column. a grows by 40, which normally pushes c
+  // down by 40 — but c was put where it is by hand.
+  const column = new Map<string, Rect>([
+    ['a', at(40, 40)],
+    ['c', at(40, 160)],
+  ]);
+  const kept = keepLayout(column, [box('a', 120), box('c')], []);
+  assert.deepEqual(positionsOf(kept).get('c'), { x: 40, y: 200 }, 'the growth push did not run');
+
+  const placements = new Map([['c', { x: 40, y: 160 }]]);
+  const applied = applyPlacements(kept, placements);
+  assert.deepEqual(positionsOf(applied).get('c'), { x: 40, y: 160 }, 'the placement lost to the push');
+});
+
+test('a new box lands beside where a placed box actually is, not where the layout put it', () => {
+  const placements = new Map([['c', { x: 1200, y: 600 }]]);
+  const applied = applyPlacements(keepLayout(diagram, [box('a'), box('b'), box('c')], links), placements);
+  // What App records: the applied positions, which is the whole point.
+  const rects = new Map<string, Rect>(
+    applied.map((node) => [
+      node.id,
+      { x: node.position.x, y: node.position.y, width: node.width ?? NODE_WIDTH, height: node.height ?? 80 },
+    ]),
+  );
+
+  const next = keepLayout(rects, [box('a'), box('b'), box('c'), box('d')], [
+    ...links,
+    { from: 'd', to: 'c', weight: 5 },
+  ]);
+  const d = positionsOf(next).get('d');
+  assert.ok(d !== undefined);
+  assert.ok(d.x >= 1200 + NODE_WIDTH, 'd was placed beside where the layout thought c was');
+  assert.equal(d.y, 600, "d did not take the placed box's row");
+});
+
+test('a frame re-hugs a member that was placed, and a placed box carries its width into the frame', () => {
+  const cluster = [{ id: 'g', files: ['a', 'b'], cohesion: 1, depth: 0, parent: null }];
+  // `frameClusters` reads React Flow nodes, which carry data; `keepLayout` and
+  // `applyPlacements` do not care, so the boxes here are given the one field.
+  const node = (id: string) => ({ ...box(id), data: {} });
+  const laid = keepLayout(diagram, [node('a'), node('b'), node('c')], links);
+  const before = frameClusters(laid, cluster)[0];
+  assert.ok(before !== undefined);
+
+  const applied = applyPlacements(laid, new Map([['b', { x: 900, y: 800, width: 480 }]]));
+  const after = frameClusters(applied, cluster)[0];
+  assert.ok(after !== undefined);
+  assert.ok(after.width > before.width && after.height > before.height, 'the frame did not follow its member');
+  // The far edge is the placed box's own, at the width it was pulled to.
+  assert.ok(after.x + after.width >= 900 + 480, 'the frame cropped the widened box');
 });
 
 test('a box that left is simply gone; nothing else moves', () => {

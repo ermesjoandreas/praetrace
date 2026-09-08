@@ -1,5 +1,12 @@
 import { useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { money } from './api';
+// The extension is load-bearing, and is the one import on this page that
+// carries one. macOS's filesystem does not tell `Ask.tsx` from `ask.ts`, so a
+// bare `./Ask` resolves to the pure module beside the component and the error
+// is about casing rather than about the export that is missing. Every other
+// component/pure-module pair here is named apart — ListView/listrows,
+// Overview/frontpage, Sash/panes — and this one is not, so it says so.
+import { Ask } from './Ask.tsx';
 import { fileIconFor } from './fileicons';
 import { LIST_ROW, useListKeys } from './listkeys';
 import { Section } from './Section';
@@ -733,6 +740,15 @@ export function Categories({
           </ul>
         </div>
       )}
+
+      {/* Under the categories, because that is what it is about. It reads them
+          and nothing else — decision 5 is untouched: it cannot name one, and
+          it cannot decide who belongs. The count is what it is told: the
+          server refuses a project with no categories rather than spending
+          money to say so, and the box says the same thing here without the
+          press. Rejected ones are not offered, for the same reason they are
+          not drawn. */}
+      <Ask categories={live.length} />
     </Section>
   );
 }

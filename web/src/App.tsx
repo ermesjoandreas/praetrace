@@ -85,7 +85,7 @@ import { GIT_BASES, StatusBar } from './StatusBar';
 import { ProjectMenu } from './ProjectMenu';
 import { Welcome } from './Welcome';
 import { SearchPalette } from './SearchPalette';
-import { Sidebar, symbolKey, type ComponentLink, type ComponentSelection } from './Sidebar';
+import { DetailPanel, Sidebar, symbolKey, type ComponentLink, type ComponentSelection } from './Sidebar';
 import { Categories, type GroupEditor } from './Categories';
 import { BoxNode, type BoxNodeType } from './BoxNode';
 import { RelationEdge, type RelationData } from './RelationEdge';
@@ -122,6 +122,23 @@ import {
   type Viewport,
 } from './panes';
 import {
+  ASKED,
+  PULSE_MAX,
+  WRITTEN,
+  addMarks,
+  bandOf,
+  liveMarks,
+  nextChange,
+  shownMarks,
+  type Band,
+  type Mark,
+  type Shown,
+} from './marks';
+/* A type-only import of `src/project/`, erased by Vite the way `api.ts`'s own
+   are: none of that module's `node:fs` reaches the bundle. The wire shape is
+   imported rather than restated so the page cannot drift from the server. */
+import type { Attribution } from '../../src/project/hook.js';
+import {
   frameClusters,
   keepLayout,
   MAX_MEMBERS,
@@ -132,6 +149,16 @@ import {
   type ClusterBounds,
   type Rect,
 } from './layout';
+import {
+  applyPlacements,
+  dropBox,
+  dropView,
+  loadPlacements,
+  placeBox,
+  viewKeyOf,
+  type Placement,
+  type Placements,
+} from './placement';
 import { matchedAt } from './commands';
 import { CommandPalette } from './CommandPalette';
 import { FindBar } from './FindBar';
@@ -260,7 +287,27 @@ function withMeasured(node: FlowNode): FlowNode {
 }
 
 const MAX_DEPTH = 4;
+/**
+ * How long the attention pulse runs — the animation, not the mark.
+ *
+ * This used to be the whole life of both signals, and that was the reported
+ * bug: a mark that is gone in two and a half seconds is gone before a person
+ * looks up from their terminal. The pulse is for the reader who is watching
+ * right now and stays short; how long the *mark* stands is `marks.ts`.
+ */
 const PULSE_MS = 2500;
+
+/**
+ * When a mark says it landed. A wall clock and not an age, because an age is
+ * true only for the second it was rendered — see `describeMark`. Seconds are
+ * in it: two files written eight seconds apart is exactly the distinction a
+ * person coming back is trying to make.
+ */
+const MARK_CLOCK = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
 /**
  * The edge kinds a URL asks for. Structure is always drawn; calls,
  * associations and dependencies are opted into, and each is spelled out in
@@ -363,6 +410,13 @@ interface LiveMessage {
   root: string;
   view: ViewGraph;
   changedFiles: string[];
+  /**
+   * Who claimed each of those files, for the files anybody claimed. Absent
+   * whole when nobody did, and a path missing from it was written by nobody we
+   * can name — the watcher sees a file change and cannot tell an agent from a
+   * build script from a person in an editor. See `src/project/hook.ts`.
+   */
+  by?: Record<string, Attribution>;
 }
 
 /**
@@ -374,6 +428,7 @@ interface ChangedMessage {
   type: 'changed';
   root: string;
   changedFiles: string[];
+  by?: Record<string, Attribution>;
 }
 
 export function App() {
@@ -400,8 +455,25 @@ export function App() {
   const [live, setLive] = useState(false);
   /** Bumped to refetch the current view without changing the URL. */
   const [reloadToken, setReloadToken] = useState(0);
+  /**
+   * Every file written recently enough to still be marked on the diagram, with
+   * when, whether it is new here, and who claimed it. Two minutes each — see
+   * `marks.ts` for why that number and not the two and a half seconds this
+   * used to be.
+   */
+  const [marks, setMarks] = useState<ReadonlyMap<string, Mark>>(() => new Map());
+  /**
+   * The clock the marks are read against.
+   *
+   * State and not `Date.now()` at render, because a mark weakening and a mark
+   * going out are the two moments the diagram has to be redrawn at and nothing
+   * else moves in between. A periodic tick would do it too, and would re-render
+   * the canvas once a second for two minutes after every save; this moves
+   * exactly twice per mark. `marks.ts` works out when.
+   */
+  const [markNow, setMarkNow] = useState(() => Date.now());
   /** Files touched by the most recent batch, for the pulse. */
-  const [pulsing, setPulsing] = useState<string[]>([]);
+  const [pulsing, setPulsing] = useState<readonly string[]>([]);
   /** Changes that landed outside the current view and have not been looked at. */
   const [missed, setMissed] = useState<string[]>([]);
   /** The box being inspected. Selecting is not navigating. */
@@ -655,8 +727,14 @@ export function App() {
   const [agentCalls, setAgentCalls] = useState<AgentCall[]>([]);
   /** What the tool cannot read here. Null until the census has come back. */
   const [languageReport, setLanguageReport] = useState<LanguageReport | null>(null);
-  /** Files the agent asked about just now, for a pulse of their own. */
-  const [agentLooking, setAgentLooking] = useState<string[]>([]);
+  /**
+   * Files the agent asked codemaps about, and when — the second signal, in
+   * blue. A minute each rather than the write's two: a question is attention,
+   * and attention has moved on by then. See `ASKED` in `marks.ts`.
+   */
+  const [agentAsked, setAgentAsked] = useState<ReadonlyMap<string, number>>(() => new Map());
+  /** The one it asked about just now, for the pulse. */
+  const [agentLooking, setAgentLooking] = useState<readonly string[]>([]);
   const flow = useReactFlow();
   const [clusters, setClusters] = useState<GroupSuggestion[]>([]);
   /**
@@ -842,6 +920,29 @@ export function App() {
         scheduleRetry();
       };
 
+      /**
+       * One batch of writes, on the diagram. Every file gets a mark that
+       * outlasts a glance; the same files get the short attention pulse, for
+       * the reader who is watching right now. `born` is the files this view
+       * had no box for a moment ago, which is the only honest way the page can
+       * know that a file is new — the graph does not carry it.
+       */
+      const landed = (
+        files: readonly string[],
+        born: ReadonlySet<string>,
+        by: Record<string, Attribution> | undefined,
+      ) => {
+        if (files.length === 0) return;
+        const now = Date.now();
+        setMarks((was) => addMarks(was, files, now, born, by));
+        // The clock the bands are read against moves with the batch. Without
+        // this it stayed at whatever it was when the last one expired, and
+        // every mark read as fresh for as long as it stood.
+        setMarkNow(now);
+        setPulsing(files);
+      };
+      const NOTHING_NEW: ReadonlySet<string> = new Set();
+
       socket.onmessage = (event: MessageEvent<string>) => {
         const parsed = JSON.parse(event.data) as
           | LiveMessage
@@ -877,7 +978,12 @@ export function App() {
           // the name is written; the `groups` message above is the one that
           // arrives after, so nothing is refetched here.
           // A path target is a box on screen; a search term is not.
-          if (parsed.call.target?.includes('/')) setAgentLooking([parsed.call.target]);
+          const about = parsed.call.target;
+          if (about !== null && about !== undefined && about.includes('/')) {
+            setAgentLooking([about]);
+            setAgentAsked((was) => new Map(was).set(about, parsed.call.at));
+            setMarkNow(Date.now());
+          }
           return;
         }
 
@@ -889,6 +995,11 @@ export function App() {
           setSearch('');
           setMissed([]);
           setPulsing([]);
+          // A path from the project just left names nothing here, and a mark
+          // standing over a box of the same name in another repository would
+          // be a lie about work that never happened.
+          setMarks(new Map());
+          setAgentAsked(new Map());
           coveredRef.current = new Set(message.view.nodes.flatMap((node) => node.files));
           specRef.current = JSON.stringify(message.view.spec);
           setData({ root: message.root, view: message.view });
@@ -915,9 +1026,11 @@ export function App() {
           if (frozenRef.current) return;
           // The working tree changed under a structural diff, and the hub —
           // which holds one graph — drew nothing: the diff is fetched again
-          // from the route that resolves both ends. The pulse is kept,
-          // because the files it names did change.
-          setPulsing(message.changedFiles);
+          // from the route that resolves both ends. The marks are kept,
+          // because the files they name did change. Nothing here can say
+          // which of them is new — the diff's own A letter says that, and it
+          // is the better answer while a diff is on.
+          landed(message.changedFiles, NOTHING_NEW, message.by);
           setReloadToken((token) => token + 1);
           return;
         }
@@ -928,9 +1041,9 @@ export function App() {
         // An `update` under a diff is the hub's lag: the push was computed for
         // the spec this socket held before the diff was turned on, and its
         // view is the ordinary slice with no `diff` in its echo. The same
-        // answer as to `changed` — the diff route draws it, the pulse stays.
+        // answer as to `changed` — the diff route draws it, the marks stay.
         if (diffRef.current) {
-          setPulsing(message.changedFiles);
+          landed(message.changedFiles, NOTHING_NEW, message.by);
           setReloadToken((token) => token + 1);
           return;
         }
@@ -941,6 +1054,11 @@ export function App() {
         // and a refetch takes its place rather than losing the update.
         const incoming = JSON.stringify(message.view.spec);
         if (specRef.current !== null && incoming !== specRef.current) {
+          // The view this frame describes is not the one on screen, so its
+          // node list cannot say what is new here — but the files did change,
+          // and a mark dropped because a navigation was in flight is exactly
+          // the change a person comes back and cannot find.
+          landed(message.changedFiles, NOTHING_NEW, message.by);
           setReloadToken((token) => token + 1);
           return;
         }
@@ -953,7 +1071,15 @@ export function App() {
         coveredRef.current = after;
 
         setData((current) => (current ? { ...current, view: message.view } : current));
-        setPulsing(message.changedFiles);
+        // A file the diagram now has a box for and had none for a moment ago
+        // is new here, and says so on the box. Nothing else on the client can
+        // tell an added file from an edited one: the graph carries no birthday
+        // and git's A is against a base, not against a minute ago.
+        landed(
+          message.changedFiles,
+          new Set(message.changedFiles.filter((file) => after.has(file) && !before.has(file))),
+          message.by,
+        );
         setRevision((n) => n + 1);
         if (outside.length > 0) {
           setMissed((previous) => [...new Set([...previous, ...outside])]);
@@ -1405,6 +1531,33 @@ export function App() {
   // 'branch', which says nothing to anybody, so it stays in the tooltip.
   const baseLabel = GIT_BASES.find((base) => base.value === git?.requested)?.label ?? git?.base ?? '';
   const viewKey = view ? JSON.stringify(view.spec) : 'loading';
+
+  /**
+   * Boxes a person put somewhere, for the view on screen.
+   *
+   * The arithmetic is all in `web/src/placement.ts`, including which view a
+   * placement belongs to and why a list gets no key at all — this is the
+   * wiring. Two things about it are load-bearing here:
+   *
+   * The key is built from the **echoed** spec and the server's presentation,
+   * never from the URL: the server clears scope and focus under
+   * `?diagram=components` and drops scope, focus and category under `?diff=`,
+   * and a key that did not see what was actually drawn would put one view's
+   * boxes on another's. No project root is no key either — a placement is
+   * stored under the project it belongs to or not at all.
+   *
+   * Held in state as well as in storage because a resize is a hundred frames
+   * and the canvas is controlled: React Flow reports a size and applies
+   * nothing, so the map on screen is written on every frame and the browser is
+   * written once, when the edge is let go.
+   */
+  const placementRoot = data?.root ?? '';
+  const placementKey =
+    view === undefined || placementRoot === '' ? null : viewKeyOf(view.spec, view.presentation);
+  const [placements, setPlacements] = useState<Placements>(() => new Map());
+  useEffect(() => {
+    setPlacements(loadPlacements(placementRoot, placementKey));
+  }, [placementRoot, placementKey]);
   /**
    * Whether saying what a box is written in adds anything. In a project of one
    * language the same tag on every box is noise the header already covers, so
@@ -2121,6 +2274,42 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [agentLooking]);
 
+  useEffect(() => {
+    // `Date.now()` and not `markNow`: the render clock is where the bands are
+    // read, and the wait has to be measured from the real one or a mark that
+    // landed after the last tick is timed from before it existed.
+    const wait = nextChange(marks, Date.now(), WRITTEN);
+    if (wait === null) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      setMarks((was) => liveMarks(was, now, WRITTEN));
+      setMarkNow(now);
+      // A floor, so a `wait` of 0 — a mark already past its moment when the
+      // effect ran — cannot spin the timer inside one frame.
+    }, Math.max(wait, 16));
+    return () => window.clearTimeout(timer);
+  }, [marks, markNow]);
+
+  useEffect(() => {
+    const wait = nextChange(
+      // `agentAsked` holds a time and no more; the shape `nextChange` reads
+      // wants a mark, and the band is all either of them is asked for.
+      new Map([...agentAsked].map(([file, at]) => [file, { at, born: false, by: null }])),
+      Date.now(),
+      ASKED,
+    );
+    if (wait === null) return;
+    const timer = window.setTimeout(() => {
+      const now = Date.now();
+      setAgentAsked((was) => {
+        const next = new Map([...was].filter(([, at]) => now - at < ASKED.gone));
+        return next.size === was.size ? was : next;
+      });
+      setMarkNow(now);
+    }, Math.max(wait, 16));
+    return () => window.clearTimeout(timer);
+  }, [agentAsked, markNow]);
+
   // The log is fetched once per project; the socket keeps it current after that.
   useEffect(() => {
     let cancelled = false;
@@ -2136,43 +2325,217 @@ export function App() {
   }, [data?.root]);
 
   /**
-   * A frame that was dragged keeps where it was put. Only frames are draggable,
-   * so anything arriving here is a deliberate placement — and a placement is a
-   * lock, or the next relayout would quietly undo it.
+   * Where a drag put things, once it is let go — a frame, a box, or the
+   * several boxes a multi-selection drags at once.
+   *
+   * A **frame** keeps where it was put by being locked, because a frame that
+   * is not locked is recomputed around its members on the next edit and the
+   * drag would be undone. A **box** keeps where it was put by being stored:
+   * `placeBox` hands back the view's placements at once, and the layout memo
+   * lays them over whatever dagre or `keepLayout` computed. No holding map
+   * like the frames' `dragged` is needed for a box — there is no round trip to
+   * the server to wait out.
+   *
+   * `moved` and not just `node`: React Flow drags every selected node when one
+   * of them is grabbed, which is the gesture people expect and is also how
+   * several boxes get arranged at once. It does not fight the category
+   * gesture — the selection is what both read, and a drag changes it exactly
+   * as a click does.
    */
-  const handleFrameDragStop = useCallback(
-    (_: unknown, node: { id: string; position: { x: number; y: number }; width?: number | null; height?: number | null }) => {
-      if (!node.id.startsWith('group:')) return;
-      const group = clusters.find((candidate) => `group:${candidate.id}` === node.id);
-      if (!group || node.width == null || node.height == null) return;
-      editGroup({
-        action: 'update',
-        id: group.storedId ?? group.id,
-        geometry: { x: node.position.x, y: node.position.y, width: node.width, height: node.height },
-        locked: true,
+  const handleNodeDragStop = useCallback(
+    (
+      _: unknown,
+      node: { id: string; position: { x: number; y: number }; width?: number | null; height?: number | null },
+      moved: readonly { id: string; position: { x: number; y: number } }[],
+    ) => {
+      if (node.id.startsWith('group:')) {
+        const group = clusters.find((candidate) => `group:${candidate.id}` === node.id);
+        if (!group || node.width == null || node.height == null) return;
+        editGroup({
+          action: 'update',
+          id: group.storedId ?? group.id,
+          geometry: { x: node.position.x, y: node.position.y, width: node.width, height: node.height },
+          locked: true,
+        });
+        return;
+      }
+      let next = placements;
+      for (const box of moved) {
+        if (box.id.startsWith('group:')) continue;
+        // A click is a drag of no distance. d3 fires its start and its end for
+        // a press that never moved — `nodeClickDistance` suppresses the click
+        // event, not the drag — so without this every box somebody clicked to
+        // inspect was pinned where it already stood. Measured: five boxes in
+        // the store after five clicks, and Re-layout offering to drop them.
+        // `rects` is where each box is actually drawn, which is the thing the
+        // drag is being compared with.
+        const drawn = layoutRef.current.rects.get(box.id);
+        if (
+          drawn !== undefined &&
+          Math.round(box.position.x) === Math.round(drawn.x) &&
+          Math.round(box.position.y) === Math.round(drawn.y)
+        ) {
+          continue;
+        }
+        // A drag changes where the box is and nothing else, so a width somebody
+        // pulled earlier is carried over rather than dropped or re-measured.
+        const held = placements.get(box.id);
+        next = placeBox(placementRoot, placementKey, box.id, {
+          x: box.position.x,
+          y: box.position.y,
+          ...(held?.width === undefined ? {} : { width: held.width }),
+        });
+      }
+      if (next !== placements) setPlacements(next);
+      // The gesture is over, so the stored placement is the answer and the live
+      // one has nothing left to say. Cleared per id rather than wholesale: a
+      // frame's entry is dropped when groups.json agrees, on its own schedule.
+      setDragged((was) => {
+        if (was.size === 0) return was;
+        const rest = new Map(was);
+        for (const box of moved) rest.delete(box.id);
+        return rest.size === was.size ? was : rest;
       });
     },
-    [clusters, editGroup],
+    [clusters, editGroup, placements, placementRoot, placementKey],
   );
 
-  const queriedBoxIds = useMemo(() => {
-    if (!view || agentLooking.length === 0) return new Set<string>();
-    const asked = new Set(agentLooking);
-    return new Set(
-      view.nodes.filter((node) => node.files.some((file) => asked.has(file))).map((n) => n.id),
-    );
-  }, [view, agentLooking]);
+  /**
+   * A box being pulled wider, and then let go.
+   *
+   * Live while it is being pulled, because the canvas is controlled: React
+   * Flow works out the new width, reports it and applies nothing, so a box
+   * that only heard about the end would sit still under the pointer and then
+   * jump. The live half writes the map only; the browser is written once,
+   * when `done` says the edge was let go.
+   *
+   * A resize pins the position too, and honestly so: there is one record per
+   * box, and the left edge moves the box while it sizes it. "You sized it
+   * there" is what the record says, and Re-layout drops both together.
+   */
+  const resizeBox = useCallback(
+    (id: string, box: Placement, done: boolean) => {
+      if (!done) {
+        setPlacements((was) => new Map(was).set(id, box));
+        return;
+      }
+      setPlacements(placeBox(placementRoot, placementKey, id, box));
+    },
+    [placementRoot, placementKey],
+  );
 
-  const changedBoxIds = useMemo(() => {
+  /**
+   * One box put back where the layout wants it.
+   *
+   * The stored placement goes, and so does the box's rectangle in the layout
+   * cache — or `keepLayout`, whose whole job is to hand every box back the
+   * position it had, would hand back the hand-placed one it has been
+   * preserving and nothing would move. Forgotten, the box is one that has just
+   * arrived, and `keepLayout` places an arriving box beside the box it is most
+   * connected to. That is the layout's own answer for where a box goes, which
+   * is the most this can honestly mean short of re-laying out the whole view —
+   * and that is the other item.
+   */
+  /**
+   * The box the last "Put this box back" moved, until the camera has been told
+   * about it. The effect that reads it sits under the layout memo, because it
+   * needs the positions that memo works out.
+   */
+  const [putBack, setPutBack] = useState<string | null>(null);
+  const unplaceBox = useCallback(
+    (id: string) => {
+      layoutRef.current.rects.delete(id);
+      setPlacements(dropBox(placementRoot, placementKey, id));
+      setPutBack(id);
+    },
+    [placementRoot, placementKey],
+  );
+
+  /**
+   * The marks as the things that draw them want them: a band, whether the file
+   * is new here, and the sentence to say when hovered. Keyed by file, because
+   * that is what the front page's rows are.
+   */
+  const markedFiles = useMemo(() => shownMarks(marks, markNow, MARK_CLOCK), [marks, markNow]);
+
+  /** The second signal, by file: how lately the agent asked about it. */
+  const askedFiles = useMemo(() => {
+    const bands = new Map<string, Band>();
+    for (const [file, at] of agentAsked) {
+      const band = bandOf(at, markNow, ASKED);
+      if (band !== null) bands.set(file, band);
+    }
+    return bands;
+  }, [agentAsked, markNow]);
+
+  /**
+   * The same two, by box. A box standing for a directory holds many files, and
+   * takes the strongest mark among them: a folder with one file written this
+   * second and eleven written a minute ago is somewhere something is happening
+   * now, and saying "a minute ago" over it would send the reader elsewhere.
+   */
+  const markedBoxes = useMemo(() => {
+    if (!view || markedFiles.size === 0) return new Map<string, Shown>();
+    const boxes = new Map<string, Shown>();
+    for (const node of view.nodes) {
+      let best: Shown | null = null;
+      for (const file of node.files) {
+        const shown = markedFiles.get(file);
+        if (shown === undefined) continue;
+        if (best === null || (best.band === 'cooled' && shown.band === 'fresh')) best = shown;
+        if (shown.born) best = { ...best, born: true };
+      }
+      if (best !== null) boxes.set(node.id, best);
+    }
+    return boxes;
+  }, [view, markedFiles]);
+
+  const askedBoxes = useMemo(() => {
+    if (!view || askedFiles.size === 0) return new Map<string, Band>();
+    const boxes = new Map<string, Band>();
+    for (const node of view.nodes) {
+      for (const file of node.files) {
+        const band = askedFiles.get(file);
+        if (band === undefined) continue;
+        if (band === 'fresh' || !boxes.has(node.id)) boxes.set(node.id, band);
+      }
+    }
+    return boxes;
+  }, [view, askedFiles]);
+
+  /**
+   * Which boxes actually animate.
+   *
+   * The pulse is for the person watching right now, and no eye follows forty
+   * things at once: past `PULSE_MAX` the batch is marked and not announced —
+   * the amber is a heat map and reads fine at any size, and the count of what
+   * arrived is Activity's job, which is a list and can hold forty rows. A
+   * `git checkout` or a codemod is the case this is for.
+   */
+  const pulsingBoxIds = useMemo(() => {
     if (!view || pulsing.length === 0) return new Set<string>();
     const touched = new Set(pulsing);
-    return new Set(
+    const ids = new Set(
       view.nodes.filter((node) => node.files.some((file) => touched.has(file))).map((n) => n.id),
     );
+    return ids.size > PULSE_MAX ? new Set<string>() : ids;
   }, [view, pulsing]);
 
-  /** The same two pulses as files, for the front page, whose rows are files and not boxes. */
-  const pulsingFiles = useMemo(() => new Set(pulsing), [pulsing]);
+  /** The agent's question, announced the same way and under the same cap. */
+  const askPulsingBoxIds = useMemo(() => {
+    if (!view || agentLooking.length === 0) return new Set<string>();
+    const looking = new Set(agentLooking);
+    const ids = new Set(
+      view.nodes.filter((node) => node.files.some((file) => looking.has(file))).map((n) => n.id),
+    );
+    return ids.size > PULSE_MAX ? new Set<string>() : ids;
+  }, [view, agentLooking]);
+
+  /** The same rule for the front page, whose rows are files and not boxes. */
+  const pulsingFiles = useMemo(
+    () => (pulsing.length > PULSE_MAX ? new Set<string>() : new Set(pulsing)),
+    [pulsing],
+  );
   const queriedFiles = useMemo(() => new Set(agentLooking), [agentLooking]);
 
   /**
@@ -2283,6 +2646,11 @@ export function App() {
     const boxes: BoxNodeType[] = view.nodes.filter(isClassBox).map((node) => ({
       id: node.id,
       type: 'box',
+      // Grabbed by its title bar, the way a window moves and the way a frame
+      // moves by its label. Not the whole box: every member row is a control
+      // already — a click follows the symbol, a double-click opens the editor
+      // — and a drag beginning on one would fight the press.
+      dragHandle: '.box-title',
       position: { x: 0, y: 0 },
       width: NODE_WIDTH,
       // A bundle stands for a pile of files and draws a count, exactly as a
@@ -2303,8 +2671,10 @@ export function App() {
         files: node.files,
         external: node.external,
         focused: node.focused,
-        changed: changedBoxIds.has(node.id),
-        queried: queriedBoxIds.has(node.id),
+        mark: markedBoxes.get(node.id) ?? null,
+        asked: askedBoxes.get(node.id) ?? null,
+        pulsing: pulsingBoxIds.has(node.id),
+        pulsingAsk: askPulsingBoxIds.has(node.id),
         gitStatus: node.gitStatus,
         gitChanged: node.gitChanged,
         // Under a diff: what happened to this file, and what the diff is
@@ -2335,6 +2705,7 @@ export function App() {
         followed: node.kind === 'file' && reading.has(node.files[0] ?? ''),
         onFollowFile: toggleReading,
         onExplain: explainFile,
+        onResize: (box: Placement, done: boolean) => resizeBox(node.id, box, done),
         expanded: expanded.has(node.id),
         onExpand: toggleExpanded,
         aside: dimming && !lit(node.id),
@@ -2367,6 +2738,7 @@ export function App() {
         {
           id: node.id,
           type: 'component',
+          dragHandle: '.box-title',
           position: { x: 0, y: 0 },
           width: NODE_WIDTH,
           height: componentHeight(symbols.length, total > symbols.length),
@@ -2377,8 +2749,12 @@ export function App() {
             facts: node.component,
             files: node.files,
             color,
-            changed: changedBoxIds.has(node.id),
-            queried: queriedBoxIds.has(node.id),
+            // A component box carries the two signals as booleans, which is
+            // all `ComponentNode` reads: the amber and the blue stand for the
+            // whole window, and the band, the `new` tag and the pulse are a
+            // file box's, where they have a file to be about.
+            changed: markedBoxes.has(node.id),
+            queried: askedBoxes.has(node.id),
             gitChanged: node.gitChanged,
             language: node.language,
             showLanguage: mixedProject,
@@ -2390,6 +2766,7 @@ export function App() {
             following,
             related: relatedIds,
             onFollow: toggleFollowing,
+            onResize: (box: Placement, done: boolean) => resizeBox(node.id, box, done),
           },
         },
       ];
@@ -2451,33 +2828,60 @@ export function App() {
     // A box came or went, or grew: the ones that were there keep their place,
     // the new one goes beside its most connected neighbour, and the frames
     // are redrawn around where everything now is.
+    // A width somebody pulled goes in before the layout, not after: dagre
+    // places from the sizes it is given, `keepLayout` measures the gap a new
+    // box has to fit in, and a frame is drawn around the box's real edges. A
+    // position set here is overwritten by both and re-applied below.
+    const sized = applyPlacements(placed, placements);
+
     const laid = fresh
-      ? layoutNodes(placed, builtEdges, frameable, canvasRef.current?.clientHeight ?? 0)
+      ? layoutNodes(sized, builtEdges, frameable, canvasRef.current?.clientHeight ?? 0)
       : sameShape
-        ? { nodes: keepLayout(previous.rects, placed, []), clusters: previous.clusters }
+        ? { nodes: keepLayout(previous.rects, sized, []), clusters: previous.clusters }
         : (() => {
-            const kept = keepLayout(previous.rects, placed, view.edges);
+            const kept = keepLayout(previous.rects, sized, view.edges);
             return { nodes: kept, clusters: frameClusters(kept, frameable) };
           })();
 
+    // Mark, do not move — the promise made to a person rather than to dagre.
+    // A hand placement wins over everything computed, the growth push a box
+    // that expanded gives the column under it included: a box somebody put
+    // somewhere does not move because its neighbour grew into it.
+    // The stored arrangement first, then wherever a pointer is holding a box
+    // right now. `dragged` is emptied when the gesture ends, so this is the
+    // live half of a placement and never outlives one.
+    const positioned = applyPlacements(laid.nodes, placements).map((box) => {
+      const held = dragged.get(box.id);
+      return held === undefined ? box : { ...box, position: held };
+    });
+    // And the frames are drawn around where the boxes ended up, or a member
+    // dragged out of its frame would leave the frame behind. A locked frame is
+    // a placement of its own and still wins, inside `frameClusters`.
+    const framed = placements.size === 0 ? laid.clusters : frameClusters(positioned, frameable);
+    const laidOut = { nodes: positioned, clusters: framed };
+
     layoutRef.current = {
+      // The applied positions and the applied widths, not the computed ones:
+      // `keepLayout` reads this to put the next new box beside its neighbour
+      // and to push the column under a box that grew, and both have to be told
+      // where the boxes actually are.
       rects: new Map(
-        laid.nodes.map((box) => [
+        laidOut.nodes.map((box) => [
           box.id,
           { x: box.position.x, y: box.position.y, width: box.width ?? NODE_WIDTH, height: box.height ?? 0 },
         ]),
       ),
-      clusters: laid.clusters,
+      clusters: laidOut.clusters,
       clusterKey: shapeKey,
       layoutKey,
     };
 
     const byId = new Map(shown.map((group) => [group.id, group]));
     /** Where every box actually landed, for asking what a locked frame missed. */
-    const landed = new Map(laid.nodes.map((box) => [box.id, box]));
-    laid.clusters.sort((a, b) => a.depth - b.depth);
+    const landed = new Map(laidOut.nodes.map((box) => [box.id, box]));
+    laidOut.clusters.sort((a, b) => a.depth - b.depth);
     // Frames first, so they render behind the boxes they enclose.
-    const frames: GroupNodeType[] = laid.clusters.flatMap((bounds) => {
+    const frames: GroupNodeType[] = laidOut.clusters.flatMap((bounds) => {
       const group = byId.get(bounds.id);
       if (!group) return [];
       return [
@@ -2554,14 +2958,16 @@ export function App() {
     });
 
     return {
-      nodes: ([...frames, ...laid.nodes] as FlowNode[]).map(withMeasured),
+      nodes: ([...frames, ...laidOut.nodes] as FlowNode[]).map(withMeasured),
       edges: builtEdges,
     };
   }, [
     view,
     boxIndex,
-    changedBoxIds,
-    queriedBoxIds,
+    markedBoxes,
+    askedBoxes,
+    pulsingBoxIds,
+    askPulsingBoxIds,
     following,
     toggleFollowing,
     reading,
@@ -2586,6 +2992,8 @@ export function App() {
     renameGroup,
     dragged,
     editingFrame,
+    placements,
+    resizeBox,
   ]);
 
   // A local placement is dropped only once the stored geometry says the same
@@ -2608,6 +3016,39 @@ export function App() {
       return next.size === was.size ? was : next;
     });
   }, [clusters]);
+
+  /**
+   * A box just put back, shown when the layout's slot for it is off screen.
+   *
+   * `keepLayout` places an arriving box beside its most connected neighbour,
+   * and on a wide diagram that is regularly outside the camera — measured:
+   * `cert-snapshot.ts`, put back, landed at x 2440 with the camera looking at
+   * 0–1500, and simply vanished. A box that disappears is not an answer to
+   * "put this back". Only when it is off screen: panning for a box already in
+   * front of you would move the whole diagram for nothing, which is the thing
+   * the live-update rule spends its whole length avoiding.
+   */
+  useEffect(() => {
+    if (putBack === null) return;
+    setPutBack(null);
+    const box = nodes.find((node) => node.id === putBack);
+    const canvas = canvasRef.current?.getBoundingClientRect();
+    if (box === undefined || canvas === undefined) return;
+    const width = box.width ?? NODE_WIDTH;
+    const height = box.height ?? 0;
+    const view = flow.getViewport();
+    const left = -view.x / view.zoom;
+    const top = -view.y / view.zoom;
+    const onScreen =
+      box.position.x + width > left &&
+      box.position.x < left + canvas.width / view.zoom &&
+      box.position.y + height > top &&
+      box.position.y < top + canvas.height / view.zoom;
+    if (onScreen) return;
+    // No `duration`, for the reason `step` gives where it moves the camera: a
+    // transition this render interrupts never settles and the camera stays.
+    void flow.setCenter(box.position.x + width / 2, box.position.y + height / 2, { zoom: view.zoom });
+  }, [putBack, nodes, flow]);
 
   /** The box under the cursor. A ref, because a hover must not render. */
   const hoveredRef = useRef<string | null>(null);
@@ -2758,9 +3199,13 @@ export function App() {
    * without this there is no selection to pick a group out of.
    */
   const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
-    // A frame being dragged: keep where it is being put, or the controlled
-    // canvas throws the position away and the frame springs back under the
-    // pointer. Boxes are not draggable, so anything here is a frame.
+    // Whatever is being dragged: keep where it is being put, or the controlled
+    // canvas throws the position away. A frame sprang back under the pointer;
+    // a box stood still through the whole gesture and teleported to the drop
+    // point on release, which was measured and is what this fixes. The comment
+    // that used to sit here claimed a box moves itself through React Flow's own
+    // store — it does not, because the node list is controlled and React Flow
+    // reports the change rather than applying it.
     const moves = changes.flatMap((change) =>
       change.type === 'position' && change.position !== undefined
         ? [{ id: change.id, position: change.position }]
@@ -3302,8 +3747,17 @@ export function App() {
    * make dagre run: every save since the first layout put its new boxes
    * beside their neighbours and moved nothing, and after enough of them the
    * diagram is worth tidying — on request, never on a save.
+   *
+   * It is also the way back out of an arrangement, so it drops every hand
+   * placement in this view first. The whole view and not only the boxes on
+   * screen: a placement is kept while a filter hides its box, so re-laying out
+   * the drawn half would put the arrangement back the moment the filter came
+   * off. The item says the number before it is pressed.
    */
-  const relayout = useCallback(() => setRelayoutToken((n) => n + 1), []);
+  const relayout = useCallback(() => {
+    setPlacements(dropView(placementRoot, placementKey));
+    setRelayoutToken((n) => n + 1);
+  }, [placementRoot, placementKey]);
   relayoutRef.current = relayout;
 
   /**
@@ -3710,6 +4164,12 @@ export function App() {
   const goToMissed = useCallback(() => {
     const latest = missed.at(-1);
     if (latest === undefined) return;
+    // Cleared, because it has now been looked at. It was not, and the badge
+    // went on claiming a change was waiting somewhere else while the reader
+    // was standing on it — a signpost pointing at the place you are is worse
+    // than no signpost, because it hides the next real one behind a count
+    // that never comes down.
+    setMissed([]);
     const params = new URLSearchParams();
     params.set('focus', latest);
     navigate(params);
@@ -3988,6 +4448,39 @@ export function App() {
     checked: showDepends,
     ...(showDepends || classifiersInView ? { run: toggleDepends } : noClassifier),
   };
+  /**
+   * Re-layout, in one place because three menus offer it and the count on it
+   * must be the same number in all three.
+   *
+   * The label says what it drops before it is pressed. Nothing here is a
+   * silent discard: dagre placing everything afresh is also every hand
+   * placement in this view being thrown away, and a person who arranged
+   * fourteen boxes deserves to read the fourteen rather than to find out.
+   */
+  const relayoutItem: MenuItem = {
+    label:
+      placements.size === 0
+        ? 'Re-layout'
+        : `Re-layout · drops ${placements.size} placed ${placements.size === 1 ? 'box' : 'boxes'}`,
+    shortcut: '⇧⌘L',
+    ...(canvasBlocked ??
+      (view === undefined || view.nodes.length === 0
+        ? { disabledBecause: 'Nothing on the canvas to lay out' }
+        : { run: relayout })),
+  };
+
+  /**
+   * One box back where the layout wants it, for the menu the box itself
+   * opens. Greyed with the reason when the box has not been moved, which is
+   * the rule every item here follows.
+   */
+  const putBackItem = (id: string): MenuItem => ({
+    label: 'Put this box back',
+    ...(placements.has(id)
+      ? { run: () => unplaceBox(id) }
+      : { disabledBecause: 'This box is where the layout put it' }),
+  });
+
   /** A component is a category, not a place, and three items need to say so. */
   const selectedComponent = selectedBox?.kind === 'component';
   /**
@@ -4191,16 +4684,9 @@ export function App() {
         { label: 'Zoom in', separatorBefore: true, ...(canvasBlocked ?? { run: () => void flow.zoomIn() }) },
         { label: 'Zoom out', ...(canvasBlocked ?? { run: () => void flow.zoomOut() }) },
         { label: 'Fit to screen', shortcut: '⇧⌘F', ...(canvasBlocked ?? { run: fitToScreen }) },
-        {
-          // A save never moves a box; this is the one thing that does, and it
-          // is asked for by name.
-          label: 'Re-layout',
-          shortcut: '⇧⌘L',
-          ...(canvasBlocked ??
-            (view === undefined || view.nodes.length === 0
-              ? { disabledBecause: 'Nothing on the canvas to lay out' }
-              : { run: relayout })),
-        },
+        // A save never moves a box, and neither does a hand placement; this is
+        // the one thing that does, and it is asked for by name.
+        relayoutItem,
         {
           // Here as well as on the canvas, and that is the point: a command
           // that lives only behind a right-click cannot be typed, and this
@@ -4300,7 +4786,8 @@ export function App() {
         },
         { ...diagramItem, separatorBefore: true },
         { label: 'Fit to screen', shortcut: '⇧⌘F', run: fitToScreen },
-        { label: 'Re-layout', shortcut: '⇧⌘L', run: relayout },
+        putBackItem(box.id),
+        relayoutItem,
         {
           label: 'Copy link to this view',
           separatorBefore: true,
@@ -4377,6 +4864,10 @@ export function App() {
                   goToScope(box.kind === 'folder' ? box.id : box.id.split('/').slice(0, -1).join('/')),
               }),
         },
+        // Where a box goes is a fact about this box, so the way back to the
+        // layout's answer for it is on this menu; the whole view's way back is
+        // Re-layout, on the menu the canvas opens.
+        { ...putBackItem(box.id), separatorBefore: true },
       ];
     }
 
@@ -4423,14 +4914,7 @@ export function App() {
         separatorBefore: true,
         ...(canvasBlocked ?? { run: fitToScreen }),
       },
-      {
-        label: 'Re-layout',
-        shortcut: '⇧⌘L',
-        ...(canvasBlocked ??
-          (view === undefined || view.nodes.length === 0
-            ? { disabledBecause: 'Nothing on the canvas to lay out' }
-            : { run: relayout })),
-      },
+      relayoutItem,
       {
         // One item and not two, because "every box" is a state and not two
         // actions: with some boxes open and some shut, pressing it twice —
@@ -4740,7 +5224,24 @@ export function App() {
             clicking it goes to now — it would be the one link on the row that
             silently left the commit. It is back the moment the freeze ends. */}
         {missed.length > 0 && !frozen && (
-          <button type="button" className="missed" onClick={goToMissed}>
+          <button
+            type="button"
+            className="missed"
+            // What is out there, by name, and who wrote it. The badge is the
+            // one arrow to work happening off the diagram, and a bare count
+            // says only that some exists — which is exactly the "nothing
+            // appeared" complaint one step removed. The minimap is the other
+            // arrow, and it is for work inside the diagram but off screen.
+            title={`Not on this diagram — the most recent is focused on a click:\n${missed
+              .slice(-12)
+              .reverse()
+              .map((file) => {
+                const mark = markedFiles.get(file);
+                return `· ${file}${mark === undefined ? '' : ` — ${mark.title}`}`;
+              })
+              .join('\n')}${missed.length > 12 ? `\n· …and ${missed.length - 12} more` : ''}`}
+            onClick={goToMissed}
+          >
             {missed.length} change{missed.length === 1 ? '' : 's'} outside
           </button>
         )}
@@ -4868,12 +5369,36 @@ export function App() {
               onDrawAll={drawRoot}
               fileCount={view?.fileCount ?? 0}
             />
-            <Activity
-              changes={changes}
-              agentCalls={agentCalls}
-              lines={gitLines?.lines ?? null}
+            {/* Detail, at the bottom of this column and no longer in the
+                right bar. Everything above it is something you go and look at
+                — the repository, its history, its parts — and so is this. What
+                the right bar holds now is what is happening, which is the
+                thing you glance at rather than open. */}
+            <DetailPanel
+              root={data.root}
+              selected={selected}
+              bundle={
+                selected === null
+                  ? null
+                  : (() => {
+                      const box = view?.nodes.find((node) => node.id === selected);
+                      return box === undefined || box.kind !== 'bundle'
+                        ? null
+                        : { label: box.label, files: box.files, of: bundleDirection(box.id) };
+                    })()
+              }
+              component={componentSelection}
+              revision={revision}
+              at={ghostAt ?? at}
+              ghost={ghostAt !== null}
               onSelect={setSelected}
               onFocus={goTo}
+              symbolIds={selectedSymbolIds}
+              onExplainSymbol={explainSymbol}
+              onExplainFile={explainFile}
+              onFlow={openFlow}
+              flowBlocked={flowBlocked}
+              onOpenSymbol={setPanelSymbol}
             />
           </aside>
         )}
@@ -4943,8 +5468,10 @@ export function App() {
                 : null
             }
             baseLabel={baseLabel}
-            changed={pulsingFiles}
-            queried={queriedFiles}
+            marks={markedFiles}
+            asked={askedFiles}
+            pulsing={pulsingFiles}
+            pulsingAsk={queriedFiles}
             onFocus={(file) => goTo(file, 'file')}
             inGraph={(path) => viewFiles.has(path)}
             onCategory={goToCategory}
@@ -4968,8 +5495,10 @@ export function App() {
             viewKey={viewKey}
             selected={selected}
             picked={picked}
-            changed={changedBoxIds}
-            queried={queriedBoxIds}
+            marks={markedBoxes}
+            asked={askedBoxes}
+            pulsing={pulsingBoxIds}
+            pulsingAsk={askPulsingBoxIds}
             aside={asideIds}
             asideNote={found === null ? reach.note : null}
             showLanguage={mixedProject}
@@ -4995,7 +5524,7 @@ export function App() {
           edgeTypes={edgeTypes}
           onPaneContextMenu={(event) => openContext(event as MouseEvent, null)}
           onNodeContextMenu={openContext}
-          onNodeDragStop={handleFrameDragStop}
+          onNodeDragStop={handleNodeDragStop}
           onNodeClick={handleNodeClick}
           onNodeDoubleClick={handleNodeDoubleClick}
           // The faint lines: a hover marks the lines it touches and renders
@@ -5010,7 +5539,10 @@ export function App() {
           // shift-drag, so a shift-click that twitches lands as an empty
           // marquee, and the modifier every other canvas uses does not.
           multiSelectionKeyCode={['Shift', 'Meta', 'Control']}
-          nodesDraggable={false}
+          // Boxes move by hand, and a placement is kept — see `placement.ts`.
+          // Frames say `draggable` for themselves and are unaffected; a box is
+          // dragged by its title bar, which is `dragHandle` on the node.
+          nodesDraggable
           nodesConnectable={false}
           // Off, or d3-zoom handles the double click on the pane and stops it
           // bubbling before React sees it — onNodeDoubleClick then never fires
@@ -5042,11 +5574,38 @@ export function App() {
           <MiniMap
             pannable
             zoomable
+            // Where the heat is. This is the answer to "the agent is working
+            // off screen and I have no arrow to it": the minimap is already
+            // here, already pannable, and a click on it already moves the
+            // camera — it only needed to be told what just happened. A second
+            // mechanism beside it would be one more thing to find.
+            //
             // A frame is the size of everything it encloses, so in the minimap it
             // would be a solid block over the boxes it is meant to sit behind.
             // A token, not a hex: React Flow paints this as an inline fill, so
             // the page's own rule for minimap nodes cannot reach it.
-            nodeColor={(node) => (node.type === 'frame' ? 'transparent' : 'var(--vsc-border-input)')}
+            nodeColor={(node) =>
+              node.type === 'frame'
+                ? 'transparent'
+                : markedBoxes.has(node.id)
+                  ? 'var(--vsc-git-modified)'
+                  : askedBoxes.has(node.id)
+                    ? 'var(--vsc-info)'
+                    : 'var(--vsc-border-input)'
+            }
+            // …and a click on it goes there. `pannable` alone only moves the
+            // camera by dragging the viewport rectangle, so the heat could be
+            // seen and not reached — which is half an arrow. The camera moving
+            // here does not break "mark, do not move": a click is a person
+            // asking, and the zoom they chose is kept, exactly as ⌘F's step
+            // does it.
+            onNodeClick={(_, node) => {
+              void flow.setCenter(
+                node.position.x + (node.width ?? NODE_WIDTH) / 2,
+                node.position.y + (node.height ?? 0) / 2,
+                { zoom: flow.getZoom() },
+              );
+            }}
           />
         </ReactFlow>
         )}
@@ -5086,37 +5645,6 @@ export function App() {
         {showSidebar && data !== null && barSash('sidebar', 'after')}
         {showSidebar && data !== null && (
           <Sidebar
-            root={data.root}
-            selected={selected}
-            // A bundle's id names no path, so `/api/detail` can only 404 on it.
-            // The panel is handed what the box already knows instead.
-            bundle={
-              selected === null
-                ? null
-                : (() => {
-                    const box = view?.nodes.find((node) => node.id === selected);
-                    return box === undefined || box.kind !== 'bundle'
-                      ? null
-                      : { label: box.label, files: box.files, of: bundleDirection(box.id) };
-                  })()
-            }
-            // A component's id names no path either; what it holds and what
-            // touches it come from the view, already in hand.
-            component={componentSelection}
-            revision={revision}
-            // A ghost is drawn from the graph the diff compares against, and
-            // its panel has to be read from the same one: the live graph has
-            // never heard of it. The resolved sha, because `base` is a word.
-            at={ghostAt ?? at}
-            ghost={ghostAt !== null}
-            onSelect={setSelected}
-            onFocus={goTo}
-            symbolIds={selectedSymbolIds}
-            onExplainSymbol={explainSymbol}
-            onExplainFile={explainFile}
-            onFlow={openFlow}
-            flowBlocked={flowBlocked}
-            onOpenSymbol={setPanelSymbol}
             following={{
               links: reach.found,
               gone: reach.gone,
@@ -5140,7 +5668,22 @@ export function App() {
               onCancel: cancelExplain,
               onForget: forgetOne,
             }}
-          />
+            onSelect={setSelected}
+            onFocus={goTo}
+            onFlow={openFlow}
+            flowBlocked={flowBlocked}
+          >
+            {/* Activity, where Detail used to be. It describes NOW even while
+                the diagram is frozen: the agent is still working in the
+                working tree, and the diagram is the thing that stopped. */}
+            <Activity
+              changes={changes}
+              agentCalls={agentCalls}
+              lines={gitLines?.lines ?? null}
+              onSelect={setSelected}
+              onFocus={goTo}
+            />
+          </Sidebar>
         )}
         </SectionPanes.Provider>
       </main>

@@ -4,6 +4,7 @@ import type { LanguageId } from '../../src/lang/types.js';
 import type { Suggestion } from '../../src/project/suggest.js';
 import type { Commit, RemoteStatus } from '../../src/project/git.js';
 import type { GroupColor } from '../../src/project/groups.js';
+import type { McpStatus } from '../../src/project/mcp-install.js';
 import type {
   ExplainState,
   ExplainedEntry,
@@ -14,7 +15,8 @@ import type {
   ViewReply,
 } from '../../src/server/app.js';
 import type { DiffEnd, DiffReply } from '../../src/server/diff.js';
-import type { ExplainFailure, ExplainRun } from '../../src/server/session.js';
+import type { AskDeltaKind, AskFailure } from '../../src/project/ask.js';
+import type { AskConversation, AskTurn, ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { FlowEdge, FlowGraph, FlowNode } from '../../src/parser/flow.js';
 import type { FlowReply } from '../../src/server/flow.js';
 import type { OverviewReply } from '../../src/server/overview.js';
@@ -261,6 +263,34 @@ export async function installHook(): Promise<HookStatus> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/hook-install`, { method: 'POST' });
   const body = (await response.json()) as HookStatus & { error?: string };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return body;
+}
+
+export type { McpStatus };
+
+/**
+ * The other half of the same pair, for `.mcp.json`.
+ *
+ * Two calls rather than one because the hook has two and this row sits beside
+ * it: the panel reads the status on mount and after a project switch, and the
+ * write answers with the status it produced so nothing has to re-ask.
+ *
+ * `McpStatus` is imported from the module that defines it rather than restated
+ * here, unlike `HookStatus` above — a type-only import of `src/project/` is
+ * erased by Vite, so none of that module's `node:fs` reaches the bundle.
+ */
+export async function fetchMcpStatus(): Promise<McpStatus> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/mcp-status`);
+  if (!response.ok) throw new Error(`MCP status failed: HTTP ${response.status}`);
+  return (await response.json()) as McpStatus;
+}
+
+export async function installMcp(): Promise<McpStatus> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/mcp-install`, { method: 'POST' });
+  const body = (await response.json()) as McpStatus & { error?: string };
   if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
   return body;
 }
@@ -1026,4 +1056,91 @@ export async function fetchOverview(at: string | null = null): Promise<OverviewR
     throw new Error(body.error ?? `overview failed: HTTP ${response.status}`);
   }
   return (await response.json()) as OverviewReply;
+}
+
+/**
+ * A conversation about the categories — what the tool can ask a Claude of its
+ * own, on a press, about the picture the component diagram already draws.
+ *
+ * It reads and decides nothing. Decision 4 says nothing in the graph comes
+ * from a model; decision 5 says a model may suggest a name and never decide
+ * who belongs. So none of the three calls below writes: a name the answer
+ * proposes is a sentence on a screen until a person accepts it through
+ * `decideCluster`, which is the gesture that already exists. The conversation
+ * is session state on the server too — a project switch ends it.
+ */
+export type { AskConversation, AskTurn };
+export type { AskDeltaKind, AskFailure };
+
+export interface AskState {
+  conversation: AskConversation | null;
+  /** A turn is being written right now, by this page or by another tab. */
+  running: boolean;
+}
+
+/**
+ * The conversation so far, and whether a turn is in flight. Both survive a
+ * reload, because both live in the session and not in this page: a turn keeps
+ * the words that have arrived, so a page that reloads mid-answer reads them.
+ */
+export async function fetchAsk(): Promise<AskState> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/ask`);
+  if (!response.ok) throw new Error(`ask failed: HTTP ${response.status}`);
+  const body = (await response.json()) as { conversation: AskConversation | null; running?: boolean };
+  return { conversation: body.conversation, running: body.running === true };
+}
+
+export interface AskStarted {
+  /** The conversation this press joined — the one it started, or the one already going. */
+  conversation: AskConversation | null;
+  /**
+   * The server's words when the press did nothing and spent nothing: a blank
+   * question, one over the cap, or a project with no categories to ask about.
+   * Not a failure, so it is an answer here rather than a thrown error and the
+   * panel prints the sentence instead of waiting for words that never come.
+   */
+  refused: string | null;
+}
+
+/**
+ * Spend the user's quota on one question, and return the moment it has
+ * started. The answer is not here: a turn is tens of seconds of subprocess,
+ * far longer than a browser will hold a fetch open, so the route answers 202
+ * and the words arrive on the socket as they are written.
+ *
+ * 409 is not a failure either — something is already spending, and the
+ * conversation comes back with it, so the panel follows that rather than
+ * reporting it.
+ */
+export async function askQuestion(question: string): Promise<AskStarted> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/ask`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'ask', question }),
+  });
+  const body = (await response.json()) as { conversation?: AskConversation | null; error?: string };
+  if (response.status === 409) return { conversation: body.conversation ?? null, refused: null };
+  if (response.status === 400) return { conversation: null, refused: body.error ?? 'the question was refused' };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return { conversation: body.conversation ?? null, refused: null };
+}
+
+/**
+ * Throw the conversation away. A turn still in flight is abandoned rather than
+ * killed — the money is already spent, and what this buys is that the answer
+ * is not used — so the next question starts a fresh one and pays a first
+ * turn's price again.
+ */
+export async function endAsk(): Promise<boolean> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/ask`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'end' }),
+  });
+  if (!response.ok) throw new Error(`ending the conversation failed: HTTP ${response.status}`);
+  const body = (await response.json()) as { ended?: boolean };
+  return body.ended === true;
 }

@@ -518,7 +518,11 @@ function coverageOf(graph: Graph, name: string, kind: NodeKind, filePath: string
   if (where === null) return BY_NAME;
   return {
     coverage: 'partial',
-    coverageNote: `${where} One passed to a function as a value is not tracked either. The count is a floor.`,
+    // `handedOnBy` already ends its sentence on "so the count is a floor", so
+    // this one only adds the other gap. Saying the floor twice in one
+    // paragraph read as a stammer, and it reached an agent as well as the
+    // panel once `list_dependents` began printing this note whole.
+    coverageNote: `${where} One passed to a function as a value is not tracked either.`,
   };
 }
 

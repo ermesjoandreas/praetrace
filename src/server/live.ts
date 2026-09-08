@@ -3,7 +3,9 @@ import type { GitStatus } from '../git/types.js';
 import type { GraphStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
 import type { MergedGroups } from '../project/groups.js';
-import type { AgentCall, ExplainRun } from './session.js';
+import type { Attribution } from '../project/hook.js';
+import type { AskDeltaKind } from '../project/ask.js';
+import type { AgentCall, AskConversation, ExplainRun } from './session.js';
 import { NO_FILTER } from '../view/filter.js';
 import { selectView } from '../view/select.js';
 import type { ViewSpec } from '../view/types.js';
@@ -81,6 +83,25 @@ export interface LiveHub {
    */
   explainDelta(runId: string, text: string): void;
   /**
+   * A turn of the categories conversation ended. The graph did not change, so
+   * this is its own message, and the whole conversation rather than the turn:
+   * a page that connected mid-answer has no transcript to append to, and the
+   * cost so far lives on the conversation rather than on any one turn.
+   */
+  askChanged(conversation: AskConversation): void;
+  /**
+   * A few characters as they are written. Its own message for the reason
+   * `explainDelta` is one: these arrive dozens of times a second and carry no
+   * state, and putting them through the conversation would make every client
+   * re-render the whole transcript for three letters.
+   *
+   * `kind` says whether they are the answer or the model still thinking, and
+   * the page must draw the two apart — see `AskDeltaKind`. It is on the wire
+   * rather than filtered here because the wait it covers is twelve seconds,
+   * and a page with nothing to show for twelve seconds looks broken.
+   */
+  askDelta(conversationId: string, text: string, kind: AskDeltaKind): void;
+  /**
    * groups.json was written — by the page, or by the agent through MCP, which
    * is the one the page could not see: nothing watches `.codemap/`, so a name
    * given over MCP stood in the list unchanged until the next file save.
@@ -108,6 +129,7 @@ export function createLiveHub(
     gitStatus(): GitStatus | null;
     coverage(): Coverage | null;
     clustersOf(graph: Graph): MergedGroups;
+    writtenBy(filePath: string): Attribution | null;
   },
 ): LiveHub {
   const clients = new Map<LiveSocket, ViewSpec>();
@@ -140,6 +162,17 @@ export function createLiveHub(
           readsCategories(spec) ? session.clustersOf(graph).clusters : [],
         ),
         changedFiles,
+        // Who wrote them, for the ones anything said. Read off the session
+        // rather than handed down through `main.ts`, so the wire from the
+        // updater to the hub stays the one line it is; the session answers
+        // about the file, which is the question a marked box asks.
+        //
+        // Only the files in this frame, and only the named ones: a client is
+        // told who wrote what it is being asked to redraw, not handed a
+        // register of the session. A path missing from it was written by
+        // nobody we can name — see `Attribution`, where that absence is the
+        // whole of what says so.
+        by: attributionsFor(session, changedFiles),
       }),
     );
   };
@@ -164,7 +197,17 @@ export function createLiveHub(
         if (spec.diff !== undefined) {
           // The signal and the files, and no view — see `publish` above.
           if (socket.readyState === OPEN) {
-            socket.send(JSON.stringify({ type: 'changed', root: getSession().root, changedFiles }));
+            // The same `by` the `update` frame carries: a diff client draws the
+            // same files and asks the same question of them.
+            const session = getSession();
+            socket.send(
+              JSON.stringify({
+                type: 'changed',
+                root: session.root,
+                changedFiles,
+                by: attributionsFor(session, changedFiles),
+              }),
+            );
           }
           continue;
         }
@@ -198,6 +241,20 @@ export function createLiveHub(
       }
     },
 
+    askChanged(conversation) {
+      const payload = JSON.stringify({ type: 'ask', conversation });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
+    },
+
+    askDelta(conversationId, text, kind) {
+      const payload = JSON.stringify({ type: 'ask-delta', conversationId, text, kind });
+      for (const socket of clients.keys()) {
+        if (socket.readyState === OPEN) socket.send(payload);
+      }
+    },
+
     groupsChanged() {
       const payload = JSON.stringify({ type: 'groups' });
       for (const socket of clients.keys()) {
@@ -212,6 +269,30 @@ export function createLiveHub(
       return clients.size;
     },
   };
+}
+
+/**
+ * The named writers among these files, keyed by path, or undefined when
+ * nothing named any of them.
+ *
+ * Undefined rather than `{}` so that "nobody said" costs no bytes on the wire
+ * and reads as absent on the page, which is what it is. Every push a watcher
+ * caused looks exactly like this.
+ */
+function attributionsFor(
+  session: { writtenBy(filePath: string): Attribution | null },
+  changedFiles: readonly string[],
+): Record<string, Attribution> | undefined {
+  const by: Record<string, Attribution> = {};
+  let any = false;
+  for (const filePath of changedFiles) {
+    const source = session.writtenBy(filePath);
+    if (source !== null) {
+      by[filePath] = source;
+      any = true;
+    }
+  }
+  return any ? by : undefined;
 }
 
 /**

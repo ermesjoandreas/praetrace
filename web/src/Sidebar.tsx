@@ -130,7 +130,14 @@ export interface Following {
   onDrop: (id: string) => void;
 }
 
-interface SidebarProps {
+/**
+ * The Detail panel's own props. It stands at the bottom of the LEFT bar now,
+ * under Repository, Source Control and Categories: Detail is what you open on
+ * purpose, and the right side bar — where the eye rests while an agent works
+ * — belongs to what is happening, which is Following and Activity. The panel
+ * itself is unchanged; only where it stands is.
+ */
+interface DetailPanelProps {
   root: string;
   /** The box the user clicked, or null. Navigation is a separate gesture. */
   selected: string | null;
@@ -186,7 +193,6 @@ interface SidebarProps {
    * the current scope — and that file has no box to hover.
    */
   onExplainFile: (path: string) => void;
-  following: Following;
   /**
    * Open the activity diagram of one symbol — the control flow of its body,
    * over the canvas. Offered on the symbol the panel has open and on every
@@ -219,7 +225,47 @@ const clock = new Intl.DateTimeFormat(undefined, {
   second: '2-digit',
 });
 
+/**
+ * The right side bar: what you are holding on to, and — passed in as children,
+ * because App owns it — what the agent is doing.
+ *
+ * Detail used to be the second half of this bar and Activity the last section
+ * of the left one. They were exchanged, and the reading behind it is the whole
+ * premise of the tool: while an agent works, Activity is the thing you watch,
+ * and the right bar is where the eye rests. Detail is what you open on
+ * purpose, so it stands where the other things you open on purpose are.
+ */
 export function Sidebar({
+  following,
+  onSelect,
+  onFocus,
+  onFlow,
+  flowBlocked,
+  children,
+}: {
+  following: Following;
+  onSelect: (target: string) => void;
+  onFocus: (target: string, kind: 'file' | 'folder') => void;
+  onFlow: (symbol: FlowTarget) => void;
+  flowBlocked: (kind: string, filePath: string) => string | null;
+  /** Activity. A section, placed by App, which is what holds its data. */
+  children: ReactNode;
+}) {
+  return (
+    <aside className="sidebar">
+      <Followed
+        following={following}
+        onSelect={onSelect}
+        onFocus={onFocus}
+        onFlow={onFlow}
+        flowBlocked={flowBlocked}
+      />
+      {children}
+    </aside>
+  );
+}
+
+export function DetailPanel({
   root,
   selected,
   revision,
@@ -232,11 +278,10 @@ export function Sidebar({
   symbolIds,
   onExplainSymbol,
   onExplainFile,
-  following,
   onFlow,
   flowBlocked,
   onOpenSymbol,
-}: SidebarProps) {
+}: DetailPanelProps) {
   const [detail, setDetail] = useState<Detail | null>(null);
   /**
    * The row of the Declares list — or of a component's Provides list — that
@@ -410,15 +455,6 @@ export function Sidebar({
     );
 
   return (
-    <aside className="sidebar">
-      <Followed
-        following={following}
-        onSelect={onSelect}
-        onFocus={onFocus}
-        onFlow={onFlow}
-        flowBlocked={flowBlocked}
-      />
-
       <Section title="Detail" className="panel" actions={actions}>
         {bundle !== null ? (
           <BundleView bundle={bundle} onSelect={onSelect} />
@@ -473,7 +509,6 @@ export function Sidebar({
           <FolderView detail={detail} onSelect={onSelect} />
         )}
       </Section>
-    </aside>
   );
 }
 

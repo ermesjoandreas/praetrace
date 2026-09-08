@@ -2,6 +2,7 @@ import { checkIgnored } from './git.js';
 import { applyBatch, type GraphStore } from '../graph/store.js';
 import type { ParserPool } from '../parser/pool.js';
 import type { ParsedFile } from '../parser/types.js';
+import type { Attribution } from './hook.js';
 import { findRevealedDeclaration, isShadowedDeclaration, type SourceFile } from './walk.js';
 import type { FileChange } from './watch.js';
 
@@ -21,12 +22,22 @@ export interface UpdaterOptions {
    * that into one graph update.
    */
   debounceMs?: number;
-  onApplied: (changedFiles: string[]) => void;
+  /**
+   * `by` names the files in this batch that something claimed, and only those:
+   * a file missing from it was written by nobody we can name. See `Attribution`
+   * for why that absence is the model rather than a placeholder name.
+   */
+  onApplied: (changedFiles: string[], by: ReadonlyMap<string, Attribution>) => void;
   onError?: (message: string) => void;
 }
 
 export interface ProjectUpdater {
-  queue(change: FileChange): void;
+  /**
+   * `by` is what the source said about itself, and only the hook can say
+   * anything: the watcher hands this nothing, forever, because it knows
+   * nothing.
+   */
+  queue(change: FileChange, by?: Attribution | null): void;
   close(): void;
 }
 
@@ -46,6 +57,20 @@ export function createUpdater({
   onError,
 }: UpdaterOptions): ProjectUpdater {
   const pending = new Map<string, FileChange>();
+
+  /**
+   * Only ever written to, never cleared by an event that names nobody.
+   *
+   * The hook and the watcher both report the same edit, and which of them
+   * arrives first is not decidable: measured against a real Claude Code
+   * payload, the watcher fired 46 ms after the write and the hook's POST landed
+   * at 84 ms. So a later unattributed event for a file the hook already claimed
+   * is the *second sighting of one edit*, not evidence that nobody wrote it,
+   * and letting it overwrite would throw the name away roughly half the time.
+   * A genuinely different, named source landing in the same 80 ms window
+   * overwrites, which is the only reading of two names that is not a guess.
+   */
+  const claimed = new Map<string, Attribution>();
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   let closed = false;
@@ -61,16 +86,21 @@ export function createUpdater({
     if (closed || running || pending.size === 0) return;
 
     const batch = [...pending.values()];
+    const by = new Map(claimed);
     pending.clear();
+    claimed.clear();
     running = true;
 
-    void apply(batch).finally(() => {
+    void apply(batch, by).finally(() => {
       running = false;
       if (pending.size > 0) schedule();
     });
   }
 
-  async function apply(batch: readonly FileChange[]): Promise<void> {
+  async function apply(
+    batch: readonly FileChange[],
+    by: ReadonlyMap<string, Attribution>,
+  ): Promise<void> {
     // What the project will hold once this batch lands. The boot scan drops a
     // `.d.ts` that a sibling implements, but neither source can: the watcher and
     // the hook each decide one path at a time. This is where they converge and
@@ -142,17 +172,28 @@ export function createUpdater({
 
     applyBatch(store, updated, [...removed]);
 
+    // Narrowed to what actually landed, for the reason `landed` itself is:
+    // a claim about a path the tool refused to parse names a box that does not
+    // exist, and a reader would have no way to tell that from a lost name.
+    const attributed = new Map<string, Attribution>();
+    for (const filePath of landed) {
+      const source = by.get(filePath);
+      if (source !== undefined) attributed.set(filePath, source);
+    }
+
     // Reported even when the graph is unchanged: a touched file is worth
     // showing, and a comment-only edit still says where the agent is working.
     // Nothing landing at all is a different thing, and says nothing.
-    if (landed.length > 0) onApplied(landed);
+    if (landed.length > 0) onApplied(landed, attributed);
   }
 
   return {
-    queue(change) {
+    queue(change, by) {
       if (closed) return;
       // A later event for the same file wins: removed-then-added is an add.
       pending.set(change.filePath, change);
+      // The name does not follow that rule — see `claimed`.
+      if (by) claimed.set(change.filePath, by);
       schedule();
     },
 
