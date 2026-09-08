@@ -1504,7 +1504,8 @@ never otherwise. What comes back is a *proposal*, held in session memory. Decisi
 suggestion is the same `POST /api/clusters` write `name_group` makes, so
 `groups.json` is written by a decision and nothing else. The two paths are for
 different moments: the agent already running names for free while it works; the
-lightbulb is for when no agent is running, costs about five cents a press, and
+lightbulb is for when no agent is running, says on the button what a press
+costs, and
 never decides who belongs.
 
 ```
@@ -1554,9 +1555,13 @@ relations, and asks for a role rather than a walkthrough. Answers land in
 `.codemap/explain.json`, beside `groups.json` — for the user to commit when they
 choose; this repository's copy is untracked today.
 
-**It spends the user's money, so nothing is implicit.** A run happens only on a
-press, its price is measured and shown, and the panel says what a reading now
-stands to: `current`, `stale` (the source was rewritten — the fingerprint is
+**It spends the user's money, so nothing is implicit — and "nothing is
+implicit" is about the press, not about a receipt.** A run happens only on a
+press, and a control that will spend says so before it is pressed. What a run
+*cost* afterwards is not drawn: the number was asked for and removed on
+2026-09-08, because a price beside every answer is noise in a panel a person
+reads for the answer. The cost is still measured and still on the wire, for
+anything that wants it. The panel says what a reading now stands to: `current`, `stale` (the source was rewritten — the fingerprint is
 `sha256`-prefixed and a consumer that cannot compute the prefix answers `unknown`
 rather than guessing), `drifted` (something related moved), `orphaned` (the code is
 gone). A stale reading is kept, because it is usually still most of the answer.
