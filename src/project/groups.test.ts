@@ -167,3 +167,51 @@ test('storedIdFor settles a decision that arrived with files only, the way the p
   assert.equal(next.length, 1);
   assert.equal(next[0]?.id, grown.id);
 });
+
+// Reported: "I made a category inside another category and the first one
+// disappeared — it is still in the sidebar but not on the map." A hand-drawn
+// group arrived at depth 0 with no parent whatever it held, so the layout saw
+// two frames overlapping at the same level and drew one.
+test('a category drawn inside another is nested, not overlapping', () => {
+  const outer = accepted('MVC', ['HomeController.cs', 'ErrorViewModel.cs', 'Index.cshtml', 'Privacy.cshtml', 'Error.cshtml'], { origin: 'manual', id: 'manual:mvc' });
+  const inner = accepted('Views', ['Index.cshtml', 'Privacy.cshtml', 'Error.cshtml'], { origin: 'manual', id: 'manual:views' });
+
+  const { clusters } = mergeGroups([], [outer, inner]);
+  const mvc = clusters.find((group) => group.name === 'MVC');
+  const views = clusters.find((group) => group.name === 'Views');
+  assert.equal(mvc?.depth, 0);
+  assert.equal(mvc?.parent, null);
+  assert.equal(views?.depth, 1);
+  assert.equal(views?.parent, 'manual:mvc');
+});
+
+test('a chain nests one level at a time, and the smallest holder is the parent', () => {
+  const all = accepted('All', ['a.ts', 'b.ts', 'c.ts', 'd.ts'], { origin: 'manual', id: 'manual:all' });
+  const most = accepted('Most', ['a.ts', 'b.ts', 'c.ts'], { origin: 'manual', id: 'manual:most' });
+  const two = accepted('Two', ['a.ts', 'b.ts'], { origin: 'manual', id: 'manual:two' });
+
+  const { clusters } = mergeGroups([], [all, most, two]);
+  const by = (name: string) => clusters.find((group) => group.name === name);
+  assert.equal(by('All')?.depth, 0);
+  assert.equal(by('Most')?.parent, 'manual:all');
+  assert.equal(by('Most')?.depth, 1);
+  // Not 'manual:all', which also holds them: the smallest holder is the parent.
+  assert.equal(by('Two')?.parent, 'manual:most');
+  assert.equal(by('Two')?.depth, 2);
+});
+
+test('two categories holding exactly the same files nest neither way', () => {
+  // They are the same group twice, which the overlap rule is right to draw once.
+  const drawn = accepted('MVC', ['a.ts', 'b.ts'], { origin: 'manual', id: 'manual:mvc' });
+  const found = cluster(['a.ts', 'b.ts']);
+  const { clusters } = mergeGroups([found], [drawn]);
+  for (const group of clusters) assert.equal(group.parent, null);
+});
+
+test('a group beside another, sharing nothing, is not nested', () => {
+  const left = accepted('Left', ['a.ts', 'b.ts'], { origin: 'manual', id: 'manual:left' });
+  const right = accepted('Right', ['c.ts', 'd.ts'], { origin: 'manual', id: 'manual:right' });
+  const { clusters } = mergeGroups([], [left, right]);
+  for (const group of clusters) assert.equal(group.parent, null);
+});
+

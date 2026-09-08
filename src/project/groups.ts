@@ -242,6 +242,55 @@ function presentationOf(
  * Flattened, with depth and parent kept, because every consumer — the drawing,
  * the panel, the MCP tools — wants to walk them in order rather than recurse.
  */
+/**
+ * Who sits inside whom, decided by the files rather than by where a group came
+ * from. The clustering already nests what it finds, but a group somebody drew
+ * arrived at depth 0 with no parent whatever it held — so drawing a category
+ * inside another read to the layout as two frames overlapping at the same
+ * level, and one of them was dropped from the diagram while staying in the
+ * panel. It looked like the first category had vanished.
+ *
+ * Containment is a fact about the file sets and not a guess: B is inside A when
+ * every file of B is a file of A and A holds more. The smallest such A is the
+ * parent, so a chain nests one level at a time. Two groups holding exactly the
+ * same files contain each other and neither wins — they are the same group
+ * twice, which the overlap rule is right to draw once.
+ */
+function nest(groups: GroupSuggestion[]): void {
+  const sets = new Map(groups.map((group) => [group.id, new Set(group.files)]));
+  const parentOf = new Map<string, string>();
+
+  for (const group of groups) {
+    const own = sets.get(group.id);
+    if (!own || own.size === 0) continue;
+    let smallest: GroupSuggestion | null = null;
+    for (const other of groups) {
+      if (other.id === group.id) continue;
+      const theirs = sets.get(other.id);
+      if (!theirs || theirs.size <= own.size) continue;
+      if (![...own].every((file) => theirs.has(file))) continue;
+      if (smallest === null || theirs.size < (sets.get(smallest.id)?.size ?? Infinity)) smallest = other;
+    }
+    if (smallest !== null) parentOf.set(group.id, smallest.id);
+  }
+
+  const byId = new Map(groups.map((group) => [group.id, group]));
+  const depthOf = (id: string, seen: ReadonlySet<string>): number => {
+    const parent = parentOf.get(id);
+    // A cycle cannot happen — a parent always holds strictly more files — but
+    // the guard costs nothing and a stack overflow in a renderer costs a page.
+    if (parent === undefined || seen.has(parent)) return 0;
+    return 1 + depthOf(parent, new Set([...seen, parent]));
+  };
+
+  for (const group of groups) {
+    const parent = parentOf.get(group.id);
+    if (parent === undefined || !byId.has(parent)) continue;
+    group.parent = parent;
+    group.depth = depthOf(group.id, new Set([group.id]));
+  }
+}
+
 export function mergeGroups(clusters: readonly Cluster[], stored: readonly NamedGroup[]): MergedGroups {
   const flat: { cluster: Cluster; depth: number; parent: string | null }[] = [];
   const walk = (cluster: Cluster, depth: number, parent: string | null): void => {
@@ -306,6 +355,8 @@ export function mergeGroups(clusters: readonly Cluster[], stored: readonly Named
       origin: 'manual',
     });
   }
+
+  nest(out);
 
   const orphans: OrphanGroup[] = [];
   for (const group of stored) {
