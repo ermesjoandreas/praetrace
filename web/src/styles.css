@@ -3733,3 +3733,27 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 }
 .ask-proposal-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
 .ask-proposal-files > button:focus-visible { outline-offset: -1px; }
+
+/* The arrangement on the canvas, flat or folders. Not a filter chip: a filter
+   chip says something has been taken away and clicking it gives that back, and
+   this takes nothing away — it says which of two pictures of the same boxes is
+   on screen. So it is outlined rather than filled, in the row's own muted
+   colour, and it does not carry a ✕. When the folders ARE on it borrows the
+   filter chip, because then it is the non-default and reads like the rest of
+   the row saying so. */
+.arrangement-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 6px 0 4px;
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  background: none;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+}
+.arrangement-chip:hover:not(:disabled) { border-color: var(--vsc-border-menu); color: var(--vsc-fg); }
+.arrangement-chip:disabled { color: var(--vsc-fg-disabled); border-color: var(--vsc-border); }
+.arrangement-chip:focus-visible { outline: 1px solid var(--vsc-accent); outline-offset: -1px; }
+

@@ -5476,6 +5476,35 @@ export function App() {
           </button>
         )}
 
+        {/* Which of the two arrangements is on the canvas, and the way to the
+            other. Every other arrangement announces itself in this row — a
+            list, a commit, a diff — and this one only had a checked item in a
+            menu, which is where a person looks last. Reported as too quiet for
+            something this large.
+
+            Always on screen while either arrangement can be drawn, rather than
+            only when the non-default is: the point is that the CHOICE is
+            visible, not that a deviation is. It is the menu item's own reason
+            it reads and its own `run` it calls, so the two can never disagree
+            about whether the arrangement is available or why it is not. */}
+        {foldersItem.checked !== undefined && !frontOn && (
+          <button
+            type="button"
+            className={foldersOn ? 'filter-chip' : 'arrangement-chip'}
+            disabled={foldersItem.run === undefined}
+            onClick={foldersItem.run}
+            title={
+              foldersItem.disabledBecause ??
+              (foldersOn
+                ? 'Folders are frames around the files inside them. Press to draw the files flat instead.'
+                : 'The files, laid out by what they import. Press to draw the folders as frames around them.')
+            }
+          >
+            <i className={`codicon codicon-${foldersOn ? 'folder' : 'file-code'}`} aria-hidden="true" />
+            {foldersOn ? 'Folders' : 'Flat'}
+          </button>
+        )}
+
         {/* Which commit is drawn, and the way back. A chip like the filters
             because it narrows the same way — everything else in the row still
             applies, just to the project as it was then. */}
