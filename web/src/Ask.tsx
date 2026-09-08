@@ -1,19 +1,31 @@
 import { useEffect, useLayoutEffect, useReducer, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { askQuestion, endAsk, fetchAsk, money } from './api';
+import { askQuestion, dropProposal, endAsk, fetchAsk, money, proposeGrouping } from './api';
 import {
   askBlocked,
+  cohesionNote,
   FAILURE_WORDS,
   FIRST_QUESTION_USD,
   FOLLOW_UP_USD,
+  inventedPaths,
   MAX_QUESTION,
   NO_CONVERSATION,
+  overlapNote,
+  proposeBlocked,
+  proposeStatus,
+  proposeSummary,
+  PROPOSE_USD,
+  reachNote,
   reduceAsk,
+  sameRun,
   seconds,
   showThinking,
   subscribeAsk,
   timingNote,
+  weakCohesion,
 } from './ask';
-import type { AskTurn } from './api';
+import { fileIconFor } from './fileicons';
+import { LIST_ROW, useListKeys } from './listkeys';
+import type { AskTurn, Proposal, ProposeRun } from './api';
 
 /**
  * How often the panel asks the server what the conversation is, as a fallback
@@ -46,7 +58,39 @@ const POLL_MS = 3000;
  * `showThinking`, and `AskDeltaKind` in `src/project/ask.ts` for why the two
  * are told apart on the wire at all.
  */
-export function Ask({ categories }: { categories: number }) {
+export function Ask({
+  categories,
+  addedNames,
+  fileCount,
+  onAccept,
+  onSelect,
+  consentStanding,
+}: {
+  categories: number;
+  /**
+   * The names of the categories that exist. A proposal whose name is one of
+   * them has been accepted — and is read from the list rather than from what
+   * this page remembers pressing, so the mark survives a reload and a second
+   * accept is never offered for a category that is already there.
+   */
+  addedNames: ReadonlySet<string>;
+  /** Files in the graph. Nothing to group is the one refusal this can say without a press. */
+  fileCount: number;
+  /**
+   * Draw a proposed grouping as a category. The same create a shift-click draw
+   * makes — `origin: 'manual'`, marked "by hand" wherever it is shown —
+   * because the person pressing accept is the person drawing that group.
+   */
+  onAccept: (name: string, files: string[]) => void;
+  /** Focus a file. A proposal's members are rows, and a row leads somewhere. */
+  onSelect: (file: string) => void;
+  /**
+   * The server's `.codemap/` question is standing. Accepting raises the same
+   * one a hand-drawn category does, and it is answered at the top of this
+   * section — far above this panel, so the row that raised it says so.
+   */
+  consentStanding: boolean;
+}) {
   const [view, dispatch] = useReducer(reduceAsk, NO_CONVERSATION);
   const [question, setQuestion] = useState('');
   /** The press has gone out and the 202 has not come back. */
@@ -55,8 +99,30 @@ export function Ask({ categories }: { categories: number }) {
   const [refused, setRefused] = useState<string | null>(null);
   /** Why the last press could not even be made — the server was unreachable. */
   const [broken, setBroken] = useState<string | null>(null);
+  /**
+   * The last proposal run, as the server holds it. Not in the reducer beside
+   * the conversation: it is a different job, it arrives on no socket frame,
+   * and nothing about it is patched a few characters at a time.
+   */
+  const [run, setRun] = useState<ProposeRun | null>(null);
+  const [proposing, setProposing] = useState(false);
+  /** The press has gone out and the 202 has not come back. */
+  const [proposeSending, setProposeSending] = useState(false);
+  const [proposeRefused, setProposeRefused] = useState<string | null>(null);
+  /**
+   * The proposals this reader has finished with, by name: accepted, or
+   * dismissed. Page state, and honestly so — a reload shows the run again,
+   * which is the same shape a dismissed suggestion has. Dropping the run
+   * itself is the press that leaves nothing behind, and dismissing the last
+   * one does it.
+   */
+  const [accepted, setAccepted] = useState<ReadonlySet<string>>(() => new Set());
+  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
   const box = useRef<HTMLTextAreaElement>(null);
   const transcript = useRef<HTMLOListElement>(null);
+  // One Tab stop for every file row under every proposal, the way every other
+  // list on this page is one.
+  const keys = useListKeys();
 
   // The socket carries every frame to every client, so a run another tab
   // started streams in here too, and the conversation is the session's rather
@@ -77,7 +143,14 @@ export function Ask({ categories }: { categories: number }) {
     const read = () => {
       void fetchAsk()
         .then((state) => {
-          if (!stopped) dispatch({ kind: 'server', state });
+          if (stopped) return;
+          dispatch({ kind: 'server', state });
+          // A proposal has no frame of its own — a schema answer has nothing
+          // to stream — so this poll is how a finished run arrives, up to
+          // three seconds after it finished. It is also how a run another tab
+          // started, or a project switch that dropped one, gets here.
+          setRun((was) => (sameRun(was, state.proposal) ? was : state.proposal));
+          setProposing(state.proposal?.state === 'running');
         })
         // A failed read is not a failed conversation: the socket is the fast
         // path and the next tick tries again. Saying so here would put an
@@ -154,6 +227,58 @@ export function Ask({ categories }: { categories: number }) {
       .finally(() => setSending(false));
   };
 
+  const proposeStopped = proposeBlocked({ proposing, sending: proposeSending, fileCount });
+
+  const propose = () => {
+    if (proposeStopped !== null) return;
+    setProposeSending(true);
+    setProposeRefused(null);
+    setBroken(null);
+    // A new answer, so nothing a reader decided about the last one carries
+    // over — a name that happens to repeat is a different set of files.
+    setAccepted(new Set());
+    setDismissed(new Set());
+    void proposeGrouping()
+      .then((started) => {
+        if (started.refused !== null) {
+          setProposeRefused(started.refused);
+          return;
+        }
+        setRun(started.proposal);
+        setProposing(started.proposal?.state === 'running');
+      })
+      .catch((error: unknown) => setBroken(error instanceof Error ? error.message : String(error)))
+      .finally(() => setProposeSending(false));
+  };
+
+  /**
+   * Throw the whole answer away, on the server as well as here, so there is
+   * nothing left of it: no file was written by any of this, and now no run is
+   * held either.
+   */
+  const drop = () => {
+    setRun(null);
+    setProposing(false);
+    setProposeRefused(null);
+    setAccepted(new Set());
+    setDismissed(new Set());
+    void dropProposal().catch(() => undefined);
+  };
+
+  const proposals = run?.proposals ?? [];
+  const standing = proposals.filter((proposal) => !dismissed.has(proposal.name));
+
+  const dismiss = (name: string) => {
+    // The last one out takes the run with it, so "dismiss" leaves nothing
+    // behind rather than leaving a run on the server that a reload would
+    // bring back — which is exactly the flaw a dismissed suggestion has.
+    if (standing.length <= 1) {
+      drop();
+      return;
+    }
+    setDismissed((was) => new Set(was).add(name));
+  };
+
   const onKeyDown = (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
     // Enter sends and shift-Enter is a newline, which is the gesture anybody
     // typing into a box like this already has in their hands.
@@ -201,15 +326,6 @@ export function Ask({ categories }: { categories: number }) {
             </li>
           ))}
         </ol>
-      )}
-
-      {conversation !== null && conversation.costUsd > 0 && (
-        <p
-          className="ask-total"
-          title="What the answers that arrived cost. A turn that failed adds nothing — the CLI prints a price only when it finishes — so this is a floor rather than the whole bill."
-        >
-          {money(conversation.costUsd)} so far
-        </p>
       )}
 
       <textarea
@@ -274,7 +390,228 @@ export function Ask({ categories }: { categories: number }) {
           error colour — the same shape the Explain panel's refusals wear. */}
       {refused !== null && <p className="panel-empty ask-refused">{refused}</p>}
       {broken !== null && <p className="categories-error">{broken}</p>}
+
+      {/* The other job, and the sentence above the button is what keeps the
+          two apart: a question is answered from the categories that exist,
+          and this one is asked how the project divides when they do not. It
+          is a separate press with a separate price, and it writes as little
+          as the question does. */}
+      <div className="ask-propose">
+        <h3 className="ask-title" title="Ask Claude how this project could divide, from its files and the imports between them — not from the categories, which is what the question above asks about">
+          Propose a grouping
+        </h3>
+        <p className="panel-empty">
+          For a project the imports found no category in. Claude is sent the files and the references
+          between them and answers with groups; the cohesion and the overlap beside each one are counted
+          here, from the graph, not taken from what it said. Accepting one draws it by hand.
+        </p>
+
+        <div className="explain-bar">
+          <button
+            type="button"
+            className="explain-run"
+            aria-busy={proposing || proposeSending}
+            disabled={proposeStopped !== null}
+            title={
+              proposeStopped ??
+              `Propose a grouping of these ${fileCount} files, and spend about ${money(PROPOSE_USD)} of your Claude quota. Nothing is stored: each proposal is shown with the share of its references that stay inside it, and accepting one is you drawing that category.`
+            }
+            onClick={propose}
+          >
+            {run === null ? 'Propose a grouping' : 'Propose again'}
+            {/* The price before the press, not after it. */}
+            <span>about {money(PROPOSE_USD)}</span>
+          </button>
+          {run !== null && (
+            <button
+              type="button"
+              className="explain-stop"
+              title={
+                proposing
+                  ? 'Stop using this answer. What it has already spent is spent — this abandons the run, it does not call it back.'
+                  : 'Throw these proposals away. Nothing was written, so nothing is undone.'
+              }
+              onClick={drop}
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+
+        {proposeRefused !== null && <p className="panel-empty ask-refused">{proposeRefused}</p>}
+
+        {/* Nothing streams here, so the panel says what it is doing and for
+            how long — a still panel for a minute and a half reads as hung. */}
+        {proposeStatus(run) !== null && (
+          <p className={run?.state === 'failed' ? 'explain-failed' : 'ask-waiting'}>{proposeStatus(run)}</p>
+        )}
+
+        {run !== null && run.state === 'done' && (
+          <>
+            <p className="ask-note">{proposeSummary(run)}</p>
+            {/* The model's own sentence about why the project would not
+                divide. Its words, and marked as such by sitting apart from
+                every number on this panel, all of which are ours. */}
+            {run.note !== null && <p className="panel-empty ask-model-note">{run.note}</p>}
+          </>
+        )}
+
+        {standing.length > 0 && (
+          <ol className="ask-proposals" {...keys}>
+            {standing.map((proposal) => (
+              <ProposalRow
+                key={proposal.name}
+                proposal={proposal}
+                added={addedNames.has(proposal.name)}
+                accepted={accepted.has(proposal.name)}
+                consentStanding={consentStanding}
+                onAccept={() => {
+                  setAccepted((was) => new Set(was).add(proposal.name));
+                  onAccept(proposal.name, proposal.files);
+                }}
+                onDismiss={() => dismiss(proposal.name)}
+                onSelect={onSelect}
+              />
+            ))}
+          </ol>
+        )}
+      </div>
     </div>
+  );
+}
+
+/**
+ * One proposed grouping, drawn so it can be judged before it is accepted.
+ *
+ * The order is the order the decision is made in: what it is called, what it
+ * is for, then **our** numbers — the share of its references that stay
+ * inside, what reaches it, and what of it a category already holds — then the
+ * files themselves, every one of them, because "the parser files" is not a
+ * proposal and a reader cannot check a set they have not been shown.
+ *
+ * The cohesion is the whole defence, and the reason it is on the face of the
+ * row rather than in a tooltip: measured on a real project, four proposals
+ * came back at 0%, 1%, 4% and 0% with sentences beside them that read like
+ * architecture. Nothing here stops a person accepting one of those — they may
+ * know something the imports do not, which is decision 5's own carve-out —
+ * but they are told first.
+ */
+function ProposalRow({
+  proposal,
+  added,
+  accepted,
+  consentStanding,
+  onAccept,
+  onDismiss,
+  onSelect,
+}: {
+  proposal: Proposal;
+  /** A category of this name is in the list. Read from the categories, so it survives a reload. */
+  added: boolean;
+  /** This page pressed accept. The window before the write lands, and the one the consent question stands in. */
+  accepted: boolean;
+  consentStanding: boolean;
+  onAccept: () => void;
+  onDismiss: () => void;
+  onSelect: (file: string) => void;
+}) {
+  const invented = inventedPaths(proposal);
+  const reach = reachNote(proposal.evidence);
+  const weak = weakCohesion(proposal.evidence);
+  const waiting = accepted && !added;
+
+  return (
+    <li className="ask-proposal">
+      <div className="ask-proposal-head">
+        <span className="ask-proposal-name">{proposal.name}</span>
+        {added || accepted ? (
+          <span
+            className="ask-proposal-done"
+            title={
+              added
+                ? 'A category of this name is in .codemap/groups.json, stored as one you drew — the imports did not find it, and the picture does not claim they did'
+                : 'Not written yet: the question above asks before this project gets a .codemap/'
+            }
+          >
+            {waiting ? 'accepted' : 'added · by hand'}
+          </span>
+        ) : (
+          <span className="row-actions">
+            <button
+              type="button"
+              className="group-drop"
+              title={`Draw "${proposal.name}" as a category of these ${proposal.files.length} files. It is stored as one you drew — marked "by hand" on the frame, in this panel and on the component diagram — because the imports did not find it.`}
+              aria-label={`Accept ${proposal.name}`}
+              onClick={onAccept}
+            >
+              <i className="codicon codicon-check" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="group-drop"
+              title="Dismiss this proposal. Nothing was written, so nothing is undone."
+              aria-label={`Dismiss ${proposal.name}`}
+              onClick={onDismiss}
+            >
+              <i className="codicon codicon-close" aria-hidden="true" />
+            </button>
+          </span>
+        )}
+      </div>
+
+      {/* The model's sentence. Nothing checks it — only the numbers under it
+          are ours — so it sits in the muted voice every label here wears and
+          never in the body colour the evidence has. */}
+      <p className="ask-proposal-sentence">{proposal.sentence}</p>
+
+      <p
+        className={weak ? 'ask-proposal-evidence ask-proposal-weak' : 'ask-proposal-evidence'}
+        title={
+          weak
+            ? 'Less than a third of this set’s references stay inside it — under the cut the clustering itself uses, so the import graph would not have offered these files as a group'
+            : 'Counted here from the import graph, over the files this names — the same count a category’s own cohesion is'
+        }
+      >
+        {cohesionNote(proposal.evidence)}
+      </p>
+      {reach !== null && <p className="ask-proposal-evidence ask-proposal-reach">{reach}</p>}
+      {/* Counted against the categories **as they stood when the answer came
+          back**, and it is not recomputed after: accepting one of these
+          proposals changes what the next one overlaps, and this line will
+          not know. The row's own "added · by hand" is what says the state
+          moved on. */}
+      <p className="ask-proposal-evidence" title="Counted against the categories as they stood when this was proposed">
+        {overlapNote(proposal)}
+      </p>
+
+      {/* Never hidden: a proposal that names files this project has not got is
+          a proposal to distrust, and a reader shown only what landed cannot
+          see that. */}
+      {invented.length > 0 && (
+        <p className="ask-proposal-invented" title={invented.join('\n')}>
+          {invented.length} {invented.length === 1 ? 'path' : 'paths'} named that this project has no file for
+        </p>
+      )}
+
+      {waiting && consentStanding && (
+        <p className="ask-proposal-invented">
+          Not stored yet — answer the question at the top of this section, which asks before creating{' '}
+          <code>.codemap/</code>.
+        </p>
+      )}
+
+      <div className="ask-proposal-files">
+        {proposal.files.map((file) => {
+          const icon = fileIconFor(file);
+          return (
+            <button type="button" {...LIST_ROW} key={file} title={file} onClick={() => onSelect(file)}>
+              {icon !== null && <img className="file-icon" src={icon.url} alt="" title={icon.label} draggable={false} />}
+              <span className="group-file-path">{file}</span>
+            </button>
+          );
+        })}
+      </div>
+    </li>
   );
 }
 
@@ -316,11 +653,12 @@ function Answer({ turn }: { turn: AskTurn }) {
       {turn.state === 'cancelled' && (
         <p className="ask-note">Ended before it finished. What it had already spent is spent.</p>
       )}
-      {turn.state === 'done' && turn.costUsd !== undefined && (
-        <p className="ask-note" title={timingNote(turn) ?? undefined}>
-          {money(turn.costUsd)}
-          {turn.ms === undefined ? '' : ` · ${seconds(turn.ms)}`}
-        </p>
+      {/* No price under an answer. Asked for and removed: a receipt beside
+          every reply is noise in a panel a person reads for the reply. What
+          protects them is the button, which says what a press costs before it
+          is pressed. The cost is still measured and still on the wire. */}
+      {turn.state === 'done' && turn.ms !== undefined && (
+        <p className="ask-note" title={timingNote(turn) ?? undefined}>{seconds(turn.ms)}</p>
       )}
     </>
   );

@@ -351,3 +351,22 @@ test('a rejected leaf under an accepted outer category stays in the outer, not i
   );
   assert.ok(!view.nodes.some((node) => node.id === UNCATEGORISED_ID));
 });
+
+// The leftover box is not a category, and something downstream believed it was:
+// the conversation refused a project with no categories by counting the boxes,
+// and this one is always appended when any file survives the filter. Both of
+// the reporter's projects had every category rejected, were told they had one,
+// and spent money to be answered about a category that does not exist.
+test('the box for what no category claimed says so, and is the only one that does', () => {
+  const plain = graphOf({ 'a.ts': [], 'b.ts': [] }, []);
+  const view = selectView(plain, components, 0, null, null, []);
+  const boxes = view.nodes.filter((node) => node.component !== undefined);
+  assert.equal(boxes.length, 1);
+  assert.equal(boxes[0]?.component?.uncategorised, true);
+  assert.equal(boxes[0]?.component?.name, null);
+  // And with a real one beside it, only the leftover is marked.
+  const named = draw(components, categories).nodes.filter((node) => node.component !== undefined);
+  assert.ok(named.length > 1);
+  assert.equal(named.filter((node) => node.component?.uncategorised === true).length, 1);
+});
+
