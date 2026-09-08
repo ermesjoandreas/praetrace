@@ -12,6 +12,7 @@ import { partitionByCategory, type ComponentSource } from './components.js';
 // binds before either body runs, so the cycle costs nothing at load.
 import { diffView } from './diffview.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
+import { nestByFolder } from './folders.js';
 import { isTestFile } from './tests.js';
 import {
   LIST_ABOVE,
@@ -723,10 +724,17 @@ function focusView(
     }
   }
 
+  // The folder arrangement is not offered on a focus view, and the echo says
+  // so. A bundle stands for files from many folders at once and belongs in
+  // none, so it would sit outside every frame while the boxes beside it sat
+  // inside one — and a focus view is not a place in the tree but a
+  // neighbourhood of one file, drawn from wherever the neighbours live.
+  // Neither was measured; refusing what was not measured is the honest half.
+  const { folders: _refused, ...asked } = spec;
   return {
     nodes,
     edges: withOwnership(aggregated.values()),
-    spec: { ...spec, focus },
+    spec: { ...asked, focus },
     trail: trailFor(''),
     // Every file in the slice, bundled ones included. The status bar reads it
     // beside the box count, and "3 boxes · 116 files" is the whole point.
@@ -855,7 +863,16 @@ function componentView(
 
   // The category asked for is dropped along with the scope and the focus: it
   // is one of the boxes here, not a slice of them.
-  const { category: _ignored, ...asked } = spec;
+  //
+  // And the folder arrangement with them, because **a category is not in a
+  // folder**. Measured over three projects: every category spans more than
+  // one directory and more than one top-level directory — 5 of 5, astrup's
+  // covering 59 of its 65 — and the lowest common ancestor folder of each of
+  // the eleven on the largest is the project root, so a folder frame that
+  // respects folder walls is the whole project drawn eleven times. A frame
+  // that could only hold a fraction of a component is the refusal this view
+  // already makes for scope and focus, for the same reason.
+  const { category: _ignored, folders: _refused, ...asked } = spec;
   return {
     nodes,
     edges: withOwnership(aggregated.values()),
@@ -897,10 +914,43 @@ function scopeView(
   // A category that reached here matched nothing, and the echo says so by
   // carrying none — the way a focus on a file the graph has not got echoes
   // `focus: null` — so the page can tell this root view from one it asked for.
-  const { category: _unmatched, ...asked } = spec;
+  // `folders` goes the same way where the arrangement was refused.
+  const { category: _unmatched, folders: _refused, ...asked } = spec;
+  const echoed = { ...asked, scope, focus: null };
+
+  // A folder is a frame only where it is not already a box, and only where
+  // there are frames at all. Above the grouping threshold the folder *is* the
+  // box — that is how a big scope gets small — and the same directory cannot
+  // be both at once; past `LIST_ABOVE` the scope is rows, and rows have no
+  // frames. Both refusals are decided **here**, before a single label is
+  // rewritten, because dropping the frames afterwards is not a refusal: it
+  // leaves the boxes named relative to frames that were never sent, and a
+  // list of `EChart.tsx`, `index.ts`, `index.ts` is the one thing a path told
+  // apart. Over the echoed spec, like the presentation itself, or a focus
+  // that fell back to this scope would be judged a diagram.
+  const nesting =
+    spec.folders === true && !grouped && presentationOf(echoed, drawn.nodes.length) !== 'list'
+      ? nestByFolder(inScope, scope)
+      : null;
+
+  if (nesting !== null) {
+    for (const node of drawn.nodes) {
+      const holder = nesting.holder.get(node.id);
+      if (holder === undefined) continue;
+      node.inFolder = holder;
+      // A box is named relative to the frame that holds it, or every box in
+      // `Views/Home` would repeat the two words its frame already says. That
+      // is also what keeps a folder which draws no frame — collapsed into the
+      // one below it, or past `MAX_FOLDER_DEPTH` — from being lost: it
+      // reappears here, as `hero/hero.component.ts`.
+      node.label = node.id.slice(holder.length + 1);
+    }
+  }
+
   return {
     ...drawn,
-    spec: { ...asked, scope, focus: null },
+    ...(nesting === null ? {} : { folders: nesting.folders }),
+    spec: nesting === null ? echoed : { ...echoed, folders: true as const },
     trail: trailFor(scope),
     totalFiles: inScope.length,
     // Whether grouping actually happened, not whether it was attempted. A flat
@@ -947,9 +997,15 @@ function categoryView(
     (id) => id,
   );
 
+  // The folder arrangement is refused here for the reason the component
+  // diagram refuses it: a category cuts across directories — that is what
+  // makes it worth naming — so its members' folders are not a structure this
+  // slice has, and the frames would be the whole tree around a handful of
+  // boxes. The labels below are whole paths for the same reason.
+  const { folders: _refused, ...asked } = spec;
   return {
     ...drawn,
-    spec: { ...spec, scope: '', focus: null },
+    spec: { ...asked, scope: '', focus: null },
     // Root, then the category by its stored id: a scope by membership, not by
     // path, so the crumb's `scope` is '' and its `category` is the link.
     trail: [...trailFor(''), { label: category.name ?? storedId, scope: '', category: storedId }],

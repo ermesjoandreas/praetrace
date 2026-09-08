@@ -1435,6 +1435,91 @@ main { display: flex; flex: 1; min-height: 0; }
   background: rgb(var(--group-color));
 }
 
+/* --- folder frames --------------------------------------------------------- */
+
+/* The folders drawn as frames around the boxes, under `?folders=1`.
+
+   It has to read as structure and not as a category, and the difference
+   cannot be a hue: a category is a piece of architecture somebody named and
+   gave one of eight colours, a folder is named and coloured by nobody. So a
+   category keeps its colour at 6% fill and 40% edge, and a folder gets the
+   page's own structural line — `--vsc-border`, the same 1px that separates
+   the menu bar from the canvas — with no colour of its own. Depth is the
+   only thing it varies, and it varies in light rather than in hue: each
+   level sits a little above the canvas the way the chrome sits below it.
+
+   The fills compound, because a nested frame is its own node painted over
+   its parent rather than a child element of it — so the steps get smaller
+   as they go in, or a folder four deep would be a white block. */
+.folder-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--vsc-border);
+  border-radius: var(--vsc-radius);
+  background: rgba(255, 255, 255, 0.03);
+  /* The frame must never swallow a click meant for a box behind it. */
+  pointer-events: none;
+}
+.folder-depth-1 { background: rgba(255, 255, 255, 0.022); }
+.folder-depth-2 { background: rgba(255, 255, 255, 0.018); }
+.folder-depth-3 { background: rgba(255, 255, 255, 0.014); }
+
+/* A folder every box in which is a ghost: the directory is not on disk. Drawn
+   the way a ghost box is — dashed, dimmed, its name struck — and in no hue of
+   its own, because the diff's letters carry the colour. */
+.folder-ghost { border-style: dashed; opacity: 0.5; }
+.folder-ghost .folder-name { text-decoration: line-through; }
+
+/* LABEL_HEIGHT in layout.ts is 18: everything on this line is 18 or less and
+   carries no vertical padding. React Flow sets pointer-events on the node
+   wrapper inline; the frame lets clicks through and only its label catches
+   them.
+
+   The frame only: a shut folder is a box, and a box is dragged, double-clicked
+   and hovered like every other one — `:has` is what tells the two apart, since
+   both are the same node type and React Flow puts the rule on the wrapper. */
+.react-flow__node-folder:has(> .folder-frame) { pointer-events: none !important; }
+.folder-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 5px 0 0 10px;
+  pointer-events: auto;
+}
+.folder-name {
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-sm);
+  line-height: 18px;
+}
+.folder-count { color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); line-height: 16px; }
+.folder-gone { color: var(--vsc-fg-disabled); font-size: var(--vsc-font-size-sm); line-height: 16px; }
+
+/* The one gesture a folder frame has. 16px like the frame's own lock button,
+   and it opts back into pointer events for the same reason that one does. */
+.folder-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: var(--vsc-radius);
+  color: var(--vsc-fg-disabled);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.folder-fold:hover { color: var(--vsc-fg); background: var(--vsc-toolbar-hover); }
+.folder-fold .codicon { font-size: 14px; }
+
+/* Shut, a folder is a box — the same box the engine draws above
+   GROUP_THRESHOLD, with a count where a file's symbols go. It wears the box
+   chrome so it reads as one of the things on the canvas rather than as a
+   shrunken frame; the name is bold the way a folder box's already is. */
+.box-folder-shut .box-title-text { font-weight: 600; direction: ltr; }
+.box-folder-shut .folder-fold { color: var(--vsc-fg-muted); }
+
 /* --- the group editor popover --------------------------------------------- */
 
 /* A small panel beside the label: the name, the palette and what can be done
@@ -1647,7 +1732,7 @@ main.stacked-sidebar > .sidebar > .activity { flex: 1 1 auto; }
    A block title wears what a list heading wears in the detail panel: muted,
    small, bold — a heading inside a section, not a section. */
 .repo-block { padding-bottom: 4px; }
-.repo-block-title, .categories-orphans-title {
+.repo-block-title, .categories-orphans-title, .ask-title {
   margin: 0;
   height: var(--vsc-row-h);
   padding: 0 8px;
@@ -3476,3 +3561,175 @@ button.git-count-frozen, button.git-count-frozen:hover { background: transparent
 .sashing-col, .sashing-col * { cursor: col-resize !important; }
 .sashing-row, .sashing-row * { cursor: row-resize !important; }
 .sashing-col, .sashing-row { user-select: none; }
+
+/* --- asking about the categories ------------------------------------------- */
+
+/* Under the categories, because that is what it is about. Blocks, not a card:
+   a title, a sentence, the exchanges, the box — each edged by the 1px line
+   that separates every region on this page. */
+.ask { border-top: 1px solid var(--vsc-border); padding-bottom: 4px; }
+
+/* One exchange, oldest first — and the list scrolls inside itself, which is
+   not a cosmetic choice: two answers about this project ran to 1 900 pixels
+   and pushed the question box far below the fold of a side bar section. A
+   follow-up box you have to go looking for is not a follow-up box. Capped,
+   the newest words are always directly above the box that asks the next
+   question. */
+.ask-turns { margin: 0; padding: 0; max-height: 260px; overflow-y: auto; list-style: none; }
+.ask-turn { border-top: 1px solid var(--vsc-border); }
+.ask-turn:first-child { border-top: none; }
+
+/* The question, in the panel's own voice: muted, the way every label here is,
+   with the answer under it in the body colour. The contrast is the whole of
+   what says which is which — no badge, no quotation mark, no second hue. */
+.ask-question {
+  margin: 0;
+  padding: 4px 8px 2px;
+  color: var(--vsc-fg-muted);
+  line-height: 1.5;
+}
+
+/* The answer wears `explain-short`, which is this panel's one prose shape.
+   This only keeps a long path or identifier from pushing the column sideways,
+   and keeps the paragraph breaks the model wrote. */
+.ask-answer { white-space: pre-wrap; word-break: break-word; }
+
+/* The model working, not the model's reply. It wears `explain-stream` — the
+   dim monospace the explain run's raw output wears, which is what it is — and
+   this caps how tall it may grow, since it arrives for up to twenty seconds
+   and would otherwise push the box off the panel. */
+.ask-thinking { max-height: 88px; }
+
+/* The second and a half before the first characters, and the numbers under an
+   answer. Not a spinner: a word says what a spinner does not, and it is on
+   screen for less time than a spinner is worth. */
+.ask-waiting,
+.ask-note,
+.ask-total {
+  margin: 0;
+  padding: 0 8px 2px;
+  color: var(--vsc-fg-muted);
+  font-size: var(--vsc-font-size-status);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+
+/* What the conversation has cost, under the answers it bought. A floor rather
+   than the whole bill — a turn that failed printed no price — and the row's
+   title is where that is said. */
+.ask-total { padding-top: 4px; border-top: 1px solid var(--vsc-border); }
+
+/* The conversation the project switch closed. A sentence, not a failure, so it
+   is the muted body colour; the line above it is what keeps it from reading as
+   part of the standing paragraph. */
+.ask-gone { border-top: 1px solid var(--vsc-border); }
+
+/* The question box. Two rows because a question is usually one line and
+   sometimes three, and the input tokens exactly — nothing here floats, so
+   nothing here has a shadow or a radius of its own. */
+.ask-input {
+  display: block;
+  width: calc(100% - 16px);
+  margin: 4px 8px 0;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--vsc-fg);
+  background: var(--vsc-input-bg);
+  border: 1px solid var(--vsc-border-input);
+  border-radius: var(--vsc-radius);
+  resize: vertical;
+}
+.ask-input::placeholder { color: var(--vsc-fg-placeholder); }
+.ask-input:focus { outline: 1px solid var(--vsc-accent); outline-offset: -1px; }
+
+/* --- proposing a grouping --------------------------------------------------
+   The panel's second job, and the 1px line is what says it is a second one:
+   a block of its own with its own title, its own sentence and its own price,
+   under the question box rather than beside it. Three buttons in one row
+   would have read as three ways to ask the same thing. */
+.ask-propose { border-top: 1px solid var(--vsc-border); }
+
+/* The model's own sentence about why the project would not divide. Its words,
+   and the only words on this block that are not either ours or a path. */
+.ask-model-note { font-style: italic; }
+
+/* One proposal per row. **No scroller of its own**, unlike the transcript
+   above it: that one is capped so the question box under it stays reachable,
+   and there is nothing under this — the panel's own scroll is the only one,
+   and a second inside it was two bars a millimetre apart. */
+.ask-proposals { margin: 0; padding: 0; list-style: none; }
+.ask-proposal { border-top: 1px solid var(--vsc-border); padding-bottom: 4px; }
+
+/* The name, with accept and dismiss in the row actions — hidden until the
+   proposal is hovered, like every other row action on this page. */
+.ask-proposal-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 4px 0 8px;
+}
+.ask-proposal-name { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ask-proposal-head:hover .row-actions,
+.ask-proposal-head:focus-within .row-actions { opacity: 1; }
+
+/* What the accept wrote: a category, by hand. The same two words the frame,
+   the panel row and the component box use for a group a person drew. */
+.ask-proposal-done { color: var(--vsc-fg-muted); font-size: var(--vsc-font-size-status); }
+
+/* The model's sentence about the group: muted, because nothing checks it. The
+   numbers under it are in the body colour, because those are ours. */
+.ask-proposal-sentence {
+  margin: 0;
+  padding: 0 8px 2px;
+  color: var(--vsc-fg-muted);
+  line-height: 1.5;
+}
+
+.ask-proposal-evidence {
+  margin: 0;
+  padding: 0 8px 1px;
+  font-size: var(--vsc-font-size-status);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+}
+.ask-proposal-reach { color: var(--vsc-fg-muted); }
+
+/* Under the cut the clustering itself uses. The tool's own warning colour,
+   which is what it is: the import graph would not have offered these files as
+   a group. It does not disable the accept — a person may know something the
+   imports do not — it makes sure they read it first. */
+.ask-proposal-weak { color: var(--vsc-warning); }
+
+/* Paths the answer named that this project has no file for, and the sentence
+   left when a proposal has been accepted but `.codemap/` has not been agreed
+   to yet. Both are the tool saying the answer is not all the way there. */
+.ask-proposal-invented {
+  margin: 0;
+  padding: 0 8px 1px;
+  color: var(--vsc-warning);
+  font-size: var(--vsc-font-size-status);
+  line-height: 1.5;
+}
+
+/* The members, exactly, and drawn as a category's own files are — 22px rows,
+   the file icon, the monospace path with its directory ellipsised away first
+   — one indent in rather than two, because a proposal is not nested under
+   anything. A proposal reads as the category it would become. */
+.ask-proposal-files { display: flex; flex-direction: column; }
+.ask-proposal-files > button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: var(--vsc-row-h);
+  padding: 0 8px 0 24px;
+  color: var(--vsc-fg-muted);
+  font-family: var(--vsc-font-mono);
+  font-size: var(--vsc-font-size-status);
+  line-height: 22px;
+  white-space: nowrap;
+  text-align: left;
+}
+.ask-proposal-files > button:hover { background: var(--vsc-list-hover); color: var(--vsc-fg); }
+.ask-proposal-files > button:focus-visible { outline-offset: -1px; }

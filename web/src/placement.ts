@@ -39,7 +39,7 @@ import type { Presentation, ViewGraph } from './api';
  * and can see.
  */
 
-/** The whole spec, as `api.ts` re-exports it. The key below reads five of its fields. */
+/** The whole spec, as `api.ts` re-exports it. The key below reads six of its fields. */
 type ViewSpec = ViewGraph['spec'];
 
 /**
@@ -143,6 +143,13 @@ export const MAX_PROJECTS = 6;
  * without it a diff of the whole project and the root diagram would share one
  * key, and opening a diff would scatter boxes nobody moved.
  *
+ * **And whether the folders are frames**, for the same reason as `diff` and
+ * with the same sharpness: the folder arrangement and the flat one draw the
+ * same box ids of the same scope in different places, so one shared key means
+ * a box moved in one jumps in the other and jumps back on the way out. Its
+ * value stays out because it has none — `folders` is `true` or absent, one
+ * spelling per answer.
+ *
  * **Out of the key: everything that changes which boxes are drawn rather than
  * where the drawn ones belong.**
  *
@@ -170,13 +177,20 @@ export const MAX_PROJECTS = 6;
  */
 export function viewKeyOf(spec: ViewSpec, presentation: Presentation): string | null {
   if (presentation === 'list') return null;
-  return JSON.stringify([
+  const key: (string | number)[] = [
     spec.diagram,
     spec.focus ?? '',
     spec.category ?? '',
     spec.scope,
     spec.diff === undefined ? 0 : 1,
-  ]);
+  ];
+  // Appended only when it is on, so every key written before the folder
+  // arrangement existed is still the key the flat view asks for. Bumping
+  // `PLACEMENT_VERSION` instead would have been the tidy answer and would have
+  // thrown away every arrangement in every project to add a view nobody had
+  // used yet.
+  if (spec.folders !== undefined) key.push(1);
+  return JSON.stringify(key);
 }
 
 // --- the merge ---------------------------------------------------------------

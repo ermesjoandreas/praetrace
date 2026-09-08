@@ -1128,23 +1128,27 @@ function toSpec(raw: Record<string, unknown>): ViewSpec {
     diagram: readDiagram(raw['diagram']) ?? 'classes',
     // Spread rather than assigned: absent is a key the URL did not carry, and
     // `exactOptionalPropertyTypes` will not let an undefined stand in for it.
-    // The three keys the two readers must not disagree about — see
-    // `toSocketSpec`, which reads the same three off the same names.
+    // The four keys the two readers must not disagree about — see
+    // `toSocketSpec`, which reads the same four off the same names.
     ...optionalKeys(raw),
   };
 }
 
 /**
- * The three keys that are absent more often than not, read once for both
+ * The four keys that are absent more often than not, read once for both
  * wire formats: they share the names, and the page sends back the spec it
  * was given, so the socket reader is handed exactly what the query reader
  * built. A refused `as=` is dropped here rather than defaulted, and the
  * route refuses it before this runs.
  */
-function optionalKeys(raw: Record<string, unknown>): Pick<ViewSpec, 'as' | 'category' | 'diff'> {
+function optionalKeys(raw: Record<string, unknown>): Pick<ViewSpec, 'as' | 'category' | 'diff' | 'folders'> {
   const as = readAs(raw['as']);
   const category = raw['category'];
   const diff = readAt(raw['diff']);
+  // `?folders=1` from the URL and `folders: true` from the socket, which is
+  // the server's own echo handed back. Absent is off and so is `false`: one
+  // spelling per answer, which is why the spec says `?: true`.
+  const folders = raw['folders'] === '1' || raw['folders'] === true;
   return {
     ...(as === undefined || as === null ? {} : { as }),
     ...(typeof category === 'string' && category !== '' ? { category } : {}),
@@ -1152,6 +1156,7 @@ function optionalKeys(raw: Record<string, unknown>): Pick<ViewSpec, 'as' | 'cate
     // for the route to check, and turning a bad one into nothing would draw
     // the working tree under a URL that asked for a diff.
     ...(diff === null ? {} : { diff }),
+    ...(folders ? { folders: true as const } : {}),
   };
 }
 

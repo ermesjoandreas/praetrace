@@ -72,6 +72,15 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
 - Git status against a chosen base, and a group editor
 - Explain: a paid, on-request reading of what a symbol is for, and whether it still
   matches the code it described
+- A conversation about the categories, streamed into the panel, and a second
+  press that **proposes** a grouping for a project the imports found none in —
+  each proposal carrying our own cohesion and overlap, and accepted through the
+  create that stores it as a category a person drew. See *Asking about the
+  categories*
+- The folders as frames around the boxes, nested, under `?folders=1` — a second
+  arrangement of the same boxes, on the class diagram's scopes and on the
+  structural diff, with a fold that puts a folder back as the box it is above
+  the grouping threshold. See *The view layer*
 - Source Control: the commit graph with its threads, the diagram frozen at any
   commit (`?at=`), and a Repository panel — project, remote, hook and MCP
 - Coverage read from what CI already wrote — never run, never instrumented, and
@@ -318,6 +327,17 @@ These were decided deliberately. Do not change them without asking.
    wrong in a way that looks authoritative. A person may draw a group — they may know
    something the imports do not — but it is stored with `origin: 'manual'` and marked
    wherever it is shown. A model may suggest a name; it may never decide who belongs.
+
+   **A model may *propose* a grouping; it may never *store* one.** That is the
+   reading this rule gained on 2026-09-08, and it does not bend it. A proposal
+   is text on a screen with evidence beside it — and the evidence is
+   `view/cluster.ts` counting the same imports the clustering counts, never a
+   number the model gave. Nothing on that path writes. A person pressing accept
+   **is the person drawing that group**, so it is stored with `origin: 'manual'`
+   through the same `POST /api/groups` a shift-click draw makes, and it is
+   marked "by hand" on the frame, in the panel, on the front page and on the
+   component diagram. The graph never claims to have found it. See *Asking about
+   the categories*.
 
 ## Graph model
 
@@ -673,6 +693,11 @@ src/
     explain.ts    spawns `claude -p` for a reading of a symbol. Never throws
     suggest.ts    spawns `claude -p` for names for the unnamed groups. Never
                   throws, never writes; a person accepts, and that is the write
+    ask.ts        the two paid presses under Categories: `ask()`, the streamed
+                  conversation about the component diagram, resumed through
+                  --resume; and `propose()`, its own invocation, its own prompt
+                  and its own schema, asked how the project divides. Neither
+                  writes; `tooBigToPropose` refuses before a cent is spent
     hook.ts       a Claude Code PostToolUse payload -> the same FileChange
     hook-install.ts  detect, preview and merge the hook into settings.json
     mcp-install.ts  the same three, for .mcp.json: the script is found from
@@ -697,7 +722,14 @@ src/
                   changes, agent — pure; capped lists carry their totals
     components.ts the categories as components: which file is whose, and what
                   each provides (partitionByCategory); select.ts draws it
-    cluster.ts    label propagation over the import graph
+    cluster.ts    label propagation over the import graph, and `fileLinks` —
+                  the one home of what couples two files, which
+                  `undirectedNeighbours` and `evidenceFor` are both built from
+                  so the clustering's number and a proposal's cannot drift
+    folders.ts    the folders as nested frames: which folders are drawn, which
+                  are collapsed into the one below, what each is then called,
+                  and which frame holds each box. Pure — the geometry is
+                  web/src/layout.ts's, the arrangement is decided here
     detail.ts     one node's dependents and dependencies, for the panel
     search.ts     subsequence search over the whole graph
     lanes.ts      lane assignment for the commit graph — pure
@@ -716,7 +748,8 @@ src/
                   refreshGroups, clustersOf — held in memory like coverage,
                   re-read by the view route for a component diagram or a
                   category scope and by the two routes that write
-                  groups.json), and the last suggest run. Swapped whole
+                  groups.json), the conversation about the categories and the
+                  last suggest run. Swapped whole
     app.ts        Fastify: static web build, and the API below; `optionalKeys`
                   reads `as`, `category` and `diff` for both wire formats
     flow.ts       GET /api/flow, registered from app.ts; asks the session for
@@ -724,6 +757,12 @@ src/
     diff.ts       GET /api/diff, and resolveDiffEnds — the one place `base`
                   and a commit become two graphs, shared with the view route
     overview.ts   GET /api/overview, live only
+    ask.ts        GET and POST /api/ask; `askContext` runs the real
+                  `selectView` for the component diagram rather than
+                  re-deriving it, `proposeContext` is the level underneath
+                  (files, who holds each, `fileLinks`) and `judge` attaches
+                  `evidenceFor` and the overlaps off one graph. The propose
+                  run is held here, against the session it was made for
     mcp-install.ts  GET /api/mcp-status and POST /api/mcp-install; asks the
                   session for the root and nothing else
     live.ts       connected clients and their view specs; pushes per client,
@@ -748,6 +787,13 @@ web/              the browser page (Vite, built into dist/web)
                   ReactFlowProvider, dagre top-to-bottom, the engine's notDrawn
                   under it
   src/GroupNode.tsx a group frame: name, colour, size, membership
+  src/FolderNode.tsx a folder, under ?folders=1: the frame around its boxes —
+                  name, count, fold — or, shut, the one box standing for them.
+                  The structural line, never a category's colour
+  src/fold.ts     what a shut folder does to the boxes and the lines: the boxes
+                  it swallows, the frames left, the lines re-pointed at it and
+                  summed. Pure, tested; hands the view straight back when
+                  nothing is shut
   src/Sidebar.tsx the right side bar: Following (with its readings), and
                   Activity placed into it by App. `DetailPanel` is exported
                   from here too and stands at the foot of the LEFT bar
@@ -756,6 +802,12 @@ web/              the browser page (Vite, built into dist/web)
                        under it once unfolded, the editor (name, colour, members,
                        delete), the create-from-selection form, and the model's
                        suggested name on the group's own row with accept / dismiss
+  src/Ask.tsx          under the categories: the conversation, and the second
+                       press that proposes a grouping — each proposal's name,
+                       sentence, our cohesion, its overlap and every one of its
+                       files, with accept (the ordinary create) and dismiss
+  src/ask.ts           its pure half — the transcript reducer, what a delta
+                       does, and the sentences a proposal is read by. Tested
   src/Repository.tsx   the left bar's first section: project, remote, the Claude
                        Code hook and MCP, and the buttons that act on them
   src/SourceControl.tsx  Changes (the per-file list, the base picker) and Graph
@@ -788,9 +840,11 @@ web/              the browser page (Vite, built into dist/web)
   src/marks.ts    how long a live signal stands and how it weakens — pure, and
                   the one place the two durations are decided
   src/AgentStatus.tsx  what the agent is doing, and how long ago
-  src/layout.ts   dagre for a view's first layout, keepLayout for every save after;
-                  componentHeight, and layoutFlow / flowBoxSize for the flow
-                  (tested in flow.test.ts)
+  src/layout.ts   dagre for a view's first layout, keepLayout for every save after
+                  (which takes the folder frames, so a new box lands in its own
+                  folder); ClusterInput.folder and the four rules a directory
+                  frame needs; componentHeight, and layoutFlow / flowBoxSize
+                  for the flow (tested in flow.test.ts)
   src/api.ts      fetch + the shared types, imported from src/ — and one value,
                   flow.ts's language table, which bundles because it reads a
                   tree and nothing else
@@ -825,8 +879,12 @@ GET  /api/view          the slice for a ViewSpec, given as a query string.
                         scope/focus/category dropped from the echo — and the
                         reply carries `diff: { from, to }` with the resolved
                         shas; 400 for a spelling that is neither (named
-                        `diff=`), 404 for an unknown commit or no git. The
-                        view carries `presentation`: list or diagram
+                        `diff=`), 404 for an unknown commit or no git.
+                        ?folders=1 arranges a scope diagram or a diff with the
+                        folders as nested frames, and answers with them as
+                        `folders`; never a 400 — where the arrangement does not
+                        apply the key is dropped from the echo instead.
+                        The view carries `presentation`: list or diagram
 GET  /api/overview      the front page in one fetch: project (files, tests,
                         languages, what cannot be read), entry points (the
                         manifests' and the graph's roots, capped with totals),
@@ -888,7 +946,18 @@ POST /api/hook          the PostToolUse payload. Always 200, and answers with
                         `hookSpecificOutput.additionalContext`
 POST /api/note          the agent's own words about what it just changed
 GET  /api/coverage      what the test suite executed, or { coverage: null }
+GET  /api/ask           the conversation about the categories, whether a turn
+                        is in flight, and the last proposed grouping
+POST /api/ask           { action: 'ask' } 202 and the words arrive on the
+                        socket; 'end' closes it; 'propose' 202s a grouping run
+                        — 400 for a project with no files or one too big for
+                        one prompt, 409 while one is in flight —
+                        'drop-proposal' throws that run away. Spends money.
+                        **Writes nothing**: accepting a proposal is the
+                        ordinary POST /api/groups create
      /live              the websocket. Besides views it carries `agent`,
+                        `ask` and `ask-delta` (a proposal has none — a schema
+                        answer has nothing to stream, and the panel polls),
                         `explain`, `explain-delta`, and `{ type: 'groups' }` after
                         every groups.json write — to every client, frozen ones
                         too, because a name lives outside the commit; the page
@@ -982,6 +1051,9 @@ shareable.
 /?diagram=components         the categories as UML components: one box per leaf
                              category listing what files outside it reach, the
                              imports between categories summed onto one line per pair
+/?folders=1                  the folders as frames around the boxes, nested — a
+                             second arrangement of the same boxes, not a third
+                             diagram. Scope diagrams and the structural diff only
 ```
 
 **`/` is the front page, and it is recognised by key presence.** `isFrontPage`
@@ -1011,6 +1083,60 @@ view's own lines summed by `weight`, and a floor: a call through an untyped
 receiver is not in the graph, and the column title is the only place that
 says so. `?as=` rides the helpers built from the live URL, and a navigation to
 a new place drops it on purpose.
+
+**A folder is a frame only where it is not already a box.** Above
+`GROUP_THRESHOLD` (40) a scope folds its files into folder *boxes* with a
+count, which is how a big scope gets small; a folder *frame* is the opposite —
+every file keeps its box and the folder is drawn around it, nested, so an edge
+that crosses a folder wall is visible as exactly that, which is the whole value
+against an IDE's tree. The same directory cannot be both, so `?folders=1`
+applies only below the threshold, and the gesture is opening a folder box
+rather than a third diagram. The tree is `nestByFolder` in `view/folders.ts`,
+pure and tested: a folder holding one file is still a frame (webapp-h26's
+`Controllers` and `Models` hold one file each and are the wall the picture is
+about — 4 of the 12 frames at that root; astrup's `app/api` is nine boxes all
+called `route.ts`, and the eight one-box frames are the only thing that tells
+them apart); a folder holding nothing but one subfolder collapses into it and
+its name joins the label (`wwwroot/js`), the same walk `descend` does at the
+scope; a folder holding *every* drawn box draws no frame, because that is the
+canvas with a border. `MAX_FOLDER_DEPTH` is 4 and is a guard, not the design —
+past it nothing below is framed and those boxes fall to the deepest frame
+above. A box is labelled relative to the frame holding it, so a folder that
+draws no frame is not lost: it reappears in the labels of its own files.
+Frames never count toward `LIST_ABOVE`; boxes do.
+
+**The arrangement is refused where a folder is not the structure, and the echo
+says which.** Under `diagram=components` and under `?category=`, because a
+category is not in a folder — every category measured spans more than one
+directory and more than one top-level directory, and the lowest common ancestor
+folder of each of astrup's eleven is the project root, so a category frame that
+respected a folder wall would be the whole project eleven times over. Under a
+focus, which is a neighbourhood rather than a place in the tree and whose
+bundles stand for files from many folders at once. Above `GROUP_THRESHOLD`,
+where the folder is already the box. And on a list, which has rows and no
+frames. Each drops `folders` from the echoed spec, the way `diff` is dropped
+when only one graph was handed over, so the page reads the echo rather than the
+URL and the View menu greys the item with the reason.
+
+**A refusal is decided before a single label is rewritten**, and the list is
+the one that has to reach for `presentationOf` to know. Dropping the frames
+afterwards is not a refusal: under the arrangement a box is named relative to
+the frame that holds it, so a list built with the frames and stripped of them
+kept 14 of astrup's `components` rows reading `EChart.tsx`, `build-option.ts`,
+`index.ts` — the directory gone from the row and no frame on screen to say it,
+while the echo said the arrangement had been refused. `scopeView` therefore
+labels flat, builds its echo, and only then asks `presentationOf(echoed,
+boxes)` whether there is a diagram to frame; `diffView` already did it in that
+order. The rule: whatever decides an arrangement must decide it before
+anything is drawn in its terms.
+
+**Two frame systems, one at a time.** A folder frame and a category frame are
+both drawn by `frameClusters`, and the page hands it one list or the other:
+under `?folders=1` the folders, otherwise the categories. Drawn together over a
+folder layout, three of astrup's eleven categories survive `withoutOverlaps`
+and one of them is an 8544px rectangle around 172 boxes of which 167 are not in
+it. `?category=` and the component diagram are how a category is seen whole,
+and the Categories panel still lists every one of them.
 
 **A category is a scope.** `?category=<storedId>` shows a stored, accepted
 category's files the way `?scope=` shows a directory's — list or diagram by
@@ -1053,7 +1179,15 @@ Scope, focus and category are dropped from the echo. `diff.from.sha` on the
 reply is what a ghost's panel reads `/api/detail?at=` from. Always a diagram —
 a diff is small by construction, which is the point of one — and it redraws
 on every save, because the diff changed. The one hole is `~2`, under Known
-limitations.
+limitations. **`?folders=1` applies here too**, and it is the second view worth
+having it on: a diff's boxes come from everywhere, so "web/src ×20,
+src/project ×9, src/server ×5" is the shape of a change at a glance — measured
+on this repository's own commits, 41 to 49 boxes across 8 to 11 folders. **A
+ghost's folder is a ghost too**, and it needs no rule: a removed file is a path
+like any other, so a folder that exists only in `before` gets a frame holding
+only ghosts, drawn dashed with its name struck. `ViewFolder` carries no
+`change` — the page derives that from its boxes, rather than two places
+deciding what a ghost is.
 
 **What a test is** is decided from the path alone, by `isTestFile` in
 `view/tests.ts`: `*.test.*`, `*.spec.*`, `*.stories.*`, `*_test.go`,
@@ -1169,8 +1303,11 @@ error, and every caller treats `null` as "no git here".
 
 The graph finds groups of files that lean on each other more than on anything else —
 label propagation over the import graph, deterministic, no model involved. A person,
-or an agent, gives them names — or a model suggests one and a person accepts it. See non-negotiable decision 5 for the rule that
-governs membership.
+or an agent, gives them names — or a model suggests one and a person accepts it; or,
+where the imports found nothing worth naming, a model **proposes** a grouping and a
+person accepts that, which stores it as one they drew. See non-negotiable decision 5
+for the rule that governs membership, and *Asking about the categories* for the two
+paid presses.
 
 - Frames are drawn tight around where members actually landed, not around dagre's
   parent box, which spans every rank its children touch. Where two overlap badly the
@@ -1194,6 +1331,14 @@ governs membership.
   inside another carries `parent`.
 - A group's **size** is the slack around its members, not an absolute rectangle. The
   frame hugs what it encloses; a free-floating box would describe nothing.
+- **`evidenceFor(graph, files)` judges a set the graph did not choose.** Any set —
+  a proposal, a hand-drawn frame — gets the same cohesion a `Cluster` carries, the
+  `inside`/`leaving` counts it is a ratio of, who reaches in and what it reaches,
+  the members that are tests, and the proposed paths this project has no file for.
+  `fileLinks(graph)` is the one home of "what couples two files" (not `contains`,
+  not `depends`, never a test at either end), and `undirectedNeighbours` is built
+  from it — so the number the clustering computes and the number a proposal is
+  judged by cannot drift apart.
 
 ## The rest of the page
 
@@ -1219,6 +1364,14 @@ governs membership.
   `.codemap/groups.json`, the API stays `/api/clusters` and `/api/groups`, the MCP
   tools stay `list_groups` / `name_group`, the CSS classes stay `.group-*`. Do not
   "fix" either side toward the other.
+- **Under the Categories tree sits Ask, and it is two presses, not one.** A
+  question reads the categories and answers about them; "Propose a grouping"
+  reads the files and the imports and says how the project could divide, for
+  the project where the tree above is empty. Each says its price before it is
+  pressed. A proposal is drawn to be judged — the name, the sentence, then
+  **our** numbers and every one of its files — and accepting it is the ordinary
+  create, so the category is marked "by hand" everywhere. Neither press writes
+  anything on its own.
 - **The Categories section is VS Code's tree.** Every category is a 22px row with
   a chevron, folded by default and not persisted, that hides its files and never a
   category nested in it; a suggested name sits on that row with its ✓ and ✕, so
@@ -1372,6 +1525,26 @@ Every connected client is sent a view **computed for its own spec**. The behavio
   component diagram keeps the same rule: a named box is keyed on `storedId` and
   stays put; an unnamed one is keyed on the cluster id, which embeds the member
   count and shifts when membership drifts, exactly as a frame does.
+- **Shutting a folder frame is the third thing that lays a view out afresh, and
+  it does not bend the rule above: that rule is about a save.** A fold is a
+  person pressing a chevron while looking at the picture, the box set changes
+  because they asked it to, and their hand placements still win — those are
+  applied over whatever dagre answers. The fold set is in the layout key and in
+  nothing else: it is page state, not a URL key, because which folders a reader
+  has shut is where they are in reading a picture rather than which picture it
+  is, and it is dropped whenever the view changes.
+- **Under the folder arrangement a save has to land a new box inside its own
+  folder.** `keepLayout` takes the frames and looks for the neighbour only
+  among the boxes in that frame, falls back to the frame's own bottom-most box
+  rather than to the row under the diagram, and takes a slot only where every
+  frame still holds only its own boxes. Verified live: a new `Controllers` file
+  whose one import is a model lands beside `HomeController.cs` inside
+  `Controllers`, and every other box stays where it stood. Without it the box
+  goes beside the model and the `Controllers` frame drawn afterwards is 904px
+  wide with `Models/Item.cs` in it — the folder view saying a file is in a
+  folder it is not in. A category frame spans directories by definition and
+  wants none of this, so the flat arrangement hands over no frames and places
+  exactly as it always did.
 - **Dragging a frame locks it**, the way pulling a corner does; the lock button only
   releases. A frame that had to be locked before it could be moved was the wrong
   order, and it was reported as such.
@@ -1612,6 +1785,84 @@ that run after the money was spent, which is why the timeout is `timeoutFor(n)`
 (60 s + 45 s per group) and the fetch is held for all of it. The pure half,
 `readAnswer`, has its test beside it.
 
+## Asking about the categories
+
+Two paid presses under the Categories section, in one panel, and **they are two
+jobs and must never be drawn as one**. A question is answered *from the
+categories that exist*; propose is asked *how the project divides* when they do
+not. `src/project/ask.ts` holds both invocations, `src/server/ask.ts` both
+routes, `web/src/Ask.tsx` the panel and `web/src/ask.ts` its pure half.
+
+**Neither writes anything.** Decision 4 keeps the model out of the graph;
+decision 5, on the reading above, keeps it out of who belongs: a model may
+propose and may never store. Every write on this path is the one a person
+already had — `POST /api/clusters` for a name, `POST /api/groups` for a group.
+
+**The conversation.** `ask()` is explain's measured invocation — the four
+load-bearing flags, `cwd: os.tmpdir()` — with two differences: `--json-schema`
+is given up, because prose is the answer and a schema would make the CLI hold
+it until the end, and `--resume` carries the CLI's own session so a follow-up
+does not send the categories again. Measured on this repository's eleven
+categories: **$0.0257 a first question, $0.0112 a follow-up.** It is told what
+the component diagram draws — the categories, their files, cohesion, what each
+provides, the weighted edges between them — and **no source at all**.
+
+- The words **stream**, and that is the design. First characters at 1.8–2.3 s,
+  the first word of the *answer* at 6–22 s, so the model's own thinking is
+  streamed on its own delta kind and drawn — dim, monospace, capped — until
+  the answer starts, then steps aside. It is never drawn *as* the answer.
+- `POST /api/ask` answers **202** and the words arrive on the socket
+  (`ask`, `ask-delta`); a 3 s poll of the GET is the fallback that also
+  notices a run another tab started, and a project switch, which closes the
+  conversation rather than carrying it to another project's categories.
+
+**Proposing a grouping.** The project this exists for is the one with no
+categories — the user's own, which had one and rejected it, so there was
+nothing to talk about and nothing to name. `propose()` is a *separate*
+invocation, not a turn of the conversation and not `suggest.ts` (which names
+the clusters the algorithm already found and proposes no membership).
+
+- **What is sent** is `ProposeContext`: every non-test file, which category
+  already holds each, and every reference between two files from `fileLinks`.
+  That is what a person would need to group by hand and nothing more — no
+  source, no symbols, no coverage, no git. `--json-schema` is kept, because
+  nobody watches a list stream, and `--no-session-persistence` because nothing
+  resumes it.
+- **The evidence is ours, and that is the whole defence.** `judge()` attaches
+  `evidenceFor` and the overlap with every accepted category, read off one
+  graph. The page draws the cohesion as the two counts it is a ratio of — "5 of
+  45 references stay inside (11%)" — in the warning colour below `MIN_COHESION`,
+  the cut the clustering itself uses. Measured on a real Next.js project, haiku
+  proposed four groupings at 0%, 1%, 4% and 0% with sentences beside them that
+  read like architecture. **The number is what stops that being believed**, and
+  it does not stop the accept: a person may know something the imports do not.
+- **What a proposal carries, and the panel shows all of it**: the files, exactly
+  — the paths, never "the parser files"; the name and the sentence; the
+  cohesion and who reaches in; the overlap, because covering unclaimed files
+  and re-cutting an accepted category are different acts; and `invented`, the
+  paths the answer named that this project has no file for, which are never
+  hidden. `dropped` counts the proposals that named too few real files to be
+  worth judging.
+- **Too big is a refusal, before a cent is spent.** Above 600 files or 3 000
+  references `tooBigToPropose` answers 400 with a sentence. A grouping is only
+  true if it was made from all of the coupling; a model handed a tenth of the
+  graph would confidently group that tenth.
+- **Nothing streams**, so the panel says what it is reading and that it will
+  sit still: measured **$0.040 and 37 s** for a nine-file project through the
+  page, and $0.074 / 104 s, $0.129 / 120 s and $0.129 / 140 s over three real
+  projects at 9, 307 and 119 groupable files. Size barely moves it, so the
+  button's estimate is one number — and the run prints what it **really** cost
+  under the answer, the way a turn of the conversation and an explain run do.
+  The run is session state on the server, so it survives a
+  reload and dies with a project switch; `{ action: 'drop-proposal' }` throws it
+  away and leaves nothing behind.
+- **Accepting is the create that already exists.** `groupAction({ action:
+  'create', name, files })` — `origin: 'manual'`, marked "by hand" on the frame,
+  in the panel, on the front page and on the component diagram. If the project
+  has no `.codemap/` the server's consent question is raised and answered
+  exactly as it is for a hand-drawn category, and the proposal row says it is
+  not stored yet.
+
 ## Desktop shell and packaging
 
 Full reasoning in [DECISIONS.md](DECISIONS.md). The rules:
@@ -1720,6 +1971,37 @@ measured with `scripts/corpus.mjs` against zustand, type-fest, zod, vuejs/core a
 TanStack/query — 32 to 925 files each — and they are the ones that decide whether
 the graph can be trusted at a glance on a project that is not this one:
 
+- **The folder arrangement says something only where the tree has depth.** Over
+  four real projects, taking every directory as a scope and counting the 110
+  that draw as a diagram at all: 29 draw at least one frame and 79 have no
+  subfolder to frame. The collapse rule (a folder holding nothing but one
+  subfolder) fires on 7 folders in all of them and 0 times on the largest, so a
+  design that leans on it will look fine here and do nothing there.
+  `MAX_FOLDER_DEPTH` has never bound on real code — the deepest drawable scope
+  measured is this repository's `src/lang/fixtures` at four levels, and
+  `?tests=0` hides it.
+- **A folder arrangement does not fold a tall rank, so it can be much taller
+  than the window.** `wrapTallRanks` re-spaces a column by rank alone, without
+  the border nodes dagre uses to keep clusters apart, so a fold splits a folder
+  across columns and the frame stretches over other folders' boxes — 28 such
+  frames over astrup's drawable scopes, 3 670 over the whole project, and 0
+  with the fold off. Measured live: astrup's `components` forced to a diagram
+  is 65 boxes in one tall column at zoom 0.2, where the flat arrangement of the
+  same scope folds into three columns at 0.74. A tall picture beats a false
+  one; folding whole frames rather than whole ranks is the fix and is not
+  built.
+- **A save under the folder arrangement can still stretch a frame.**
+  `keepLayout`'s strict pass gives up after `REACH` when a folder is boxed in
+  on every side; the loose pass then keeps the new box out of another folder's
+  frame, but cannot keep its own frame off their boxes. How often that fires on
+  a real save is not measured — the one case driven live (a new file in a
+  one-box `Controllers` folder) landed inside its own frame with nothing else
+  moving.
+- **A folder frame has no gestures but the fold.** A directory cannot be
+  renamed, coloured, deleted or dragged from a diagram, so it offers none of
+  what a category frame offers; clicking one selects nothing and the panel says
+  nothing about it. A shut folder box is double-clicked to go inside, like the
+  folder box above the grouping threshold that it is.
 - **A mark is this page's memory and nothing else's.** It lives in `App.tsx`
   state, so a reload loses every mark and a project switch clears them on
   purpose; two tabs on one project mark independently. The server's change feed
@@ -2001,6 +2283,55 @@ the graph can be trusted at a glance on a project that is not this one:
   count, so a save that moves one file in or out hides its suggestion without
   saying so — and a swap that keeps both keeps a suggestion whose reason may
   name a file that left.
+- **A proposal's sentence is unchecked, and only its numbers are ours.** "Core
+  infrastructure that classifies on-chain events" beside a verified 1% is
+  prose nothing verified sitting next to a number that was measured, and a
+  reader who reads the sentence and not the number is misled. The prompt
+  forbids counts in it; a real run still wrote "(5 references total)" into one,
+  and two of the three verification runs put counts in prose anyway — one of
+  them wrong, a note claiming "seven groups cover 105 of 119 files" over seven
+  groups that hold 104. This is the same failure explain has, and the same
+  answer: the number is in front of them first.
+- **A low cohesion is not proof a grouping is false, and the page cannot tell
+  the two apart.** Measured on this repository: `src/graph/*` came back at
+  **8.7%** (8 references inside, 84 leaving) and `src/parser/*` at **10.9%** —
+  both of them modules this file names in its own Layout, both drawn in the
+  warning colour under a tooltip saying the clustering would not have offered
+  them. They are true, and they are *hubs*: everything imports
+  `graph/types.ts`. On astrup the same colour and the same sentence sat under
+  "Theme & Color Management", 9 inside and 222 leaving — nine unrelated leaf
+  utilities with a tidy name. Nothing on screen separates a core everything
+  depends on from a pile of files that share a topic, and the reach line does
+  not either: both are "many reach in, one or two reached out to". The warning
+  is still right to be there; it is the second case it is for.
+- The reach line counts no test file. `reachedFrom` and `reaches` come from
+  `fileLinks`, which drops a test at either end, so a group three suites
+  import reads "1 file reaches in". It is exactly the set of edges the
+  cohesion is a ratio of — consistent rather than wrong — but it is not the
+  answer to "who uses this".
+- A proposal is judged **once**, when the answer lands. Accepting one changes
+  what the next overlaps and the line does not know — the row's own
+  "added · by hand" is what says the state moved on, and the line's title says
+  when it was counted. The summary above the list also counts what came back,
+  not what is still on screen after a dismiss.
+- A proposal's own accept mark is matched **by name**: a category of that name
+  in the list means added. Two categories that share a name would mark each
+  other, which nothing prevents and nobody has hit.
+- The propose size caps (600 files, 3 000 references) are a judgement with room
+  above the largest project measured (305 files, 1 092 references), not a
+  measurement. Nothing that big has actually been sent, so whether an answer at
+  600 files is still coherent is unknown; the refusal above it is the part that
+  is stood behind.
+- `propose` has no cancel: dismissing a run in flight refuses the answer, and
+  the money is already spent — the same as explain and suggest. Two presses can
+  spend at once, because the question and the proposal are separate runs and
+  neither blocks the other.
+- Nothing stops two proposals claiming the same file, and the model does it:
+  the first real run on astrup put `lib/route-colors.ts` in both "Routes &
+  Party Navigation" and "Theme & Color Management". The prompt asks for at
+  most one group per file; when it is disobeyed both are shown and each is
+  judged on its own, which is honest and reads oddly — and accepting both
+  writes one file into two categories, which `groups.json` allows.
 - A commit's graph is built through the same FIFO parser pool as the live updater,
   so a save that arrives after a big commit has queued its files waits behind them
   — seconds on a vuejs/core-sized repository. Decision 1 is about the main thread,

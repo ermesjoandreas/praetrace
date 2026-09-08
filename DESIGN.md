@@ -134,6 +134,9 @@ Each one is a different *kind* of mark, not just a different hue:
 | a box the diff added, or touched | `A` or `M` where the git letter sits, replacing it | git added, git modified |
 | a line the diff removed | dashed `5 4` at 60% in the kind's own hue; an added one is solid | none |
 | the structural diff is on | a chip beside the frozen chip, `Structural diff since HEAD ✕`, and the Source Control row holding the list-selection fill | badge grey |
+| a folder, drawn as a frame around its boxes | a 1px solid line and a fill of white at 3% — 2.2%, 1.8% and 1.4% for each level in, because the frames stack and compound; the name in the muted colour, monospace 11px, with the file count in the disabled grey and a chevron that folds it | line, `#2B2B2B` — **never one of the eight** |
+| a folder whose every box is a ghost | the frame dashed and at 50%, its name struck, and `gone` after the count | none: the same treatment as the ghost boxes in it |
+| a folder shut back into one box | an ordinary box with the name in 600 and `N files` where a file's symbols go, and the chevron in its title | none |
 
 `--vsc-warning` means one thing: **the tool's own gap** — cannot read, could not
 parse, too many to place. The flow's size warning and the drawn-anyway chip
@@ -163,6 +166,20 @@ Group frames keep the eight colours a person chose for them, at a 6% fill and a 
 border. Those are the user's own meaning and are not subject to rule 4. Nor are
 the file icons: their colours are the file type's, and the icon theme's — see
 *File icon* under Components.
+
+**A folder frame is not a category frame, and no new hue is what tells them
+apart.** A category is a piece of architecture a person named and gave one of
+those eight colours; a folder is named and coloured by nobody — it is what the
+tree already says. So a folder frame is drawn in the page's own structural
+line, `--vsc-border`, the same 1px that separates the menu bar from the canvas,
+with no colour of its own; depth varies in light and never in hue, each level a
+little further above the canvas the way the chrome sits below it. Nothing on it
+can be renamed, coloured, deleted or dragged — none of those is something you
+can do to a directory from a diagram — and its one gesture, the fold, is a
+chevron in the same direction the left bar's sections use. The two frame
+systems are never on screen together: `?folders=1` draws the folders and the
+categories are not framed, because a category spans directories by definition
+and a frame that respected a folder wall would be the whole project.
 
 ---
 
@@ -355,6 +372,26 @@ a block under the list, titled `Stored, matches nothing` the way a Repository bl
 is titled; each row is a group row whose name is muted and is not a control, with
 the file count where the cohesion goes and a trash in `.row-actions` on hover.
 
+**Ask** — under the Categories tree, and **two blocks, not one row of three
+buttons**: the conversation, then a 1px line, then `Propose a grouping`. Each
+is a title in the section header's 11px bold, a muted sentence saying what it
+does, and one 26px accent button carrying `about $0.030` / `about $0.120` in a
+muted span — the price before the press, never after it. The transcript is
+capped at 260px and scrolls inside itself so the question box stays above the
+fold; the proposals are not, because nothing sits under them and a second
+scrollbar a millimetre from the panel's own is two bars for one gesture.
+
+**Proposal** — a 22px head with the name in 600 and `✓ ✕` in `.row-actions`,
+hidden until the head is hovered; the model's sentence in the muted colour,
+because nothing checks it; then the evidence at 12px tabular in the **body**
+colour, because that is ours — the cohesion, who reaches in, what it overlaps —
+and the cohesion in `--vsc-warning` below a third, the cut the clustering uses.
+Invented paths and "not stored yet" are `--vsc-warning` too: the tool's own
+gap, which is what that colour means. Then every member as a 22px file row —
+file icon, monospace path, rtl ellipsis — at a 24px indent, one Tab stop for
+the whole list. An accepted one drops its actions for `added · by hand`, the
+same two words the frame, the panel row and the component box use.
+
 **Menu, palette, popover** — the only things with `--vsc-shadow-widget`. 5px radius,
 `--vsc-border-menu`. Menu rows 26px, the selected one is the accent full width.
 The palette is Quick Pick: a 26px input on top, 22px rows, the matched characters
@@ -477,6 +514,10 @@ The checklist a change to `web/` has to pass, with the page in front of you:
   the box is.
 - No resize handle on a box's top or bottom edge, and no stored height anywhere.
 - A group frame still hugs its members after any change near `layout.ts`.
+- Under `?folders=1`, every folder frame holds only its own boxes — no frame
+  drawn over a box from another folder, and no box a frame lists but is not
+  drawn round. Check it after a save as well as on the first layout, and check
+  that no category frame is drawn beside them.
 - A file written a minute ago still wears `.box-changed` — a mark that is gone
   when you look back is the bug this page was reported for. Watch one land, do
   something else for thirty seconds, and look again.

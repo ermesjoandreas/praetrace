@@ -15,7 +15,8 @@ import type {
   ViewReply,
 } from '../../src/server/app.js';
 import type { DiffEnd, DiffReply } from '../../src/server/diff.js';
-import type { AskDeltaKind, AskFailure } from '../../src/project/ask.js';
+import type { AskDeltaKind, AskFailure, ProposeFailure } from '../../src/project/ask.js';
+import type { Proposal, ProposalOverlap, ProposeRun } from '../../src/server/ask.js';
 import type { AskConversation, AskTurn, ExplainFailure, ExplainRun } from '../../src/server/session.js';
 import type { FlowEdge, FlowGraph, FlowNode } from '../../src/parser/flow.js';
 import type { FlowReply } from '../../src/server/flow.js';
@@ -53,6 +54,8 @@ export type {
 };
 export { LIST_ABOVE };
 export type ViewNode = ViewGraph['nodes'][number];
+/** One line as the view drew it: two box ids, a kind, and what it stands for. */
+export type ViewEdge = ViewGraph['edges'][number];
 export type ViewMember = ViewNode['members'][number];
 /**
  * One crumb. A category's carries its stored id and an empty `scope`: it is a
@@ -61,6 +64,16 @@ export type ViewMember = ViewNode['members'][number];
 export type ViewCrumb = ViewGraph['trail'][number];
 /** Which UML diagram the boxes make. Absent from a URL is `classes`. */
 export type Diagram = ViewGraph['spec']['diagram'];
+/**
+ * One folder, drawn as a frame around the boxes in it — the second
+ * arrangement of the same boxes, under `?folders=1`.
+ *
+ * Derived off `ViewGraph` rather than imported by name, the way `ViewNode`
+ * and `ViewCrumb` are: the engine decides which folders are frames, what each
+ * is called and how deep it nests, and a page that imported the shape from
+ * somewhere else could be handed a folder this view never drew.
+ */
+export type ViewFolder = NonNullable<ViewGraph['folders']>[number];
 
 /**
  * References that landed nowhere, always both halves — never `{ imports: 0,
@@ -1064,31 +1077,105 @@ export async function fetchOverview(at: string | null = null): Promise<OverviewR
  *
  * It reads and decides nothing. Decision 4 says nothing in the graph comes
  * from a model; decision 5 says a model may suggest a name and never decide
- * who belongs. So none of the three calls below writes: a name the answer
- * proposes is a sentence on a screen until a person accepts it through
- * `decideCluster`, which is the gesture that already exists. The conversation
- * is session state on the server too — a project switch ends it.
+ * who belongs. So none of the calls below writes: a name the answer proposes
+ * is a sentence on a screen until a person accepts it through `decideCluster`
+ * or `groupAction`, which are the gestures that already exist. The
+ * conversation is session state on the server too — a project switch ends it,
+ * and drops a proposal with it.
+ *
+ * Two jobs behind one panel, and they must not be read as one. A question is
+ * answered *from the categories that exist*, so a project with none has
+ * nothing to talk about — which is the project `proposeGrouping` exists for:
+ * it is asked how the project divides, from the files and the imports between
+ * them, and answers with groupings this code then measures.
  */
 export type { AskConversation, AskTurn };
 export type { AskDeltaKind, AskFailure };
+
+/**
+ * A grouping a model proposed, and the evidence for it — which is the
+ * engine's and never the model's. `evidence` is `view/cluster.ts` counting the
+ * same imports the clustering counts, over the files the answer named; a model
+ * that says eight files are 90% cohesive is guessing, and the number beside
+ * its claim was never its to give.
+ *
+ * Decision 5 is intact, on the reading this was built on: a model may
+ * **propose** a grouping and it may never **store** one. Accepting is
+ * `groupAction({ action: 'create', name, files })` — the same write a
+ * shift-click draw makes, which stores `origin: 'manual'` — because the person
+ * pressing accept is the person drawing that group, and it is marked "by hand"
+ * everywhere a hand-drawn group is marked.
+ */
+export type { Proposal, ProposalOverlap, ProposeRun, ProposeFailure };
 
 export interface AskState {
   conversation: AskConversation | null;
   /** A turn is being written right now, by this page or by another tab. */
   running: boolean;
+  /** The last proposed grouping, or null. Session state: a project switch drops it. */
+  proposal: ProposeRun | null;
 }
 
 /**
- * The conversation so far, and whether a turn is in flight. Both survive a
- * reload, because both live in the session and not in this page: a turn keeps
- * the words that have arrived, so a page that reloads mid-answer reads them.
+ * The conversation so far, whether a turn is in flight, and the last proposed
+ * grouping. All three survive a reload, because all three live in the session
+ * and not in this page: a turn keeps the words that have arrived, so a page
+ * that reloads mid-answer reads them.
  */
 export async function fetchAsk(): Promise<AskState> {
   const base = await serverOrigin();
   const response = await fetch(`${base}/api/ask`);
   if (!response.ok) throw new Error(`ask failed: HTTP ${response.status}`);
-  const body = (await response.json()) as { conversation: AskConversation | null; running?: boolean };
-  return { conversation: body.conversation, running: body.running === true };
+  const body = (await response.json()) as {
+    conversation: AskConversation | null;
+    running?: boolean;
+    proposal?: ProposeRun | null;
+  };
+  return { conversation: body.conversation, running: body.running === true, proposal: body.proposal ?? null };
+}
+
+export interface ProposeStarted {
+  /** The run this press joined — the one it started, or the one already going. */
+  proposal: ProposeRun | null;
+  /**
+   * The server's words when the press did nothing and spent nothing: a project
+   * with no files to group, or one too big for a single prompt. A refusal with
+   * a reason, which beats a proposal drawn from a tenth of the graph.
+   */
+  refused: string | null;
+}
+
+/**
+ * Spend on one proposal, and return the moment it has started. There is
+ * nothing to stream — the answer is a schema, not prose — so the outcome
+ * arrives on the next `fetchAsk`, which this panel already polls every three
+ * seconds.
+ */
+export async function proposeGrouping(): Promise<ProposeStarted> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/ask`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'propose' }),
+  });
+  const body = (await response.json()) as { proposal?: ProposeRun | null; error?: string };
+  if (response.status === 409) return { proposal: body.proposal ?? null, refused: null };
+  if (response.status === 400) return { proposal: null, refused: body.error ?? 'the proposal was refused' };
+  if (!response.ok) throw new Error(body.error ?? `HTTP ${response.status}`);
+  return { proposal: body.proposal ?? null, refused: null };
+}
+
+/** Throw the proposals away. Nothing was written, so nothing is undone. */
+export async function dropProposal(): Promise<boolean> {
+  const base = await serverOrigin();
+  const response = await fetch(`${base}/api/ask`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ action: 'drop-proposal' }),
+  });
+  if (!response.ok) throw new Error(`dropping the proposal failed: HTTP ${response.status}`);
+  const body = (await response.json()) as { dropped?: boolean };
+  return body.dropped === true;
 }
 
 export interface AskStarted {

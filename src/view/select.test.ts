@@ -1019,3 +1019,160 @@ test('a class row carries the stereotype a declaration put on it, in words, with
   // Every other row carries none: absent is the answer, never false.
   assert.ok(rows.filter((row) => row.id !== 'Basket.cs#Basket').every((row) => !('stereotype' in row)));
 });
+
+// --- the folder arrangement -----------------------------------------------
+
+/**
+ * The project the folder view was argued from, in miniature: a first-year
+ * ASP.NET solution whose folders separate exactly the things that talk to
+ * each other. Every line here crosses a folder wall, which is what the flat
+ * arrangement cannot show and an IDE's tree cannot show either.
+ */
+const mvc = [
+  'ProsjektMVC/Program.cs',
+  'ProsjektMVC/Controllers/HomeController.cs',
+  'ProsjektMVC/Models/Item.cs',
+  'ProsjektMVC/Views/Home/Index.cs',
+  'ProsjektMVC/Views/Shared/Layout.cs',
+];
+const mvcImports: [string, string][] = [
+  ['ProsjektMVC/Controllers/HomeController.cs', 'ProsjektMVC/Models/Item.cs'],
+  ['ProsjektMVC/Controllers/HomeController.cs', 'ProsjektMVC/Views/Home/Index.cs'],
+  ['ProsjektMVC/Views/Home/Index.cs', 'ProsjektMVC/Views/Shared/Layout.cs'],
+  ['ProsjektMVC/Views/Shared/Layout.cs', 'ProsjektMVC/Models/Item.cs'],
+];
+
+test('folders=1 frames the directories, nested, and names each box under its own frame', () => {
+  const view = selectView(graphOf(mvc, mvcImports), { ...root, folders: true }, 0);
+
+  // The same boxes and the same lines as the flat arrangement: a second
+  // arrangement of what is drawn, never a different slice of the graph.
+  const flatly = selectView(graphOf(mvc, mvcImports), root, 0);
+  assert.deepEqual(view.nodes.map((node) => node.id), flatly.nodes.map((node) => node.id));
+  assert.deepEqual(view.edges, flatly.edges);
+
+  assert.deepEqual(
+    (view.folders ?? []).map((folder) => [folder.id, folder.label, folder.depth, folder.parent]),
+    [
+      ['ProsjektMVC/Controllers', 'Controllers', 0, null],
+      ['ProsjektMVC/Models', 'Models', 0, null],
+      ['ProsjektMVC/Views', 'Views', 0, null],
+      ['ProsjektMVC/Views/Home', 'Home', 1, 'ProsjektMVC/Views'],
+      ['ProsjektMVC/Views/Shared', 'Shared', 1, 'ProsjektMVC/Views'],
+    ],
+  );
+  // A folder holding one file is still a frame — `Controllers` and `Models`
+  // are the wall this feature exists to draw.
+  assert.deepEqual(
+    (view.folders ?? []).find((folder) => folder.id === 'ProsjektMVC/Controllers')?.files,
+    ['ProsjektMVC/Controllers/HomeController.cs'],
+  );
+  // An outer frame holds the boxes of the frames inside it, so it is drawn
+  // around them rather than around nothing.
+  assert.deepEqual(
+    (view.folders ?? []).find((folder) => folder.id === 'ProsjektMVC/Views')?.files,
+    ['ProsjektMVC/Views/Home/Index.cs', 'ProsjektMVC/Views/Shared/Layout.cs'],
+  );
+
+  assert.deepEqual(
+    view.nodes.map((node) => [node.label, node.inFolder ?? null]),
+    [
+      ['HomeController.cs', 'ProsjektMVC/Controllers'],
+      ['Item.cs', 'ProsjektMVC/Models'],
+      // Directly in the scope: no frame holds it, and it keeps the label the
+      // flat arrangement gives it.
+      ['Program.cs', null],
+      ['Index.cs', 'ProsjektMVC/Views/Home'],
+      ['Layout.cs', 'ProsjektMVC/Views/Shared'],
+    ],
+  );
+  // Honoured, so echoed — the page reads the echo rather than the URL.
+  assert.equal(view.spec.folders, true);
+});
+
+test('a scope that folds its files into folder boxes refuses the frames, and the echo says so', () => {
+  // Above GROUP_THRESHOLD the folder *is* the box, and the same directory
+  // cannot be a box and a frame at once.
+  const view = selectView(graphOf(many, []), { ...root, folders: true }, 0);
+  assert.equal(view.grouped, true);
+  assert.equal(view.folders, undefined);
+  assert.equal('folders' in view.spec, false);
+  assert.ok(view.nodes.every((node) => node.inFolder === undefined));
+});
+
+test('a list has no frames, so it is drawn without them and does not claim otherwise', () => {
+  // 31 boxes in two directories: under the grouping threshold, so the frames
+  // are computed, and past LIST_ABOVE, so rows are what is drawn.
+  const rows = [
+    ...Array.from({ length: 16 }, (_, index) => `src/one/f${index}.ts`),
+    ...Array.from({ length: 15 }, (_, index) => `src/two/f${index}.ts`),
+  ];
+  const view = selectView(graphOf(rows, []), { ...root, folders: true }, 0);
+  assert.equal(view.presentation, 'list');
+  assert.equal(view.folders, undefined);
+  assert.equal('folders' in view.spec, false);
+  // And the rows are the flat view's rows, whole paths and all. Dropping the
+  // frames afterwards is not a refusal: a box named relative to a frame that
+  // was never sent leaves a list reading `f0.ts`, `f0.ts` — with nothing on
+  // screen saying which of the two directories either one is in.
+  assert.ok(view.nodes.every((node) => node.inFolder === undefined));
+  assert.deepEqual(
+    view.nodes.map((node) => node.label),
+    selectView(graphOf(rows, []), root, 0).nodes.map((node) => node.label),
+  );
+
+  // The same graph drawn as a diagram gets both halves.
+  const drawn = selectView(graphOf(rows, []), { ...root, folders: true, as: 'diagram' }, 0);
+  assert.equal(drawn.spec.folders, true);
+  assert.deepEqual((drawn.folders ?? []).map((folder) => folder.id), ['src/one', 'src/two']);
+});
+
+test('a category, a component diagram and a focus are not places in the tree, and refuse the frames', () => {
+  const asked = { ...root, folders: true as const };
+
+  const category = selectView(graphOf(pipeline, pipelineImports), { ...byCategory, folders: true }, 0, null, null, stored);
+  assert.equal(category.folders, undefined);
+  assert.equal('folders' in category.spec, false);
+
+  const components = selectView(graphOf(pipeline, pipelineImports), { ...asked, diagram: 'components' }, 0, null, null, stored);
+  assert.equal(components.folders, undefined);
+  assert.equal('folders' in components.spec, false);
+
+  const focused = selectView(graphOf(mvc, mvcImports), { ...asked, focus: 'ProsjektMVC/Models/Item.cs' }, 0);
+  assert.equal(focused.spec.focus, 'ProsjektMVC/Models/Item.cs');
+  assert.equal(focused.folders, undefined);
+  assert.equal('folders' in focused.spec, false);
+});
+
+test("a diff frames the folders of everything it draws, a deleted file's own included", () => {
+  // `src/render/paint.ts` is gone in the after graph, and so is the only file
+  // its directory held: the frame around the ghost is the only thing left
+  // saying that directory was ever there.
+  const before = graphOf(
+    ['src/app.ts', 'src/render/paint.ts', 'src/lib/util.ts'],
+    [['src/app.ts', 'src/render/paint.ts']],
+  );
+  const after = graphOf(['src/app.ts', 'src/lib/util.ts'], [['src/app.ts', 'src/lib/util.ts']]);
+
+  const view = selectView(after, { ...root, folders: true, diff: 'base' }, 0, null, null, [], before);
+  assert.equal(view.spec.folders, true);
+  assert.deepEqual(
+    (view.folders ?? []).map((folder) => [folder.id, folder.label, folder.files]),
+    [
+      // `src` holds every box drawn, so it is the canvas rather than a frame
+      // — and it is not lost: its name is joined onto the labels below it.
+      ['src/lib', 'src/lib', ['src/lib/util.ts']],
+      ['src/render', 'src/render', ['src/render/paint.ts']],
+    ],
+  );
+  assert.deepEqual(
+    view.nodes.map((node) => [node.id, node.label, node.change ?? null, node.inFolder ?? null]),
+    [
+      // Directly under the scope, which is the canvas: no frame, whole path.
+      ['src/app.ts', 'src/app.ts', 'touched', null],
+      ['src/render/paint.ts', 'paint.ts', 'removed', 'src/render'],
+      // The far end of the added line: context, and framed like any other box.
+      ['src/lib/util.ts', 'util.ts', null, 'src/lib'],
+    ],
+  );
+});

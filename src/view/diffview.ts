@@ -3,6 +3,7 @@ import type { GraphDiff } from '../graph/diff.js';
 import type { AssociationRole, Graph, GraphEdge, GraphNode } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
 import { keepsEdge, keepsFile, keepsKind, type ViewFilter } from './filter.js';
+import { nestByFolder } from './folders.js';
 import { ownershipOf, presentationOf, projectLanguages } from './select.js';
 import { isTestFile } from './tests.js';
 import type { ViewEdge, ViewGraph, ViewMember, ViewNode, ViewSpec } from './types.js';
@@ -131,10 +132,49 @@ export function diffView(
 
   const nodes = [...boxes.values()].sort(byExternalThenId);
   const drawn = nodes.filter((node) => !node.external);
+  const presentation = presentationOf(spec, nodes.length);
+
+  /**
+   * The folders as frames, over every box on the canvas — the ones that
+   * changed and the context ones alike, because a context file sits in a real
+   * directory and drawing it outside every frame would say it is at the root.
+   *
+   * A diff is the second view the arrangement is worth having on, and it is
+   * worth it for a reason a scope does not have: a diff is a slice of the
+   * whole project, so its boxes come from everywhere, and "web/src ×20,
+   * src/project ×9, src/server ×5" is the shape of a change at a glance.
+   * Measured on this repository's own commits: 41 to 49 boxes across 8 to 11
+   * folders. A diff is a diagram by construction, so the threshold never
+   * bites; `as=list` is the one way to ask for rows, and rows have no frames.
+   *
+   * **A ghost's folder is a ghost too**, and it needs no rule here: a removed
+   * file is a path like any other, so a folder that exists only in `before`
+   * gets a frame holding only ghosts. Measured on 1077f41, 2 of its 12 boxes
+   * sit in `src/render` and `scripts`, neither of which the after graph has.
+   * `ViewFolder` carries no `change` — the page derives a ghost frame from
+   * its boxes, rather than the two places disagreeing about what one is.
+   */
+  const nesting =
+    spec.folders === true && presentation !== 'list'
+      ? nestByFolder(
+          nodes.map((node) => node.id),
+          '',
+        )
+      : null;
+  for (const node of nodes) {
+    const holder = nesting?.holder.get(node.id);
+    if (holder === undefined) continue;
+    node.inFolder = holder;
+    // Named relative to the frame holding it, as a scope's boxes are: the
+    // frame already says the directory, and a diff's box is labelled with its
+    // whole path.
+    node.label = node.id.slice(holder.length + 1);
+  }
 
   return {
     nodes,
     edges,
+    ...(nesting === null ? {} : { folders: nesting.folders }),
     // Scope, focus and category are not slices of a diff, and an echo that
     // kept one would claim a narrowing this view did not apply.
     spec: {
@@ -148,8 +188,11 @@ export function diffView(
       diagram: spec.diagram,
       ...(spec.as === undefined ? {} : { as: spec.as }),
       ...(spec.diff === undefined ? {} : { diff: spec.diff }),
+      // Only where it was honoured, the way every other refusal is echoed:
+      // the page reads the echo to say which arrangement it got.
+      ...(nesting === null ? {} : { folders: true as const }),
     },
-    presentation: presentationOf(spec, nodes.length),
+    presentation,
     trail: [{ label: 'root', scope: '' }],
     totalFiles: drawn.length,
     fileCount: countFiles(after),

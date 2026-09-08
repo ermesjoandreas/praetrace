@@ -75,6 +75,10 @@ import {
   fetchDiff,
   flowBlocked as flowBlockedBy,
 } from './api';
+// The one thing the conversation about the categories needs of this file: the
+// socket's two ask frames, handed to the panel that draws them. See
+// `web/src/ask.ts` for why it is a hand-off rather than a prop.
+import { publishAsk, type AskFrame } from './ask';
 import { MenuBar, type Menu, type MenuItem } from './MenuBar';
 import { Flow } from './Flow';
 import { ListView } from './ListView';
@@ -147,8 +151,14 @@ import {
   componentHeight,
   layoutNodes,
   type ClusterBounds,
+  type ClusterInput,
   type Rect,
 } from './layout';
+// The folder arrangement: the engine says which folders are frames and what
+// each is called, this file draws them, and `fold.ts` is what a shut one does
+// to the boxes and the lines.
+import { FolderNode, type FolderNodeType } from './FolderNode';
+import { foldFolders } from './fold';
 import {
   applyPlacements,
   dropBox,
@@ -163,11 +173,11 @@ import { matchedAt } from './commands';
 import { CommandPalette } from './CommandPalette';
 import { FindBar } from './FindBar';
 
-const nodeTypes = { box: BoxNode, frame: GroupNode, component: ComponentNode };
+const nodeTypes = { box: BoxNode, frame: GroupNode, component: ComponentNode, folder: FolderNode };
 /** Every line is one component: what a kind adds is a mark at an end. */
 const edgeTypes = { relation: RelationEdge };
 
-type FlowNode = BoxNodeType | GroupNodeType | ComponentNodeType;
+type FlowNode = BoxNodeType | GroupNodeType | ComponentNodeType | FolderNodeType;
 
 /** What every component box's id begins with; the rest is the category's id. */
 const COMPONENT_PREFIX = 'component:';
@@ -587,6 +597,26 @@ export function App() {
     });
   }, []);
 
+  /**
+   * Folder frames shut back into a folder box, under the folder arrangement.
+   *
+   * Page state and not a URL key, unlike the arrangement itself: which folders
+   * a reader has shut is where they are in reading a picture, not which
+   * picture it is — the same reason `expanded` above is not in the URL. It is
+   * dropped whenever the view changes, because a folder path means nothing in
+   * the next scope and a stale one would shut a folder nobody shut.
+   */
+  const [foldedFolders, setFoldedFolders] = useState<ReadonlySet<string>>(() => new Set());
+
+  const toggleFolded = useCallback((id: string, shut: boolean) => {
+    setFoldedFolders((was) => {
+      const next = new Set(was);
+      if (shut) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }, []);
+
   const [following, setFollowing] = useState<ReadonlySet<string>>(() => new Set());
   /**
    * Whole files being held on to, to be explained. A second set rather than
@@ -950,7 +980,8 @@ export function App() {
           | AgentMessage
           | ExplainMessage
           | ExplainDeltaMessage
-          | GroupsMessage;
+          | GroupsMessage
+          | AskFrame;
 
         // Names were written, by whoever. The clusters effect below re-reads
         // them for the commit on screen; nothing else needs to move.
@@ -962,6 +993,14 @@ export function App() {
         // The run that ended is the one the poll below would have found three
         // seconds later; the poll stays, because it is the only thing that
         // notices a run another tab started.
+        // The conversation about the categories. Handed straight over: this
+        // file owns the socket, the Categories panel owns the transcript, and
+        // a delta lands every few characters.
+        if (parsed.type === 'ask' || parsed.type === 'ask-delta') {
+          publishAsk(parsed);
+          return;
+        }
+
         if (parsed.type === 'explain-delta') {
           setStreamed((was) => was + parsed.text);
           return;
@@ -1329,6 +1368,19 @@ export function App() {
    */
   const componentsOn = view?.spec.diagram === 'components';
   /**
+   * The folders as frames around the boxes, nested — a second arrangement of
+   * the same boxes, carried in the URL as `folders=1`.
+   *
+   * Read off the **echo** and never off the URL, like every other view flag,
+   * and here it is load-bearing rather than tidy: the engine refuses the
+   * arrangement where a folder is already a box (above the grouping
+   * threshold), where a category is the box (the component diagram, a
+   * category scope), where the boxes are a neighbourhood rather than a place
+   * (a focus) and where there are no frames at all (a list). It drops the key
+   * from the echo each time, so this is false exactly when no frame is drawn.
+   */
+  const foldersOn = view?.spec.folders === true;
+  /**
    * Rows or boxes. The engine's decision, read and never re-derived: the
    * threshold lives in `presentationOf`, and a page that counted boxes for
    * itself is how a live push would redraw a list as a diagram. `asked` is
@@ -1557,6 +1609,15 @@ export function App() {
   const [placements, setPlacements] = useState<Placements>(() => new Map());
   useEffect(() => {
     setPlacements(loadPlacements(placementRoot, placementKey));
+  }, [placementRoot, placementKey]);
+  /**
+   * A different picture is a different set of folders, so nothing stays shut
+   * across one. The placement key is what "a different picture" means here —
+   * it is built from the echoed spec, and it already tells the folder
+   * arrangement from the flat one.
+   */
+  useEffect(() => {
+    setFoldedFolders(new Set());
   }, [placementRoot, placementKey]);
   /**
    * Whether saying what a box is written in adds anything. In a project of one
@@ -2558,7 +2619,14 @@ export function App() {
    * whole of it. An index and not the path, because a path is not a class
    * name and a hash of one could collide.
    */
-  const boxIndex = useMemo(() => new Map((view?.nodes ?? []).map((node, index) => [node.id, index])), [view]);
+  const boxIndex = useMemo(() => {
+    // The folders after the boxes, because a shut folder frame *is* a box and
+    // the lines that ran to its files run to it. Without a token of its own a
+    // shut folder's lines would be the only ones on the canvas that never
+    // light up under the cursor.
+    const ids = [...(view?.nodes ?? []).map((node) => node.id), ...(view?.folders ?? []).map((folder) => folder.id)];
+    return new Map(ids.map((id, index) => [id, index]));
+  }, [view]);
 
   // Positions survive live updates: a box must not jump because the agent saved.
   const layoutRef = useRef<{
@@ -2575,8 +2643,28 @@ export function App() {
     layoutKey: string;
   }>({ rects: new Map(), clusters: [], clusterKey: '', layoutKey: '' });
 
+  /**
+   * The boxes, the lines and the frames as they are actually drawn: the view,
+   * with whatever folder frames the reader has shut folded back into a folder
+   * box and the lines re-pointed at it.
+   *
+   * Out here rather than inside the layout below, because the status bar has
+   * to count what is on screen: a fold takes seven boxes away and puts one
+   * back, and a count of `view.nodes` would go on saying eighteen.
+   *
+   * On a flat view these *are* `view`'s own arrays — `foldFolders` hands them
+   * straight back when nothing is shut, which is every view this page drew
+   * before this arrangement existed.
+   */
+  const arranged = useMemo(
+    () => (view === undefined ? null : foldFolders(view, foldedFolders)),
+    [view, foldedFolders],
+  );
+  /** How many boxes are drawn, a shut folder counting as the one it becomes. */
+  const drawnBoxes = arranged === null ? 0 : arranged.nodes.length + arranged.boxes.length;
+
   const { nodes, edges } = useMemo(() => {
-    if (!view) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
+    if (!view || arranged === null) return { nodes: [] as FlowNode[], edges: [] as Edge[] };
     // A list places nothing: dagre over 106 boxes is exactly the cost the
     // list exists to skip, and the rows read `view` for themselves. The
     // cached layout is left as it was, so a scope that flips back under the
@@ -2588,7 +2676,7 @@ export function App() {
     /** A box counts as involved when any file behind it is. */
     const involved = (id: string): boolean => {
       if (relatedFiles === null) return true;
-      const node = view.nodes.find((candidate) => candidate.id === id);
+      const node = arranged.nodes.find((candidate) => candidate.id === id);
       return node !== undefined && node.files.some((file) => relatedFiles.has(file));
     };
 
@@ -2609,7 +2697,7 @@ export function App() {
     };
     const dimming = found !== null || relatedFiles !== null;
 
-    const builtEdges: Edge[] = view.edges.map((edge) => ({
+    const builtEdges: Edge[] = arranged.edges.map((edge) => ({
       id: `${edge.from}|${edge.kind}|${edge.to}`,
       type: 'relation',
       source: edge.from,
@@ -2643,7 +2731,7 @@ export function App() {
     const isClassBox = (node: ViewNode): node is ViewNode & { kind: 'file' | 'folder' | 'bundle' } =>
       node.kind !== 'component';
 
-    const boxes: BoxNodeType[] = view.nodes.filter(isClassBox).map((node) => ({
+    const boxes: BoxNodeType[] = arranged.nodes.filter(isClassBox).map((node) => ({
       id: node.id,
       type: 'box',
       // Grabbed by its title bar, the way a window moves and the way a frame
@@ -2730,7 +2818,7 @@ export function App() {
     // rows the Categories section lists; the box has no way to carry one. A
     // named category that chose none wears slate, as its frame does; a
     // category nobody has named, and the no-category box, wear nothing.
-    const components: ComponentNodeType[] = view.nodes.flatMap((node): ComponentNodeType[] => {
+    const components: ComponentNodeType[] = arranged.nodes.flatMap((node): ComponentNodeType[] => {
       if (node.kind !== 'component' || node.component === undefined) return [];
       const { symbols, total } = node.component.provides;
       const color = categoryOf(node.id)?.color ?? (node.component.name === null ? null : 'slate');
@@ -2772,14 +2860,70 @@ export function App() {
       ];
     });
 
+    /**
+     * A folder the reader has shut: one box standing for its files, drawn by
+     * `FolderNode` in the box's own chrome. It is measured as a folder box is
+     * — a title and a count, whatever it holds — because that is what it is.
+     */
+    const shut: FolderNodeType[] = arranged.boxes.map((folder) => ({
+      id: folder.id,
+      type: 'folder' as const,
+      dragHandle: '.box-title',
+      position: { x: 0, y: 0 },
+      width: NODE_WIDTH,
+      height: boxHeight(0, true),
+      data: {
+        id: folder.id,
+        label: folder.label,
+        fileCount: folder.fileCount,
+        depth: folder.depth,
+        folded: true,
+        ghost: false,
+        // A fold must not hide a change: the box says something inside it
+        // moved, and how many files moved is already the count's job.
+        marked: folder.files.some((file) => markedFiles.has(file)),
+        onFold: (shutNow: boolean) => toggleFolded(folder.id, shutNow),
+      },
+    }));
+
     /** Every box dagre places and keepLayout keeps, whichever diagram this is. */
-    const placed: (BoxNodeType | ComponentNodeType)[] = [...boxes, ...components];
+    const placed: (BoxNodeType | ComponentNodeType | FolderNodeType)[] = [...boxes, ...components, ...shut];
+
+    /**
+     * The folder frames, in the shape `layoutNodes` and `frameClusters`
+     * already take for a category frame — `folder: true` is what tells them
+     * the frame is a directory rather than a cluster, and it is what buys the
+     * four rules a folder needs: a frame around one box is still drawn, the
+     * slack is the inner slack at every depth, the bounds enclose the child
+     * frames, and it is never dropped for overlapping.
+     *
+     * `cohesion: 0` because a folder has none to claim: nobody measured how
+     * much of these files' coupling stays inside, and a folder frame never
+     * enters the overlap contest where the number would be read.
+     */
+    const folderFrames: ClusterInput[] = arranged.folders.map((folder) => ({
+      id: folder.id,
+      files: folder.files,
+      cohesion: 0,
+      depth: folder.depth,
+      parent: folder.parent,
+      folder: true as const,
+    }));
 
     const shown = clusters.filter((group) => group.state !== 'rejected');
     // No frames on the component diagram: a category is a box there, and a
     // frame's members are file paths that name no box on it. Passing them
     // through would draw nothing either way; leaving them out says so.
-    const frameable = componentsOn ? [] : shown;
+    //
+    // And one frame system at a time. Under the folder arrangement the frames
+    // are the folders and the categories are not drawn: measured over three
+    // projects, every category spans more than one directory and more than one
+    // top-level directory, so a category frame that respected a folder wall
+    // would be the whole project — drawn over a folder layout, three of
+    // astrup's eleven survive and one of them is an 8544px rectangle around
+    // 172 boxes of which 167 are not in it. `?category=` is how a category is
+    // seen whole, and the Categories panel still lists every one of them.
+    const frameable = componentsOn ? [] : foldersOn ? folderFrames : shown;
     // Everything a frame is drawn from, not just which groups exist. Dragging a
     // corner or taking a file out of a hand-drawn group changes no id, so a key
     // of ids alone would hand back the cached bounds and the frame would never
@@ -2799,7 +2943,11 @@ export function App() {
       // A box that expanded is taller and nothing about its id says so, which is
       // the same trap a group's colour and padding fell into: the cached bounds
       // come back and the growth never appears.
-      .concat('#', [...expanded].sort().join(','));
+      .concat('#', [...expanded].sort().join(','))
+      // And which folders are frames right now. They are recomputed by the
+      // engine for every view, and a fold takes one away, so a key that did
+      // not see them would hand back the bounds of a frame that is gone.
+      .concat('#', folderFrames.map((frame) => `${frame.id}~${frame.files.length}`).join(','));
     const previous = layoutRef.current;
 
     // Mark, do not move. dagre has no memory, so running it again for a save
@@ -2809,8 +2957,18 @@ export function App() {
     // for nothing else. The first layout is the one that has the groups: they
     // arrive from their own request, after the view, and dagre is what keeps
     // a group's members together, so a layout without them does not count.
+    // Shutting a folder is the third thing that lays a view out afresh, and it
+    // is not the exception the rule forbids: that rule is about a *save*, and
+    // five reviewers named the shuffle-on-save as what broke "mark, do not
+    // move". A fold is a person pressing a chevron while looking at the
+    // picture, the box set changes because they asked it to, and the boxes
+    // they placed by hand still win — placements are applied over whatever
+    // dagre answers. Keeping the old places instead would leave the folder
+    // that opened scattered beside its neighbours and its frame stretched
+    // across the ones it does not hold.
+    const foldKey = [...foldedFolders].sort().join(',');
     const clustersReady = clustersFor === `${data?.root ?? ''}\n${view.at ?? ''}`;
-    const layoutKey = `${data?.root ?? ''}\n${viewKey}\n${clustersReady ? 'grouped' : 'plain'}\n${relayoutToken}`;
+    const layoutKey = `${data?.root ?? ''}\n${viewKey}\n${clustersReady ? 'grouped' : 'plain'}\n${relayoutToken}\n${foldKey}`;
     const fresh = layoutKey !== previous.layoutKey;
 
     // Every box already placed, at the same size it had.
@@ -2834,12 +2992,20 @@ export function App() {
     // position set here is overwritten by both and re-applied below.
     const sized = applyPlacements(placed, placements);
 
+    // A save has to land a new box *inside its own folder*, or the frame drawn
+    // around it afterwards stretches across somebody else's — a picture that
+    // says a file is in a folder it is not in. `keepLayout` does that when it
+    // is handed the frames; a category frame spans directories by definition
+    // and wants none of it, so the flat arrangement hands over nothing and
+    // places exactly as it always has.
+    const homes = foldersOn ? folderFrames : [];
+
     const laid = fresh
       ? layoutNodes(sized, builtEdges, frameable, canvasRef.current?.clientHeight ?? 0)
       : sameShape
-        ? { nodes: keepLayout(previous.rects, sized, []), clusters: previous.clusters }
+        ? { nodes: keepLayout(previous.rects, sized, [], homes), clusters: previous.clusters }
         : (() => {
-            const kept = keepLayout(previous.rects, sized, view.edges);
+            const kept = keepLayout(previous.rects, sized, arranged.edges, homes);
             return { nodes: kept, clusters: frameClusters(kept, frameable) };
           })();
 
@@ -2880,6 +3046,53 @@ export function App() {
     /** Where every box actually landed, for asking what a locked frame missed. */
     const landed = new Map(laidOut.nodes.map((box) => [box.id, box]));
     laidOut.clusters.sort((a, b) => a.depth - b.depth);
+
+    /**
+     * The folder frames, drawn where the layout put them.
+     *
+     * A directory, not a category, and nothing on it can be renamed, coloured,
+     * deleted or dragged — none of those is something you can do to a folder
+     * from a diagram, and a frame that offered them would be claiming to be
+     * the other kind. Its one gesture is the fold.
+     */
+    const folderById = new Map(arranged.folders.map((folder) => [folder.id, folder]));
+    const changeOf = new Map(arranged.nodes.map((node) => [node.id, node.change]));
+    const folderFrameNodes: FolderNodeType[] = foldersOn
+      ? laidOut.clusters.flatMap((bounds): FolderNodeType[] => {
+          const folder = folderById.get(bounds.id);
+          if (folder === undefined) return [];
+          return [
+            {
+              id: `folder:${bounds.id}`,
+              type: 'folder' as const,
+              position: { x: bounds.x, y: bounds.y },
+              width: bounds.width,
+              height: bounds.height,
+              // Behind the boxes, and an outer frame behind the inner ones it
+              // contains — the same two levels a category frame uses.
+              zIndex: bounds.depth === 0 ? -2 : -1,
+              selectable: false,
+              draggable: false,
+              data: {
+                id: folder.id,
+                label: folder.label,
+                fileCount: folder.fileCount,
+                depth: folder.depth,
+                folded: false,
+                // A folder every box in which is a ghost: the directory is
+                // gone, and the frame is the only thing left saying it was
+                // ever there. Derived here rather than carried by the engine
+                // — it is exactly "every box in it is a ghost", and a second
+                // place deciding that is a second place to be wrong.
+                ghost: folder.files.length > 0 && folder.files.every((file) => changeOf.get(file) === 'removed'),
+                marked: false,
+                onFold: (shutNow: boolean) => toggleFolded(folder.id, shutNow),
+              },
+            },
+          ];
+        })
+      : [];
+
     // Frames first, so they render behind the boxes they enclose.
     const frames: GroupNodeType[] = laidOut.clusters.flatMap((bounds) => {
       const group = byId.get(bounds.id);
@@ -2958,7 +3171,10 @@ export function App() {
     });
 
     return {
-      nodes: ([...frames, ...laidOut.nodes] as FlowNode[]).map(withMeasured),
+      // Both kinds of frame first, so they render behind the boxes. Only one
+      // of the two lists is ever non-empty: two frame systems on one canvas
+      // was refused on evidence — see `frameable` above.
+      nodes: ([...frames, ...folderFrameNodes, ...laidOut.nodes] as FlowNode[]).map(withMeasured),
       edges: builtEdges,
     };
   }, [
@@ -2986,6 +3202,11 @@ export function App() {
     clustersFor,
     relayoutToken,
     componentsOn,
+    foldersOn,
+    arranged,
+    foldedFolders,
+    toggleFolded,
+    markedFiles,
     diffSince,
     decide,
     editGroup,
@@ -3086,7 +3307,10 @@ export function App() {
 
   const handleNodeEnter = useCallback(
     (_event: MouseEvent, node: FlowNode) => {
-      if (node.type === 'frame') return;
+      // Neither kind of frame: both are drawn behind the boxes and cover most
+      // of the canvas, so a hover on one is a hover on nothing in particular.
+      // A folder that is shut is a box, and it hovers like one.
+      if (node.type === 'frame' || (node.type === 'folder' && !node.data.folded)) return;
       hoveredRef.current = node.id;
       applyNear();
     },
@@ -3186,7 +3410,10 @@ export function App() {
   }, []);
 
   const handleNodeClick = useCallback((_event: MouseEvent, node: FlowNode) => {
-    if (node.type === 'frame') return;
+    // A folder is not a symbol and the panel has nothing to say about one:
+    // its own gestures are the chevron, which folds it, and a double click,
+    // which goes inside. A frame is behind the boxes and is not clicked at all.
+    if (node.type === 'frame' || node.type === 'folder') return;
     setSelected(node.id);
     setShowSidebar(true);
   }, []);
@@ -3260,14 +3487,26 @@ export function App() {
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
+      // Carried the way the breadcrumb carries it. Double-clicking a shut
+      // folder is this arrangement's own gesture, and dropping the key on it
+      // flattened the next scope — a click into a folder that quietly
+      // un-folders the picture is answering a question nobody asked.
+      if (foldersOn) params.set('folders', '1');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, depth, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
+    [navigate, depth, showCalls, showAssoc, showDepends, onlyChanged, hideTests, foldersOn, at],
   );
 
   const handleNodeDoubleClick = useCallback(
     (_event: MouseEvent, node: FlowNode) => {
+      // A shut folder is the same box the engine draws above the grouping
+      // threshold, so it opens the same way: a double click looks inside it.
+      // An open frame is not double-clicked — you are already inside it.
+      if (node.type === 'folder') {
+        if (node.data.folded) goTo(node.data.id, 'folder');
+        return;
+      }
       if (node.type !== 'box') return;
       goTo(node.id, node.data.kind);
     },
@@ -3329,10 +3568,16 @@ export function App() {
       if (edges !== null) params.set('edges', edges);
       if (onlyChanged) params.set('changed', '1');
       if (hideTests) params.set('tests', '0');
+      // Carried the way the filters are: which arrangement the boxes are in is
+      // an answer about how to read a directory, not about which one this is,
+      // and a click into the next one that quietly flattened the picture would
+      // be answering a question nobody asked. The engine refuses it again
+      // wherever it does not apply, so carrying it is never a claim.
+      if (foldersOn) params.set('folders', '1');
       if (at !== null) params.set('at', at);
       navigate(params);
     },
-    [navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, at],
+    [navigate, showCalls, showAssoc, showDepends, onlyChanged, hideTests, foldersOn, at],
   );
 
   const changeDepth = useCallback(
@@ -3538,6 +3783,21 @@ export function App() {
     },
     [navigate],
   );
+
+  /**
+   * The folders as frames, or the flat arrangement. Built from the live URL so
+   * the place, the filters and the commit all survive the flip: this is where
+   * the boxes are put, not which boxes there are — the same reason it sits
+   * beside `as` in the spec rather than beside `diagram`.
+   *
+   * The flat arrangement stays the default and the absent key is what says so.
+   */
+  const toggleFolders = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('folders')) params.delete('folders');
+    else params.set('folders', '1');
+    navigate(params);
+  }, [navigate]);
 
   /** Let the count decide again. */
   const dropPresentation = useCallback(() => {
@@ -4324,6 +4584,11 @@ export function App() {
     creating,
     onCreating: setCreating,
     onCreate: (name) => createGroup(name, selection.files),
+    // Accepting a proposed grouping, and it is deliberately the same call: a
+    // proposal a person accepts is a category that person drew, so it takes
+    // the write that says so — `origin: 'manual'`, marked "by hand" wherever
+    // it is shown. Nothing a model said reaches groups.json by any other way.
+    onCreateFrom: (name, files) => createGroup(name, files),
     consent:
       groupConsent === null
         ? null
@@ -4389,6 +4654,43 @@ export function App() {
         : diffOn && !listOn
           ? { disabledBecause: 'A diff is small by construction and is drawn; its rows are on the boxes' }
           : { run: () => setPresentation(listOn ? 'diagram' : 'list') }),
+  };
+  /**
+   * The folder arrangement, as one item for the View menu, the canvas menu and
+   * the palette through the first — so the three cannot disagree about its
+   * name or whether it is on.
+   *
+   * Greyed with the reason wherever the engine refuses it, rather than left to
+   * be pressed for nothing. Each reason is a measurement: a category spans
+   * directories by definition (every one measured spans several, and the
+   * lowest common ancestor folder of each of astrup's eleven is the project
+   * root); above the grouping threshold the folder is already the box; a list
+   * has no frames; and a focus is a neighbourhood rather than a place in the
+   * tree, whose bundles stand for files from many folders at once.
+   */
+  const foldersItem: MenuItem = {
+    label: 'Folders as frames',
+    checked: foldersOn,
+    ...(foldersOn
+      ? { run: toggleFolders }
+      : view === undefined
+        ? { disabledBecause: 'Nothing is loaded yet' }
+        : frontOn
+          ? { disabledBecause: 'The front page is a list — open a place on it first' }
+          : componentsOn
+            ? { disabledBecause: 'A category is not in a folder — every one measured spans several' }
+            : categoryScope !== undefined
+              ? { disabledBecause: 'A category cuts across directories: that is what makes it one' }
+              : view.spec.focus !== null
+                ? { disabledBecause: "A focus draws one file's neighbours, wherever in the tree they live" }
+                : listOn
+                  ? { disabledBecause: 'Shown as a list — a list has rows, not frames' }
+                  : view.grouped
+                    ? {
+                        disabledBecause:
+                          'These boxes already stand for folders — open one to draw the files in it',
+                      }
+                    : { run: toggleFolders }),
   };
   /**
    * The structural diff, as one item for the View menu, the canvas menu and
@@ -4627,6 +4929,10 @@ export function App() {
         { ...diagramItem, separatorBefore: true },
         // And whether it is drawn at all, or listed: the same kind of fact.
         listItem,
+        // And where the boxes are put: the folders drawn as frames around
+        // them, or flat. A second arrangement of one diagram, so it sits with
+        // the other things a view is rather than with the filters below.
+        foldersItem,
         // And whether it is the diff: what came, went and moved since the
         // base, and nothing else. A checked item, so the palette offers it.
         diffItem,
@@ -4928,6 +5234,10 @@ export function App() {
       },
       { ...diagramItem, separatorBefore: true },
       listItem,
+      // Where the boxes are put, on the menu the canvas opens: it is a
+      // decision about the drawing being looked at, which is the whole reason
+      // this menu exists.
+      foldersItem,
       { label: 'Call edges', separatorBefore: true, checked: showCalls, run: toggleCalls },
       assocItem,
       dependsItem,
@@ -5585,7 +5895,9 @@ export function App() {
             // A token, not a hex: React Flow paints this as an inline fill, so
             // the page's own rule for minimap nodes cannot reach it.
             nodeColor={(node) =>
-              node.type === 'frame'
+              // Both kinds of frame, and for the same reason. A folder that is
+              // shut is a box and is drawn as one.
+              node.type === 'frame' || (node.type === 'folder' && !node.data.folded)
                 ? 'transparent'
                 : markedBoxes.has(node.id)
                   ? 'var(--vsc-git-modified)'
@@ -5707,7 +6019,9 @@ export function App() {
                 // The diff's own three numbers, over boxes: what came, what
                 // went — the ghosts — and what changed shape, since what.
                 ? `+${diffCounts.added} −${diffCounts.removed} ~${diffCounts.touched} since ${diffSince ?? 'base'}`
-                : `${view.nodes.length} ${listOn ? 'rows' : 'boxes'} · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
+                // What is drawn, not what the view holds: a shut folder is one
+                // box standing for the seven that are no longer on the canvas.
+                : `${listOn ? view.nodes.length : drawnBoxes} ${listOn ? 'rows' : 'boxes'} · ${view.totalFiles} files${view.grouped ? ' · grouped' : ''}`
             : ''
         }
         {...(diffOn

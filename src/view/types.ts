@@ -3,6 +3,7 @@ import type { GitFileStatus } from '../git/types.js';
 import type { AssociationRole, EdgeKind, NodeKind } from '../graph/types.js';
 import type { LanguageId } from '../lang/types.js';
 import type { ViewFilter } from './filter.js';
+import type { ViewFolder } from './folders.js';
 
 /**
  * How a count of dependents or callers was arrived at — never how complete it is.
@@ -48,8 +49,8 @@ export const LIST_ABOVE = 30;
  * Which slice of the graph to show. Carried in the page URL, so navigation is
  * links rather than client state: the back button works and a view is shareable.
  *
- * `as`, `category` and `diff` are optional where `focus` and `at` are
- * nullable: absent is the ordinary answer for each of them, JSON drops an
+ * `as`, `category`, `diff` and `folders` are optional where `focus` and `at`
+ * are nullable: absent is the ordinary answer for each of them, JSON drops an
  * undefined either way, and a spec written before they existed is still a
  * spec. The price is that a reader which forgets one compiles — so both
  * readers in `server/app.ts` are checked by sending the server's own echo
@@ -116,6 +117,35 @@ export interface ViewSpec {
    * diff is small by construction, which is the point of one.
    */
   diff?: string;
+  /**
+   * Draw the folders as frames around the boxes, nested — the second
+   * arrangement of the same boxes, and `?folders=1` in the URL.
+   *
+   * Spelled `folders` because that is the word the person asking for it used,
+   * and because it is the same word the boxes already use: above
+   * `GROUP_THRESHOLD` a scope folds its files into folder *boxes* with a
+   * count, which is how a big scope gets small, and this is the opposite —
+   * every file keeps its box and the folder is drawn around it. The two are
+   * one directory used two opposite ways and can never be on screen at once,
+   * so one word costs nothing; the gesture is opening a folder box, not a
+   * third diagram. That is also why this sits beside `as` rather than beside
+   * `diagram`: it is not a fourth thing a box can stand for, it is where the
+   * boxes are put. And not inside `filter`, for the reason `as` is not: a
+   * filter changes which boxes are worth drawing, this changes none of them.
+   *
+   * `?: true` rather than a boolean: absent is off, so a `false` on the wire
+   * would be a second spelling of the same answer, and JSON drops an
+   * undefined for both wire formats at once. Read for both by
+   * `optionalKeys(raw)` in `server/app.ts` — one reader, because a socket
+   * that dropped it would push the flat arrangement to a page drawing frames.
+   *
+   * Dropped from the echo where the arrangement is refused, the way `diff` is
+   * dropped when only one graph was handed over: under `diagram: 'components'`
+   * a category is not in a folder, and above `GROUP_THRESHOLD` the folder is
+   * already the box. The page reads the echo, so it can say which arrangement
+   * it got rather than believing the URL.
+   */
+  folders?: true;
 }
 
 /**
@@ -362,6 +392,23 @@ export interface ViewNode {
    * that changed, drawn `external`) and on every other view.
    */
   change?: 'added' | 'removed' | 'touched';
+  /**
+   * Under `spec.folders` only: the id of the innermost folder frame this box
+   * sits inside — see `ViewGraph.folders`.
+   *
+   * `inFolder` and not `folder`, because `kind` already says `folder` in this
+   * same interface and means the opposite thing: a box standing *for* a
+   * directory, rather than a box standing *in* one. One word over two
+   * meanings is how a reader leaves with the wrong one.
+   *
+   * Absent is ordinary and means no frame holds it: a file directly in the
+   * scope, an external box, whose directory is outside the scope, a bundle,
+   * which stands for files from many folders at once, or a box under a folder
+   * that was collapsed or capped away. A box is labelled relative to whatever
+   * this names, so a folder that draws no frame is not lost — it reappears in
+   * the labels of its own files.
+   */
+  inFolder?: string;
 }
 
 export interface ViewEdge {
@@ -477,6 +524,29 @@ export interface ViewGraph {
   scoped: { parseErrors: number; unresolved: { imports: number; calls: number } };
   /** True when boxes stand for directories rather than files. */
   grouped: boolean;
+  /**
+   * The folder frames to draw around the boxes, outermost first — what
+   * `nestByFolder` in `view/folders.ts` made of the paths in this slice.
+   *
+   * Present only where `spec.folders` was asked for *and* honoured, so it and
+   * the echoed key say the same thing; absent, and on every other view, the
+   * boxes are laid out flat as they always were. Optional rather than an
+   * empty array for the reason the spec's own keys are: a slice that has
+   * nothing to say here says nothing, and a view built before this existed is
+   * still a view.
+   *
+   * Carried here rather than left to the page, though the page is what draws
+   * a frame: which folders are drawn, which are collapsed away and what each
+   * is then called are rules, and a second implementation of a rule is how
+   * the two drift apart. The page reads them the way it reads the categories
+   * — `web/src/layout.ts` takes the same id, files, depth and parent for both
+   * — so this grows no second frame system.
+   *
+   * `grouped` above is the same directory used the opposite way: there a
+   * folder *is* a box, standing for files too numerous to draw, and the two
+   * are never both on.
+   */
+  folders?: ViewFolder[];
   /**
    * What the whole project is written in, biggest first — not what this slice
    * is. It answers "what is this repository", and a count that shrank because

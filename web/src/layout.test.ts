@@ -4,7 +4,16 @@ import { test } from 'node:test';
 // bundled by vite and never compiled into dist/, so there is no layout.js for
 // `node --test` to find. `allowImportingTsExtensions` in web/tsconfig.json is
 // what lets typecheck accept it. `npm test` runs it beside the dist/ tests.
-import { componentHeight, GRID, frameClusters, keepLayout, layoutNodes, NODE_WIDTH, type Rect } from './layout.ts';
+import {
+  componentHeight,
+  GRID,
+  frameClusters,
+  keepLayout,
+  layoutNodes,
+  NODE_WIDTH,
+  type ClusterInput,
+  type Rect,
+} from './layout.ts';
 import { applyPlacements } from './placement.ts';
 
 const box = (id: string, height = 80) => ({ id, width: NODE_WIDTH, height });
@@ -322,4 +331,270 @@ test('a component box is measured from the rows it draws, and one that provides 
   assert.equal(componentHeight(1, false), 87);
   assert.equal(componentHeight(0, false), componentHeight(1, false));
   assert.equal(componentHeight(4, false) - componentHeight(3, false), 17);
+});
+
+// --- folders as frames -----------------------------------------------------
+
+/** A folder handed over as a frame, the way `view/folders.ts` hands one over:
+ * `files` holds every box beneath it, nested ones included. */
+const folder = (id: string, files: string[], depth: number, parent: string | null): ClusterInput => ({
+  id,
+  files,
+  cohesion: 0,
+  depth,
+  parent,
+  folder: true,
+});
+
+const placedNode = (id: string, x: number, y: number, height = 80) => ({
+  id,
+  position: { x, y },
+  data: {},
+  width: NODE_WIDTH,
+  height,
+});
+
+const inside = (outer: { x: number; y: number; width: number; height: number }, box: Rect): boolean =>
+  box.x >= outer.x &&
+  box.y >= outer.y &&
+  box.x + box.width <= outer.x + outer.width &&
+  box.y + box.height <= outer.y + outer.height;
+
+test('a folder of one file is still a frame, and a cluster of one is still not', () => {
+  // webapp-h26's Controllers and Models hold one file each and are the wall
+  // the folder arrangement exists to draw.
+  const nodes = [placedNode('Controllers/HomeController.cs', 0, 0), placedNode('Models/Item.cs', 400, 0)];
+  const asFolders = frameClusters(nodes, [
+    folder('Controllers', ['Controllers/HomeController.cs'], 0, null),
+    folder('Models', ['Models/Item.cs'], 0, null),
+  ]);
+  assert.deepEqual(asFolders.map((frame) => frame.id).sort(), ['Controllers', 'Models']);
+
+  const asCluster = frameClusters(nodes, [
+    { id: 'Controllers', files: ['Controllers/HomeController.cs'], cohesion: 0.9, depth: 0, parent: null },
+  ]);
+  assert.deepEqual(asCluster, [], 'a cluster of one drew a frame');
+});
+
+test('a folder frame encloses the frames inside it, label and all, four levels down', () => {
+  // One box per level, side by side on one row — so the top edge of every
+  // frame is decided by the frame inside it, which is the case the enclosing
+  // is for.
+  const paths = ['a/x.ts', 'a/b/x.ts', 'a/b/c/x.ts', 'a/b/c/d/x.ts'];
+  const nodes = paths.map((path, index) => placedNode(path, index * 400, 0));
+  const frames = frameClusters(nodes, [
+    folder('a', paths, 0, null),
+    folder('a/b', paths.slice(1), 1, 'a'),
+    folder('a/b/c', paths.slice(2), 2, 'a/b'),
+    folder('a/b/c/d', paths.slice(3), 3, 'a/b/c'),
+  ]);
+  assert.equal(frames.length, 4, 'a level lost its frame');
+  const at = new Map(frames.map((frame) => [frame.id, frame]));
+
+  for (const [child, parent] of [
+    ['a/b', 'a'],
+    ['a/b/c', 'a/b'],
+    ['a/b/c/d', 'a/b/c'],
+  ] as const) {
+    const outer = at.get(parent)!;
+    const inner = at.get(child)!;
+    assert.ok(inside(outer, inner), `${child} is not inside ${parent}`);
+    // And the outer frame's own label band clears the inner frame's top edge,
+    // which is the whole reason the bounds enclose the child rather than only
+    // the boxes: 18 of label and 12 of slack, at every depth.
+    assert.equal(inner.y - outer.y, 30, `${parent}'s label sits on ${child}'s edge`);
+  }
+});
+
+test('two folder frames that overlap are both drawn; two clusters are not', () => {
+  // `two` lands inside `one`'s span — what a folded rank or a hand-placed box
+  // does. A category that cannot be drawn is still listed in the panel; a
+  // folder that is not drawn is a directory the picture says is not there.
+  const nodes = [placedNode('one/a.ts', 0, 0), placedNode('two/b.ts', 0, 200), placedNode('one/c.ts', 0, 400)];
+  const folders = frameClusters(nodes, [
+    folder('one', ['one/a.ts', 'one/c.ts'], 0, null),
+    folder('two', ['two/b.ts'], 0, null),
+  ]);
+  assert.deepEqual(folders.map((frame) => frame.id).sort(), ['one', 'two']);
+
+  const clusters = frameClusters(nodes, [
+    { id: 'one', files: ['one/a.ts', 'one/c.ts'], cohesion: 0.5, depth: 0, parent: null },
+    { id: 'two', files: ['two/b.ts', 'one/a.ts'], cohesion: 0.5, depth: 0, parent: null },
+  ]);
+  assert.equal(clusters.length, 1, 'both clashing category frames were drawn');
+});
+
+test('dagre nests the folders, and every box lands inside every frame that lists it', () => {
+  // webapp-h26's ProsjektMVC, which is the tree the feature was argued from:
+  // three levels, two folders of one file, and every edge crossing a wall.
+  const paths = [
+    'ProsjektMVC/Program.cs',
+    'ProsjektMVC/Controllers/HomeController.cs',
+    'ProsjektMVC/Models/Item.cs',
+    'ProsjektMVC/Views/Home/Index.cshtml',
+    'ProsjektMVC/Views/Shared/_Layout.cshtml',
+  ];
+  const under = (prefix: string) => paths.filter((path) => path.startsWith(`${prefix}/`));
+  const folders = [
+    folder('ProsjektMVC', paths, 0, null),
+    folder('ProsjektMVC/Controllers', under('ProsjektMVC/Controllers'), 1, 'ProsjektMVC'),
+    folder('ProsjektMVC/Models', under('ProsjektMVC/Models'), 1, 'ProsjektMVC'),
+    folder('ProsjektMVC/Views', under('ProsjektMVC/Views'), 1, 'ProsjektMVC'),
+    folder('ProsjektMVC/Views/Home', under('ProsjektMVC/Views/Home'), 2, 'ProsjektMVC/Views'),
+    folder('ProsjektMVC/Views/Shared', under('ProsjektMVC/Views/Shared'), 2, 'ProsjektMVC/Views'),
+  ];
+  const { nodes, clusters } = layoutNodes(
+    paths.map((path) => placedNode(path, 0, 0)),
+    [
+      { id: '1', source: 'ProsjektMVC/Controllers/HomeController.cs', target: 'ProsjektMVC/Models/Item.cs' },
+      { id: '2', source: 'ProsjektMVC/Controllers/HomeController.cs', target: 'ProsjektMVC/Views/Home/Index.cshtml' },
+      { id: '3', source: 'ProsjektMVC/Views/Shared/_Layout.cshtml', target: 'ProsjektMVC/Models/Item.cs' },
+    ],
+    folders,
+    0,
+  );
+
+  assert.equal(clusters.length, 6, 'a folder lost its frame');
+  const drawn = new Map(clusters.map((frame) => [frame.id, frame]));
+  const box = new Map(
+    nodes.map((node) => [
+      node.id,
+      { x: node.position.x, y: node.position.y, width: NODE_WIDTH, height: node.height ?? 80 },
+    ]),
+  );
+  for (const frame of folders) {
+    const bounds = drawn.get(frame.id)!;
+    for (const file of frame.files) {
+      assert.ok(inside(bounds, box.get(file)!), `${file} landed outside ${frame.id}`);
+    }
+    // And nothing else is inside it: a frame that holds a stranger is the
+    // picture saying a file is in a folder it is not in.
+    for (const [id, rect] of box) {
+      if (frame.files.includes(id)) continue;
+      const overlaps =
+        rect.x < bounds.x + bounds.width &&
+        bounds.x < rect.x + rect.width &&
+        rect.y < bounds.y + bounds.height &&
+        bounds.y < rect.y + rect.height;
+      assert.ok(!overlaps, `${frame.id} was drawn over ${id}`);
+    }
+  }
+});
+
+// --- a save, under the folder arrangement ----------------------------------
+
+/** Controllers and Models side by side, one box each, as dagre leaves them. */
+const mvc = new Map<string, Rect>([
+  ['Controllers/HomeController.cs', at(40, 40)],
+  ['Models/Item.cs', at(400, 40)],
+]);
+const mvcFolders = (extra: string[] = []) => [
+  folder('Controllers', ['Controllers/HomeController.cs', ...extra], 0, null),
+  folder('Models', ['Models/Item.cs'], 0, null),
+];
+
+test('a new box lands in its own folder, not beside the file in another folder it imports', () => {
+  const boxes = [box('Controllers/HomeController.cs'), box('Models/Item.cs'), box('Controllers/ItemController.cs')];
+  const placed = keepLayout(
+    mvc,
+    boxes,
+    // Its one and only import is the model, which is in the other folder.
+    [{ from: 'Controllers/ItemController.cs', to: 'Models/Item.cs', weight: 3 }],
+    mvcFolders(['Controllers/ItemController.cs']),
+  );
+  const frames = frameClusters(
+    placed.map((node) => ({ ...node, data: {} })),
+    mvcFolders(['Controllers/ItemController.cs']),
+  );
+  const at = new Map(frames.map((frame) => [frame.id, frame]));
+  const arrived = placed.find((node) => node.id === 'Controllers/ItemController.cs')!;
+  const rect = { x: arrived.position.x, y: arrived.position.y, width: NODE_WIDTH, height: 80 };
+
+  assert.ok(inside(at.get('Controllers')!, rect), 'the new box landed outside its own folder');
+  const models = at.get('Models')!;
+  assert.ok(!inside(models, rect), 'the new box landed inside Models');
+  // And the frame drawn round it does not now swallow the file it imports:
+  // that is the failure that reads as "this file is in that folder".
+  const item = mvc.get('Models/Item.cs')!;
+  assert.ok(!inside(at.get('Controllers')!, item), 'Controllers was drawn over Models/Item.cs');
+});
+
+test('a new box in a folder it is connected to nothing in still goes into that folder', () => {
+  const boxes = [box('Controllers/HomeController.cs'), box('Models/Item.cs'), box('Controllers/About.cs')];
+  const placed = keepLayout(mvc, boxes, [], mvcFolders(['Controllers/About.cs']));
+  const frames = frameClusters(
+    placed.map((node) => ({ ...node, data: {} })),
+    mvcFolders(['Controllers/About.cs']),
+  );
+  const arrived = placed.find((node) => node.id === 'Controllers/About.cs')!;
+  const rect = { x: arrived.position.x, y: arrived.position.y, width: NODE_WIDTH, height: 80 };
+  const controllers = frames.find((frame) => frame.id === 'Controllers')!;
+  assert.ok(inside(controllers, rect), 'an unconnected new box went to the row under the diagram');
+});
+
+test('a new box in no folder at all does not land inside somebody else’s', () => {
+  const boxes = [box('Controllers/HomeController.cs'), box('Models/Item.cs'), box('Program.cs')];
+  // `Program.cs` sits directly in the scope, so it is in no frame — and its
+  // one import is the controller, which is in one.
+  const placed = keepLayout(
+    mvc,
+    boxes,
+    [{ from: 'Program.cs', to: 'Controllers/HomeController.cs', weight: 5 }],
+    mvcFolders(),
+  );
+  const frames = frameClusters(
+    placed.map((node) => ({ ...node, data: {} })),
+    mvcFolders(),
+  );
+  const arrived = placed.find((node) => node.id === 'Program.cs')!;
+  const rect = { x: arrived.position.x, y: arrived.position.y, width: NODE_WIDTH, height: 80 };
+  for (const frame of frames) {
+    assert.ok(!inside(frame, rect), `Program.cs landed inside ${frame.id}`);
+  }
+});
+
+test('with no frames given a save places exactly as it always did', () => {
+  const boxes = [box('a'), box('b'), box('c'), box('d')];
+  const withLinks = [...links, { from: 'd', to: 'c', weight: 3 }];
+  assert.deepEqual(
+    keepLayout(diagram, boxes, withLinks, []).map((node) => node.position),
+    keepLayout(diagram, boxes, withLinks).map((node) => node.position),
+  );
+});
+
+test('a folder arrangement does not fold a tall rank, because the fold would break the folders', () => {
+  // Twenty boxes that lean on nothing land in one dagre rank — 2 000px of it
+  // in a 400px window, which is what folding exists for. But the fold
+  // re-spaces the column by rank alone, and the frames drawn afterwards then
+  // stretch across boxes from other folders: measured on astrup, 26 such
+  // frames over every scope that draws as a diagram, and 0 with the fold off.
+  const nodes = loners(20).map((node, index) => ({ ...node, id: `f${index % 4}/n${index}.ts` }));
+  const folders = [0, 1, 2, 3].map((index) =>
+    folder(
+      `f${index}`,
+      nodes.filter((node) => node.id.startsWith(`f${index}/`)).map((node) => node.id),
+      0,
+      null,
+    ),
+  );
+  const { nodes: placed, clusters } = layoutNodes(nodes, [], folders, 400);
+  assert.equal(new Set(placed.map((node) => node.position.x)).size, 1, 'the rank folded');
+
+  // And with it off, every frame holds its own boxes and nobody else's.
+  const at = new Map(
+    placed.map((node) => [node.id, { x: node.position.x, y: node.position.y, width: NODE_WIDTH, height: node.height ?? 80 }]),
+  );
+  for (const frame of clusters) {
+    const own = new Set(folders.find((one) => one.id === frame.id)!.files);
+    for (const [id, rect] of at) {
+      const held =
+        rect.x < frame.x + frame.width && frame.x < rect.x + rect.width &&
+        rect.y < frame.y + frame.height && frame.y < rect.y + rect.height;
+      assert.equal(held, own.has(id), `${frame.id} and ${id}`);
+    }
+  }
+
+  // The flat layout of the same boxes still folds: this is a rule about
+  // folders, not a rule that turned the fold off.
+  assert.ok(new Set(layoutNodes(nodes, [], [], 400).nodes.map((node) => node.position.x)).size > 1);
 });

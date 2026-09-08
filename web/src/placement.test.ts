@@ -106,6 +106,19 @@ test('what changes which boxes are drawn is not in the key', () => {
   assert.equal(key({ scope: 'src/view', as: 'diagram' }), scoped);
 });
 
+test('the folder arrangement is its own key, and the flat one keeps the key it had', () => {
+  // The same scope, the same box ids, two arrangements: a box moved in one
+  // would jump in the other and jump back on the way out.
+  const scoped = key({ scope: 'ProsjektMVC' });
+  assert.notEqual(key({ scope: 'ProsjektMVC', folders: true }), scoped);
+  assert.notEqual(key({ folders: true }), key());
+  // And it is pinned to the string, not merely to being different: the flat
+  // view's key is what every arrangement already in a browser is filed under,
+  // so a sixth element written unconditionally would orphan all of them.
+  assert.equal(scoped, '["classes","","","ProsjektMVC",0]');
+  assert.equal(key({ scope: 'ProsjektMVC', folders: true }), '["classes","","","ProsjektMVC",0,1]');
+});
+
 test('a key survives a separator living inside a path', () => {
   // A path may legally hold whatever separator a joined string would use, and
   // two views quietly sharing a key is placements landing on boxes nobody
