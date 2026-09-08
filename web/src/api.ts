@@ -696,8 +696,17 @@ export async function groupAction(body: unknown): Promise<Groups> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
-  const result = (await response.json()) as Partial<Groups> & { error?: string };
-  if (!response.ok) throw new Error(result.error ?? `HTTP ${response.status}`);
+  const result = (await response.json()) as Partial<Groups> & { error?: string; needsConsent?: boolean };
+  if (!response.ok) {
+    const refusal = new Error(result.error ?? `HTTP ${response.status}`);
+    // The one refusal a press can answer: this project has no `.codemap/` and
+    // the server will not make one uninvited. Carried on the rejection so the
+    // page can offer the answer instead of printing a sentence written for an
+    // HTTP client — which is what "I am not allowed to create categories"
+    // looked like from the outside.
+    if (result.needsConsent === true) Object.assign(refusal, { needsConsent: true });
+    throw refusal;
+  }
   // Both halves, or deleting an orphan would leave it in the list it was shown in.
   return { clusters: result.clusters ?? [], orphans: result.orphans ?? [] };
 }

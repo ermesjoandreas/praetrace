@@ -26,6 +26,28 @@ export interface GroupEditor {
    * cluster to hand over, only the entry in groups.json it came from.
    */
   onDelete: (storedId: string) => void;
+  /**
+   * The server's standing question — drawing a category writes
+   * .codemap/groups.json, and this project has none yet — held with the press
+   * that raised it, so saying yes is the same name and files sent again with
+   * consent. Null when there is nothing to ask. The same question Explain
+   * asks, about the same directory, and answered the same way: on a press,
+   * never by the page on its own.
+   */
+  consent: { name: string | null; files: number } | null;
+  onAcceptStore: () => void;
+  /** Why the last press to draw one was refused, in the server's words, or null. */
+  refusal: string | null;
+}
+
+/**
+ * What a category may be called: anything with a letter or a digit in it.
+ * The user's own groups.json held a category named "¨" — a dead key on a
+ * Norwegian keyboard, then Enter — because trim() was the whole check, and
+ * the row then read `¨ 2 · by hand` for as long as nobody noticed.
+ */
+export function isName(name: string): boolean {
+  return /[\p{L}\p{N}]/u.test(name);
 }
 
 /**
@@ -113,6 +135,9 @@ export function Categories({
   lastRun,
   onSuggest,
   onDismissSuggestion,
+  boxesOnScreen,
+  onDrawAll,
+  fileCount,
 }: {
   groups: GroupSuggestion[];
   /** Stored names no group the graph finds now answers to. See OrphanGroup. */
@@ -135,6 +160,16 @@ export function Categories({
   lastRun: { costUsd: number; ms: number } | null;
   onSuggest: () => void;
   onDismissSuggestion: (id: string) => void;
+  /**
+   * Whether there is anything on screen to pick: false on the front page and
+   * the welcome, where the sentence has to send the reader to a diagram first.
+   * A list counts — a row is a box, and shift-click picks it the same way.
+   */
+  boxesOnScreen: boolean;
+  /** The root diagram, which is where that sentence sends them. */
+  onDrawAll: () => void;
+  /** Files in the graph: none at all is a different sentence from no group. */
+  fileCount: number;
 }) {
   // One walk over the whole list, in the order it is drawn: a group, the name
   // being typed in place of it, then the files under it — when it is
@@ -148,6 +183,8 @@ export function Categories({
   /** The row whose palette and membership are open. One at a time. */
   const [editing, setEditing] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
+  /** Why Enter did nothing with the name as typed, said under the field. */
+  const [nameProblem, setNameProblem] = useState<string | null>(null);
   /**
    * The rows whose files are on screen, by cluster id. Everything starts
    * folded, and nothing is persisted: a new session starts tidy. The id embeds
@@ -205,8 +242,9 @@ export function Categories({
       title="Categories"
       className="categories"
       // "Group selection" from a menu puts a form in this body; a folded body
-      // would swallow it.
-      expandWhen={editor.creating}
+      // would swallow it. So would it the server's question, which stands
+      // until it is answered.
+      expandWhen={editor.creating || editor.consent !== null}
       status={suggesting ? <span className="categories-status">Suggesting…</span> : undefined}
       actions={
         <>
@@ -226,7 +264,7 @@ export function Categories({
             title={
               canCreate
                 ? `Group the ${editor.selection.boxes} selected boxes`
-                : 'Select two or more boxes on the diagram to draw a category'
+                : 'Shift-click two or more boxes on the diagram to draw a category'
             }
             aria-label="Group the selected boxes"
             onClick={() => editor.onCreating(true)}
@@ -278,21 +316,91 @@ export function Categories({
           autoFocus
           value={newName}
           placeholder={`Name a category of ${editor.selection.files.length} files`}
-          onChange={(event) => setNewName(event.target.value)}
+          onChange={(event) => {
+            setNewName(event.target.value);
+            setNameProblem(null);
+          }}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && newName.trim() !== '') {
+              if (!isName(newName)) {
+                setNameProblem(`"${newName.trim()}" is not a name: it needs a letter or a digit`);
+                return;
+              }
               editor.onCreate(newName.trim());
               setNewName('');
             } else if (event.key === 'Escape') editor.onCreating(false);
           }}
-          onBlur={() => editor.onCreating(false)}
+          onBlur={() => {
+            editor.onCreating(false);
+            setNameProblem(null);
+          }}
         />
       )}
+      {editor.creating && nameProblem !== null && <p className="categories-error">{nameProblem}</p>}
 
-      {live.length === 0 && !editor.creating && (
-        <p className="panel-empty">
-          Nothing to categorise yet. Select two or more boxes on the diagram to draw one.
+      {/* The one refusal a press can answer, asked where the press was made
+          and not in the banner over the canvas — which is where it used to
+          land, in the server's words for an HTTP client ("send createStore:
+          true"), with nothing on the page able to send it. See the same
+          question in Following, about Explain. */}
+      {editor.consent !== null && (
+        <p className="group-consent">
+          {editor.consent.name === null
+            ? 'Changing a category writes '
+            : `Naming "${editor.consent.name}" writes `}
+          <code>.codemap/groups.json</code>, and this project has no <code>.codemap/</code> yet.
+          <button type="button" className="group-consent-yes" onClick={editor.onAcceptStore}>
+            {editor.consent.name === null
+              ? 'Create it and save the change'
+              : `Create it and name the ${editor.consent.files} files`}
+          </button>
         </p>
+      )}
+      {editor.refusal !== null && <p className="categories-error">{editor.refusal}</p>}
+
+      {/* Nothing found, and why — the imports here do not make a group, which
+          is the algorithm's honest answer and not a failure — then how one is
+          drawn by hand, because before this the sentence said "select two or
+          more boxes" over a front page with no boxes on it, and the one
+          control that draws one is hidden in the header until hovered. With
+          two or more boxes picked, the how is replaced by the button itself. */}
+      {live.length === 0 && !editor.creating && editor.consent === null && (
+        canCreate ? (
+          <div className="categories-create-row">
+            <button
+              type="button"
+              className="categories-create"
+              title={`Name a category of the ${editor.selection.files.length} files these boxes stand for — it is marked "by hand", because the import graph was not asked`}
+              onClick={() => editor.onCreating(true)}
+            >
+              <i className="codicon codicon-add" aria-hidden="true" />
+              Create category from {editor.selection.boxes} boxes…
+            </button>
+          </div>
+        ) : (
+          <p className="panel-empty">
+            {fileCount === 0 ? (
+              'Nothing to categorise: no file here is one the tool reads.'
+            ) : groups.length > 0 ? (
+              'Every category the imports found here was marked not a category.'
+            ) : (
+              // "three or more" is MIN_SIZE in view/cluster.ts, in words: two
+              // files that touch are a pair, not architecture.
+              'The imports found no category here: no three or more files lean on each other more than on the rest of the project.'
+            )}{' '}
+            {boxesOnScreen ? (
+              'Draw one by hand: shift-click two or more boxes, or shift-drag around them, and name it here.'
+            ) : (
+              <>
+                Draw one by hand:{' '}
+                <button type="button" className="panel-link" onClick={onDrawAll}>
+                  open the diagram
+                </button>
+                , shift-click two or more boxes, and name it here.
+              </>
+            )}
+          </p>
+        )
       )}
 
       <ul {...keys} onKeyDown={onKeyDown}>

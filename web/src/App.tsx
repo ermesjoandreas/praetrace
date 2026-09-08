@@ -432,6 +432,26 @@ export function App() {
   const [dragged, setDragged] = useState<ReadonlyMap<string, { x: number; y: number }>>(() => new Map());
   /** The name field for a category about to be drawn, in the Categories section. */
   const [creating, setCreating] = useState(false);
+  /**
+   * The server's standing question about drawing one — it writes
+   * .codemap/groups.json, and this project has none yet — held with the press
+   * that raised it, so saying yes is the same press with consent; the same
+   * shape as `consent` below, which asks it for Explain. And the refusal a
+   * press got otherwise, in the server's words. Both are shown in the section
+   * the press was made in, not in the banner over the canvas: the banner
+   * used to hold the refusal, and held it still after the category had been
+   * drawn, because nothing ever cleared it.
+   */
+  /**
+   * The server's question about `.codemap/`, held until a person answers it.
+   * Either a category being drawn — the name and the files, so the press that
+   * answers sends what was asked about rather than whatever is picked by then
+   * — or any other write to the same file, kept as the body to send again.
+   */
+  const [groupConsent, setGroupConsent] = useState<
+    { name: string; files: string[] } | { pending: unknown } | null
+  >(null);
+  const [createRefusal, setCreateRefusal] = useState<string | null>(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   /**
@@ -1053,8 +1073,17 @@ export function App() {
       (next) => {
         setClusters(next.clusters);
         setOrphans(next.orphans);
+        // The write landed, so whatever the last one said about it is stale.
+        setError(null);
       },
-      (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
+      (cause: unknown) => {
+        // Renaming, recolouring or dragging a frame writes the same file a
+        // new category does, so the same question can come back — and it is
+        // held to be answered rather than printed. `pending` is the body to
+        // send again once it is.
+        if (cause instanceof Error && 'needsConsent' in cause) setGroupConsent({ pending: body });
+        else setError(cause instanceof Error ? cause.message : String(cause));
+      },
     );
   }, []);
 
@@ -1091,19 +1120,29 @@ export function App() {
     return { boxes: boxes.length, files: [...new Set(boxes.flatMap((node) => node.files))] };
   }, [data?.view, picked]);
 
-  const createGroup = useCallback(
-    (name: string) => {
-      groupAction({ action: 'create', name, files: selection.files }).then(
-        (next) => {
-          setClusters(next.clusters);
-          setOrphans(next.orphans);
-          setCreating(false);
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)),
-      );
-    },
-    [selection.files],
-  );
+  /**
+   * The files are an argument rather than read off the selection, because the
+   * press that answers the server's question comes after the selection may
+   * have moved on: the answer sends what was asked about, not what is picked.
+   */
+  const createGroup = useCallback((name: string, files: string[], createStore = false) => {
+    setGroupConsent(null);
+    setCreateRefusal(null);
+    groupAction({ action: 'create', name, files, ...(createStore ? { createStore: true } : {}) }).then(
+      (next) => {
+        setClusters(next.clusters);
+        setOrphans(next.orphans);
+        setCreating(false);
+      },
+      (cause: unknown) => {
+        // A rejection carrying `needsConsent` is the server's question about
+        // .codemap/ — the one refusal a press can answer — and is held rather
+        // than printed. Every other refusal is printed where the press was.
+        if (cause instanceof Error && 'needsConsent' in cause) setGroupConsent({ name, files });
+        else setCreateRefusal(cause instanceof Error ? cause.message : String(cause));
+      },
+    );
+  }, []);
 
   const view = data?.view;
   const depth = view?.spec.depth ?? 1;
@@ -2739,6 +2778,9 @@ export function App() {
     setSelected(null);
     setPicked(new Set());
     setCreating(false);
+    // Escape ends the whole gesture, the question it raised included.
+    setGroupConsent(null);
+    setCreateRefusal(null);
   }, []);
 
   const goTo = useCallback(
@@ -3799,7 +3841,24 @@ export function App() {
     selection,
     creating,
     onCreating: setCreating,
-    onCreate: createGroup,
+    onCreate: (name) => createGroup(name, selection.files),
+    consent:
+      groupConsent === null
+        ? null
+        : 'pending' in groupConsent
+          ? { name: null, files: 0 }
+          : { name: groupConsent.name, files: groupConsent.files.length },
+    onAcceptStore: () => {
+      if (groupConsent === null) return;
+      if ('pending' in groupConsent) {
+        const body = groupConsent.pending;
+        setGroupConsent(null);
+        editGroup({ ...(typeof body === 'object' && body !== null ? body : {}), createStore: true });
+        return;
+      }
+      createGroup(groupConsent.name, groupConsent.files, true);
+    },
+    refusal: createRefusal,
     onRename: renameGroup,
     onColor: (group, color) => editGroup({ action: 'update', id: addressOf(group), color }),
     onMembers: (group, files) => editGroup({ action: 'update', id: addressOf(group), files }),
@@ -4781,6 +4840,11 @@ export function App() {
               lastRun={suggestCost}
               onSuggest={suggest}
               onDismissSuggestion={dismissSuggestion}
+              // A box or a row to shift-click: not on the front page, not
+              // under a URL the server refused, not over nothing.
+              boxesOnScreen={!frontOn && !viewMissing && !empty}
+              onDrawAll={drawRoot}
+              fileCount={view?.fileCount ?? 0}
             />
             <Activity
               changes={changes}

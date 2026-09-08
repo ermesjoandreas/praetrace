@@ -505,6 +505,21 @@ export function BoxNode({ data }: NodeProps<BoxNodeType>) {
                 {member.owner === null ? '' : VISIBILITY[member.visibility ?? 'public']}
               </span>
 
+              {/* UML's guillemets, on the class's own row and in front of the
+                  name rather than on a line above it: layout.ts measures a box
+                  from its row count, and a second line for one class would move
+                  every box under it. Text and muted, like the visibility mark.
+                  The title names the line that said it, because a «table»
+                  nobody can check is the convention this project refuses. */}
+              {member.stereotype !== undefined && (
+                <span
+                  className="member-stereotype"
+                  title={`a ${member.stereotype.name}, by the word of ${member.stereotype.statedBy} in ${member.stereotype.statedIn}. A class without this mark may still be one: only a declaration puts it here`}
+                >
+                  {`«${member.stereotype.name}»`}
+                </span>
+              )}
+
               <button
                 type="button"
                 className="member-name"

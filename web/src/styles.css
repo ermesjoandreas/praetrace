@@ -181,7 +181,8 @@ code { font-size: var(--vsc-font-size-status); }
 .explain-run,
 .explain-stop,
 .repo-button,
-.group-delete {
+.group-delete,
+.categories-create {
   display: inline-flex;
   align-items: center;
   height: 26px;
@@ -193,7 +194,8 @@ code { font-size: var(--vsc-font-size-status); }
 }
 .explain-stop:hover,
 .repo-button:hover:not(:disabled),
-.group-delete:hover {
+.group-delete:hover,
+.categories-create:hover {
   background: var(--vsc-toolbar-hover);
 }
 .explain-run,
@@ -1153,6 +1155,11 @@ main { display: flex; flex: 1; min-height: 0; }
   text-align: center;
 }
 
+/* UML's stereotype — «table» — on the class's own row, before the name. Text,
+   because the guillemets are UML's notation the way the visibility marks are;
+   muted, because it is a fact about a declaration and not about this minute. */
+.member-stereotype { flex: none; padding-right: 4px; color: var(--vsc-fg-muted); }
+
 /* The two UML type styles: static is underlined, abstract is italic. */
 .member-static .member-name { text-decoration: underline; text-underline-offset: 2px; }
 .member-abstract .member-name { font-style: italic; }
@@ -2004,6 +2011,21 @@ main.stacked-sidebar > .sidebar > .panel { flex: 1 1 auto; }
 .categories input { display: block; width: calc(100% - 16px); margin: 4px 8px; }
 .categories ul { margin: 0; padding: 0; list-style: none; }
 
+/* Nothing found: the sentence says why and how one is drawn by hand, and
+   "open the diagram" in it runs the root diagram, in the link colour a
+   welcome row wears — a sentence that names a diagram the page is not
+   showing has to be able to show it. */
+.panel-empty .panel-link { color: var(--vsc-link); }
+.panel-empty .panel-link:hover { text-decoration: underline; }
+
+/* The create, visible: the Repository panel's 26px full-width button, in the
+   body while two or more boxes are picked and nothing has been found. The +
+   in the header is hidden until the header is hovered, which is VS Code's
+   rule and stays; a control that cannot be seen is not how the first
+   category gets drawn. */
+.categories-create-row { padding: 4px 8px; }
+.categories-create { width: 100%; justify-content: center; gap: 6px; }
+
 /* A run in flight, beside the title. A status, not an action, so it does not
    wait for the hover. */
 .categories-status {
@@ -2456,19 +2478,22 @@ li.group-nested .group-files .group-row > button { padding-left: 56px; }
 /* A question, so it is not the error colour: nothing failed and nothing was
    spent. Ordinary panel text with the file named in mono, and the answer on
    its own line under it, the way a confirm reads. */
-.explain-consent {
+.explain-consent,
+.group-consent {
   margin: 0;
   padding: 4px 8px;
   color: var(--vsc-fg-muted);
   font-size: var(--vsc-font-size-sm);
   line-height: 1.5;
 }
-.explain-consent code {
+.explain-consent code,
+.group-consent code {
   font-family: var(--vsc-font-mono);
   color: var(--vsc-fg);
   word-break: break-all;
 }
-.explain-consent-yes {
+.explain-consent-yes,
+.group-consent-yes {
   display: block;
   margin-top: 6px;
   padding: 2px 10px;
@@ -2478,7 +2503,8 @@ li.group-nested .group-files .group-row > button { padding-left: 56px; }
   color: var(--vsc-fg-strong);
   font-size: var(--vsc-font-size-sm);
 }
-.explain-consent-yes:hover { background: var(--vsc-accent-hover); }
+.explain-consent-yes:hover,
+.group-consent-yes:hover { background: var(--vsc-accent-hover); }
 
 /* --- status bar ------------------------------------------------------------ */
 

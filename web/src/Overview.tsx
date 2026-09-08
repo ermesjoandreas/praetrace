@@ -387,8 +387,27 @@ export function Overview({
                 </span>
               }
             >
+              {/* Why there is none — the imports do not make one, which is the
+                  clustering being honest and not failing — and then the way
+                  to draw one, as a row that leads to the diagram it is drawn
+                  on. "Three or more" is MIN_SIZE in view/cluster.ts. */}
               {overview.categories.named.length === 0 && overview.categories.unnamed === 0 && (
-                <p className="front-note">None found yet: the import graph has no group of files that lean on each other more than on the rest.</p>
+                <>
+                  <p className="front-note">
+                    None found: no three or more of these {overview.project.files} files lean on each other more than on the rest, so the imports make no category on their own.
+                  </p>
+                  <button
+                    type="button"
+                    {...LIST_ROW}
+                    className="front-row front-link"
+                    onClick={onDrawAll}
+                    title="The root as a class diagram. Shift-click two or more boxes there, or shift-drag around them, and name them in the Categories section — a category drawn by hand is marked so, because the import graph was not asked."
+                  >
+                    <i className="codicon codicon-add" aria-hidden="true" />
+                    <span className="front-name-ui">Draw one by hand</span>
+                    <span className="front-why">shift-click boxes on the diagram</span>
+                  </button>
+                </>
               )}
               {overview.categories.named.map((category) => categoryRow(category, onCategory))}
               {overview.categories.unnamed > 0 && (
