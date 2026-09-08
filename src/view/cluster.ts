@@ -46,6 +46,64 @@ export interface Cluster {
   children: Cluster[];
 }
 
+/**
+ * What the graph says about a set of files somebody proposes as a group.
+ *
+ * This exists because a proposal has to be judged before it is accepted, and
+ * the only judgement worth anything is the graph's own. A model that says
+ * "these eight files are 90% cohesive" is guessing; this counts the edges.
+ * `cohesion` is the same measure `Cluster.cohesion` carries, computed the same
+ * way over the same edges, so a proposed group and a found one can be read
+ * side by side without either number meaning something slightly different.
+ */
+export interface GroupEvidence {
+  /** The proposed paths the graph holds a file for, sorted and deduplicated. */
+  files: string[];
+  /**
+   * Proposed paths no file in the graph answers to.
+   *
+   * Never silently dropped: a proposal that names files this project has not
+   * got is a proposal to distrust, and a reader who is shown only the paths
+   * that happened to land cannot see that.
+   */
+  unknown: string[];
+  /**
+   * Members that are test files. They are in the graph and they are in the
+   * set, and they contribute nothing to the three numbers below — tests do
+   * not vote here for the reason they do not vote in the clustering.
+   */
+  tests: string[];
+  /** Share of the set's references that stay inside it, 0..1. */
+  cohesion: number;
+  /** References between two members, each counted once. */
+  inside: number;
+  /** References with exactly one end among the members. */
+  leaving: number;
+  /** Files outside the set that reference a member. */
+  reachedFrom: string[];
+  /** Files outside the set that a member references. */
+  reaches: string[];
+}
+
+/**
+ * One directed reference between two files, and how many graph edges cross it.
+ *
+ * The one home of "what counts as coupling between two files", so the number a
+ * proposal is judged by and the number the clustering computes cannot drift
+ * apart: `undirectedNeighbours` below is built from this, and so is
+ * `evidenceFor`. `contains` is a file holding its own symbols and says
+ * nothing about two files; `depends` is a type named only in a signature and
+ * does not vote, for the reason written on `undirectedNeighbours`. A test file
+ * is not an end at either side — a suite imports everything it exercises,
+ * which is the opposite of belonging.
+ */
+export interface FileLink {
+  from: string;
+  to: string;
+  /** Repeated references between the same pair are a stronger tie, not a duplicate. */
+  weight: number;
+}
+
 /** Below this, a "group" is just a couple of files that happen to touch. */
 const MIN_SIZE = 3;
 /**
@@ -152,21 +210,83 @@ function crossings(
 }
 
 function cohesionOf(files: readonly string[], neighbours: ReadonlyMap<string, Map<string, number>>): number {
-  const inside = new Set(files);
+  const { inside, leaving } = edgeCounts(files, neighbours);
+  const total = inside + leaving;
+  return total === 0 ? 0 : inside / total;
+}
+
+/**
+ * The two numbers cohesion is a ratio of. Split out so a proposal can print
+ * them beside the percentage — "31 of 44 stay inside" is checkable by hand and
+ * "70%" is not, and this feature exists to be checked.
+ */
+function edgeCounts(
+  files: readonly string[],
+  neighbours: ReadonlyMap<string, Map<string, number>>,
+): { inside: number; leaving: number } {
+  const members = new Set(files);
   let internal = 0;
   let external = 0;
 
   for (const file of files) {
     for (const [neighbour, weight] of neighbours.get(file) ?? []) {
-      if (inside.has(neighbour)) internal += weight;
+      if (members.has(neighbour)) internal += weight;
       else external += weight;
     }
   }
   // The map is undirected, so an edge inside the group was seen from both of
   // its ends and an edge leaving it from one. Halving puts them on one footing.
-  internal /= 2;
-  const total = internal + external;
-  return total === 0 ? 0 : internal / total;
+  return { inside: internal / 2, leaving: external };
+}
+
+/**
+ * Judge a set of files the graph did not choose.
+ *
+ * The set may come from anywhere — a person drawing a frame, a model
+ * proposing one — and this says nothing about where it came from. It reports
+ * what the imports actually do with those files, which is the only thing that
+ * can tell a grouping worth accepting from a tidy one that does not match the
+ * code. Decision 5 is why it exists: a model may propose a grouping, and the
+ * numbers a person reads before accepting it are ours and never its.
+ *
+ * Three passes over the graph, which is nothing beside the run that produced
+ * the proposal; nothing here is on the live update path.
+ */
+export function evidenceFor(graph: Graph, proposed: readonly string[]): GroupEvidence {
+  const known = new Set<string>();
+  for (const node of graph.nodes.values()) if (node.kind === 'file') known.add(node.filePath);
+
+  const files: string[] = [];
+  const unknown: string[] = [];
+  const seen = new Set<string>();
+  for (const path of proposed) {
+    if (seen.has(path)) continue;
+    seen.add(path);
+    (known.has(path) ? files : unknown).push(path);
+  }
+  files.sort();
+  unknown.sort();
+
+  const { inside, leaving } = edgeCounts(files, undirectedNeighbours(graph));
+  const members = new Set(files);
+  const reachedFrom = new Set<string>();
+  const reaches = new Set<string>();
+  for (const link of fileLinks(graph)) {
+    if (members.has(link.to) && !members.has(link.from)) reachedFrom.add(link.from);
+    if (members.has(link.from) && !members.has(link.to)) reaches.add(link.to);
+  }
+
+  const total = inside + leaving;
+  return {
+    files,
+    unknown,
+    tests: files.filter(isTestFile),
+    cohesion: total === 0 ? 0 : inside / total,
+    inside,
+    leaving,
+    reachedFrom: [...reachedFrom].sort(),
+    reaches: [...reaches].sort(),
+  };
 }
 
 /**
@@ -233,18 +353,20 @@ export function identify(files: readonly string[]): string {
 }
 
 /**
- * Direction says who depends on whom; belonging is mutual. Tests are not in
- * the map at all, and an edge touching one is dropped with them — from both
- * ends, or a source file would still count its tests as neighbours and read
- * as leaking edges to files that are not there.
+ * Every reference between two files the graph holds, summed per direction.
+ * Sorted, so two runs over the same graph produce the same list.
+ *
+ * Tests are not ends at all, and an edge touching one is dropped with them —
+ * from both ends, or a source file would still count its tests as neighbours
+ * and read as leaking edges to files that are not there.
  */
-function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
-  const neighbours = new Map<string, Map<string, number>>();
-
+export function fileLinks(graph: Graph): FileLink[] {
+  const files = new Set<string>();
   for (const node of graph.nodes.values()) {
-    if (node.kind === 'file' && !isTestFile(node.filePath)) neighbours.set(node.filePath, new Map());
+    if (node.kind === 'file' && !isTestFile(node.filePath)) files.add(node.filePath);
   }
 
+  const weights = new Map<string, Map<string, number>>();
   for (const edge of graph.edges) {
     if (edge.kind === 'contains') continue;
     // A type named only in a signature is not the coupling this measures —
@@ -254,20 +376,42 @@ function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
     const from = graph.nodes.get(edge.from)?.filePath;
     const to = graph.nodes.get(edge.to)?.filePath;
     if (!from || !to || from === to) continue;
-    if (!neighbours.has(from) || !neighbours.has(to)) continue;
+    if (!files.has(from) || !files.has(to)) continue;
 
-    // Repeated edges between the same pair are a stronger tie, not a duplicate.
-    bump(neighbours, from, to);
-    bump(neighbours, to, from);
+    const out = weights.get(from) ?? new Map<string, number>();
+    out.set(to, (out.get(to) ?? 0) + 1);
+    weights.set(from, out);
+  }
+
+  const links: FileLink[] = [];
+  for (const [from, out] of weights) for (const [to, weight] of out) links.push({ from, to, weight });
+  return links.sort((a, b) => a.from.localeCompare(b.from) || a.to.localeCompare(b.to));
+}
+
+/**
+ * Direction says who depends on whom; belonging is mutual — so the links above
+ * are laid down both ways here. A file with no references at all still gets an
+ * entry, because a file that belongs to nothing is an answer.
+ */
+function undirectedNeighbours(graph: Graph): Map<string, Map<string, number>> {
+  const neighbours = new Map<string, Map<string, number>>();
+
+  for (const node of graph.nodes.values()) {
+    if (node.kind === 'file' && !isTestFile(node.filePath)) neighbours.set(node.filePath, new Map());
+  }
+
+  for (const link of fileLinks(graph)) {
+    bump(neighbours, link.from, link.to, link.weight);
+    bump(neighbours, link.to, link.from, link.weight);
   }
 
   return neighbours;
 }
 
-function bump(neighbours: Map<string, Map<string, number>>, from: string, to: string): void {
+function bump(neighbours: Map<string, Map<string, number>>, from: string, to: string, weight: number): void {
   const edges = neighbours.get(from);
   if (!edges) return;
-  edges.set(to, (edges.get(to) ?? 0) + 1);
+  edges.set(to, (edges.get(to) ?? 0) + weight);
 }
 
 function assemble(

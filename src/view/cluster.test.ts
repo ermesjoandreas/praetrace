@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { Graph, GraphNode } from '../graph/types.js';
-import { clusterFiles } from './cluster.js';
+import { clusterFiles, evidenceFor, fileLinks } from './cluster.js';
 
 /** A graph of files and the imports between them, in the order given. */
 function graphOf(files: readonly string[], imports: readonly [string, string][]): Graph {
@@ -156,4 +156,76 @@ test('a pair of files that touch is not a category: three pairs among eleven fil
   ];
   const graph = graphOf([...alone, ...pairs.flat()], pairs);
   assert.deepEqual(clusterFiles(graph), []);
+});
+
+// --- evidenceFor: the number a proposal is judged by, and it is ours -------
+
+test('a proposed set is measured with the same cohesion a found group reports', () => {
+  // Two triangles joined by one edge, which the clustering already pins at
+  // 75% each. Proposing one of them by hand must give the same number, or a
+  // proposal and a cluster would mean slightly different things on one screen.
+  const graph = graphOf(
+    [...members('a'), ...members('b')],
+    [...triangle('a'), ...triangle('b'), ['a3.ts', 'b3.ts']],
+  );
+  const evidence = evidenceFor(graph, members('a'));
+
+  assert.equal(evidence.cohesion, 0.75);
+  assert.equal(evidence.inside, 3);
+  assert.equal(evidence.leaving, 1);
+  assert.deepEqual(evidence.files, members('a'));
+  // Directions, not a total: one is who would break, the other is what it needs.
+  assert.deepEqual(evidence.reaches, ['b3.ts']);
+  assert.deepEqual(evidence.reachedFrom, []);
+});
+
+test('a set the graph has no file for is named rather than dropped', () => {
+  const graph = graphOf(members('a'), triangle('a'));
+  const evidence = evidenceFor(graph, ['a1.ts', 'src/invented.ts', 'a1.ts', 'a2.ts']);
+
+  // A proposal naming files this project has not got is a proposal to
+  // distrust, and a reader shown only the paths that landed cannot see that.
+  assert.deepEqual(evidence.unknown, ['src/invented.ts']);
+  assert.deepEqual(evidence.files, ['a1.ts', 'a2.ts']);
+  assert.equal(evidence.inside, 1);
+});
+
+test('a test file in a proposed set is reported, and votes on none of the numbers', () => {
+  const source = members('src/a');
+  const graph = graphOf(
+    [...source, 'src/__tests__/a1.test.ts'],
+    [...triangle('src/a'), ['src/__tests__/a1.test.ts', 'src/a1.ts']],
+  );
+  const evidence = evidenceFor(graph, [...source, 'src/__tests__/a1.test.ts']);
+
+  assert.deepEqual(evidence.tests, ['src/__tests__/a1.test.ts']);
+  // The suite's edge is not counted inside and not counted leaving: it is not
+  // in the map at all, which is the rule the clustering already follows.
+  assert.equal(evidence.inside, 3);
+  assert.equal(evidence.leaving, 0);
+  assert.equal(evidence.cohesion, 1);
+});
+
+test('a set with no references at all is 0% rather than an error', () => {
+  const graph = graphOf(['a.ts', 'b.ts', 'c.ts'], []);
+  const evidence = evidenceFor(graph, ['a.ts', 'b.ts']);
+  assert.equal(evidence.cohesion, 0);
+  assert.equal(evidence.inside, 0);
+  assert.equal(evidence.leaving, 0);
+});
+
+test('fileLinks is one directed row per pair, summed, sorted, and never a test', () => {
+  const graph = graphOf(
+    ['a.ts', 'b.ts', 'a.test.ts'],
+    [
+      ['b.ts', 'a.ts'],
+      ['a.ts', 'b.ts'],
+      ['a.ts', 'b.ts'],
+      ['a.test.ts', 'a.ts'],
+    ],
+  );
+  assert.deepEqual(fileLinks(graph), [
+    { from: 'a.ts', to: 'b.ts', weight: 2 },
+    { from: 'b.ts', to: 'a.ts', weight: 1 },
+  ]);
 });

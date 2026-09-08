@@ -1,16 +1,29 @@
-import type { AskConversation, AskDeltaKind, AskFailure, AskState, AskTurn } from './api';
+import type {
+  AskConversation,
+  AskDeltaKind,
+  AskFailure,
+  AskState,
+  AskTurn,
+  Proposal,
+  ProposeFailure,
+  ProposeRun,
+} from './api';
 
 /**
- * The rules behind the conversation about the categories: what a transcript
- * is, how the words arriving on the socket are added to it, and when the
- * question box will not send. Pure, and apart from `Ask.tsx` so it runs under
- * `node --test` the way `listrows.ts` does beside `ListView.tsx` — a `.tsx`
- * file cannot.
+ * The rules behind the two things the Ask panel does: the conversation about
+ * the categories — what a transcript is, how the words arriving on the socket
+ * are added to it, and when the question box will not send — and the sentences
+ * a proposed grouping is read by. Pure, and apart from `Ask.tsx` so it runs
+ * under `node --test` the way `listrows.ts` does beside `ListView.tsx` — a
+ * `.tsx` file cannot.
  *
- * Nothing here decides anything about the project. The conversation is text on
- * a screen: no name is written, no file joins a category, and nothing in this
+ * Nothing here decides anything about the project. An answer is text on a
+ * screen: no name is written, no file joins a category, and nothing in this
  * module can reach `groups.json`. That is decisions 4 and 5, and it is why
- * this file holds no writer of any kind.
+ * this file holds no writer of any kind. A *proposed* grouping is the same
+ * thing — text, with numbers this project computed beside it — until a person
+ * presses accept, and that press is the create `Categories.tsx` already makes,
+ * which stores the group as one a person drew.
  *
  * The one thing below that is not a function is the socket bridge at the
  * bottom, and the reason it is here rather than threaded through props is
@@ -181,8 +194,12 @@ export interface AskView {
 }
 
 export type AskAction =
-  /** What the server says the conversation is — from the fetch, the poll, or an `ask` frame. */
-  | { kind: 'server'; state: AskState }
+  /**
+   * What the server says the conversation is — from the fetch, the poll, or an
+   * `ask` frame. Only those two fields: a proposal is not part of the
+   * conversation, arrives on no frame, and is held beside this.
+   */
+  | { kind: 'server'; state: Pick<AskState, 'conversation' | 'running'> }
   /** A few characters, from an `ask-delta` frame. */
   | { kind: 'delta'; frame: { conversationId: string; text: string; kind: AskDeltaKind } }
   /** This page pressed End. Told apart from a switch because only the page knows. */
@@ -284,6 +301,185 @@ export function timingNote(turn: AskTurn): string | null {
   if (turn.ms === undefined) return null;
   const first = turn.firstTokenMs === undefined ? '' : `first words in ${seconds(turn.firstTokenMs)}, `;
   return `${first}${seconds(turn.ms)} in all`;
+}
+
+/* --- proposing a grouping ---------------------------------------------------
+ *
+ * The other half of the panel, and a different job from the question above it:
+ * a question is answered from the categories that *exist*, and a project with
+ * none has nothing to talk about — which is the project this exists for. The
+ * model is sent the files and the imports between them and answers with
+ * groupings; every number a reader judges one by is computed here from the
+ * graph, in `view/cluster.ts`, and never taken from what the model said.
+ */
+
+/**
+ * What one proposal run stands to cost, before there is a real number.
+ *
+ * Measured with haiku, and across four projects it barely moves with size:
+ * $0.040 and 37 s for a nine-file one driven through this panel, and the
+ * engine's own $0.06 to $0.15 at 78 to 126 seconds for that one, this
+ * repository at 119 files and astrupdata at 305. So one number rather than a
+ * curve, and the top of the range rather than the middle: a press that costs
+ * less than it said is the harmless direction to be wrong in.
+ */
+export const PROPOSE_USD = 0.12;
+
+/** What a failed run is called. `too-big` is the refusal that costs nothing. */
+export const PROPOSE_FAILURE_WORDS: Record<ProposeFailure, string> = {
+  ...FAILURE_WORDS,
+  'too-big': 'This project is too big to propose a grouping for in one prompt.',
+};
+
+/**
+ * Why the press would do nothing, in words, or null when it would run.
+ *
+ * **Not gated on there being categories**, which is the one thing that would
+ * be wrong here: `askBlocked` refuses a project with none because a question
+ * about nothing is a question about nothing, and a project with none is
+ * exactly what this button is for. The server's own two refusals — a project
+ * with no files, and one too big for a single prompt — are 400s carrying a
+ * sentence, and that sentence is printed rather than guessed at here.
+ */
+export function proposeBlocked(state: {
+  /** A run is in flight — this page's, or another tab's. */
+  proposing: boolean;
+  /** The press has gone out and the server has not answered it yet. */
+  sending: boolean;
+  /** Files in the graph. None is the server's own refusal, said before the press. */
+  fileCount: number;
+}): string | null {
+  if (state.sending || state.proposing) return 'A grouping is already being proposed.';
+  if (state.fileCount === 0) return 'There are no files here to group.';
+  return null;
+}
+
+/**
+ * The cohesion of a proposed set, as the two counts it is a ratio of.
+ *
+ * The percentage alone is the number a model would have made up; the counts
+ * are what make it checkable, and they are what say how much there was to
+ * measure — "1 of 2" and "31 of 44" are both high and only one of them means
+ * anything. A set the graph found no reference at either end of gets a
+ * sentence instead of "0%", which would read as a measurement rather than as
+ * an absence.
+ */
+export function cohesionNote(evidence: Proposal['evidence']): string {
+  const total = evidence.inside + evidence.leaving;
+  if (total === 0) return 'No imports or calls at either end of these files';
+  const share = Math.round(evidence.cohesion * 100);
+  return `${evidence.inside} of ${total} references stay inside (${share}%)`;
+}
+
+/**
+ * A third of the references staying inside — `MIN_COHESION` in
+ * `view/cluster.ts`, the cut the clustering itself uses. Below it the graph
+ * would not have offered these files as a group, and the page says so beside
+ * the number rather than leaving a reader to do the arithmetic.
+ *
+ * It does not stop the accept, and must not: a person may know something the
+ * imports do not, which is decision 5's own carve-out. What this buys is that
+ * they are told first.
+ */
+export function weakCohesion(evidence: Proposal['evidence']): boolean {
+  return evidence.cohesion < 1 / 3;
+}
+
+/**
+ * What this proposal does to the categories that already exist.
+ *
+ * Covering files nobody has claimed is a different act from re-cutting a
+ * category a person accepted, and a reader has to be able to tell which
+ * before they press. The overlap is counted by the server against the
+ * accepted groups, never by the model.
+ */
+export function overlapNote(proposal: Proposal): string {
+  const total = proposal.files.length;
+  if (proposal.overlaps.length === 0) {
+    return total === 0 ? 'No file here is one this project holds' : 'Covers files no category holds';
+  }
+  const named = proposal.overlaps
+    .slice(0, 3)
+    .map((overlap) => `${overlap.name} ${overlap.shared}/${overlap.size}`)
+    .join(', ');
+  const rest = proposal.overlaps.length > 3 ? `, and ${proposal.overlaps.length - 3} more` : '';
+  const free =
+    proposal.unclaimed === 0
+      ? ''
+      : ` · ${proposal.unclaimed} of ${total} ${proposal.unclaimed === 1 ? 'file is' : 'files are'} in no category`;
+  return `Re-cuts ${named}${rest}${free}`;
+}
+
+/** Who reaches into the set and what it reaches, or null when it stands alone. */
+export function reachNote(evidence: Proposal['evidence']): string | null {
+  const into = evidence.reachedFrom.length;
+  const out = evidence.reaches.length;
+  if (into === 0 && out === 0) return null;
+  return `${into} ${into === 1 ? 'file reaches' : 'files reach'} in, ${out} reached out to`;
+}
+
+/**
+ * The paths the model named that this project has no file for.
+ *
+ * Two lists say it — `invented`, checked against what was sent, and the
+ * evidence's `unknown`, checked against the graph — and they are unioned
+ * rather than one being picked, because a path missing from either is a path
+ * that is not there. Never hidden: a proposal that invents files is a
+ * proposal to distrust, and a reader shown only what landed cannot see that.
+ */
+export function inventedPaths(proposal: Proposal): string[] {
+  return [...new Set([...proposal.invented, ...proposal.evidence.unknown])].sort();
+}
+
+/**
+ * What the panel says while a run is happening, or about one that failed —
+ * and null when the proposals themselves are the answer.
+ *
+ * A proposal does not stream. The answer is a schema, so there is nothing to
+ * watch arrive, and a still panel for a minute and a half reads as hung
+ * unless it says what it is doing and what it is reading.
+ */
+export function proposeStatus(run: ProposeRun | null): string | null {
+  if (run === null) return null;
+  if (run.state === 'running') {
+    return `Reading ${run.sent.files} ${run.sent.files === 1 ? 'file' : 'files'} and ${run.sent.links} references. This takes a minute or two, and nothing appears until it is done.`;
+  }
+  if (run.state === 'failed') {
+    const words = PROPOSE_FAILURE_WORDS[run.reason ?? 'failed'];
+    return run.detail === undefined || run.detail === '' ? words : `${words} ${run.detail}`;
+  }
+  return null;
+}
+
+/**
+ * Whether two readings of the run describe the same thing.
+ *
+ * The poll re-parses the run every three seconds, so without this the
+ * proposals and every file row under them re-render on a timer while nobody
+ * is changing anything. A run only ever moves from running to done or failed,
+ * and only then gains its proposals, so those three fields are the whole of
+ * what a reader could see change.
+ */
+export function sameRun(a: ProposeRun | null, b: ProposeRun | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.at === b.at && a.state === b.state && a.proposals.length === b.proposals.length;
+}
+
+/**
+ * The line under a finished run: how many groupings, out of how much project,
+ * and what was thrown away before a person saw it.
+ *
+ * `dropped` is on the face of it rather than in a tooltip because it is the
+ * one number that says the answer was not entirely usable.
+ */
+export function proposeSummary(run: ProposeRun): string {
+  const count = run.proposals.length;
+  const head =
+    count === 0
+      ? 'No grouping proposed'
+      : `${count} ${count === 1 ? 'grouping' : 'groupings'} from ${run.sent.files} files`;
+  const dropped = run.dropped === 0 ? '' : ` · ${run.dropped} dropped for naming too few real files`;
+  return `${head}${dropped}`;
 }
 
 /**

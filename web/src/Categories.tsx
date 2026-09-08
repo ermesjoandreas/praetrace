@@ -24,6 +24,14 @@ export interface GroupEditor {
   creating: boolean;
   onCreating: (open: boolean) => void;
   onCreate: (name: string) => void;
+  /**
+   * The same create, from files that are not the selection — which is what
+   * accepting a proposed grouping is. One write, not two: a proposal a person
+   * accepts is a group that person drew, so it is stored with
+   * `origin: 'manual'` and marked "by hand" everywhere a shift-click draw is.
+   * Decision 5 holds because of this, not in spite of it.
+   */
+  onCreateFrom: (name: string, files: string[]) => void;
   onRename: (group: GroupSuggestion, name: string) => void;
   onColor: (group: GroupSuggestion, color: GroupColor) => void;
   /** Only a hand-drawn group may be given members; the rest come from imports. */
@@ -741,14 +749,31 @@ export function Categories({
         </div>
       )}
 
-      {/* Under the categories, because that is what it is about. It reads them
-          and nothing else — decision 5 is untouched: it cannot name one, and
-          it cannot decide who belongs. The count is what it is told: the
-          server refuses a project with no categories rather than spending
-          money to say so, and the box says the same thing here without the
-          press. Rejected ones are not offered, for the same reason they are
-          not drawn. */}
-      <Ask categories={live.length} />
+      {/* Under the categories, because that is what it is about. Two presses
+          and two jobs: a question reads the categories and nothing else, and
+          a proposal reads the files and the imports — for the project where
+          the imports found no category to talk about. Decision 5 is untouched
+          by either. A question cannot name a category or move a file; a
+          proposal is text with our numbers beside it until a person presses
+          accept, and that press is `onCreateFrom` — the same write drawing a
+          category by shift-click makes, which stores `origin: 'manual'`.
+
+          The count is what the question is told: the server refuses a project
+          with no categories rather than spending money to say so, and the box
+          says the same thing here without the press. Rejected ones are not
+          offered, for the same reason they are not drawn. */}
+      <Ask
+        categories={live.length}
+        // What is already a category, by name. A proposal whose name is one of
+        // these has been accepted, and reading it off the list rather than off
+        // what the panel remembers pressing is what makes the mark survive a
+        // reload — and what keeps a category from being offered twice.
+        addedNames={new Set(live.flatMap((group) => (group.name === null ? [] : [group.name])))}
+        fileCount={fileCount}
+        onAccept={editor.onCreateFrom}
+        onSelect={onSelect}
+        consentStanding={editor.consent !== null}
+      />
     </Section>
   );
 }
