@@ -46,10 +46,54 @@ if (process.platform === 'darwin' && isUniversal(target)) {
 
 // Any edit to a Mach-O invalidates its signature, and macOS SIGKILLs an
 // unsigned-but-modified binary on launch. Ad-hoc signing is enough locally;
-// distribution needs a real identity.
-if (process.platform === 'darwin') {
+// distribution needs a real identity, and this is the only place it can be
+// applied.
+//
+// Tauri signs the *bundle*, and it signs it without `--deep` — the flags in the
+// CLI binary are `--force --options runtime --keychain --entitlements` and
+// nothing else. A nested executable therefore keeps whatever signature it
+// arrived with, and an ad-hoc one is exactly what the notary service rejects.
+// So the sidecar is signed here, before Tauri ever copies it in.
+//
+// APPLE_SIGNING_IDENTITY holds a certificate's *name*, which is public and is
+// the same variable Tauri itself reads; the private key stays in the keychain
+// and is never handled by this script.
+const identity = process.env.APPLE_SIGNING_IDENTITY;
+
+if (process.platform === 'darwin' && identity) {
+  // `--options runtime` is what notarisation requires, and it is also what makes
+  // the entitlements necessary rather than decorative. Each of the three in
+  // src-tauri/entitlements-sidecar.plist is something the hardened runtime would
+  // otherwise stop dead:
+  //
+  //   allow-jit, allow-unsigned-executable-memory — V8 writes machine code at
+  //     run time. Without them the sidecar never starts, so the app opens on a
+  //     window that never gets a port.
+  //   disable-library-validation — dist-app/node_modules holds tree-sitter's
+  //     prebuilt .node addons, third-party binaries nobody here signed. Library
+  //     validation refuses a dylib signed by another team, so every file would
+  //     fail to parse one at a time, on a stderr stream the desktop app has
+  //     nobody reading.
+  //
+  // The reasoning is here rather than in the plist because a plist handed to
+  // codesign may not contain XML comments: AMFI's parser rejects them
+  // ("AMFIUnserializeXML: syntax error"), codesign exits 1, and the binary is
+  // left signed with neither the runtime flag nor the entitlements.
+  execFileSync('codesign', [
+    '--force',
+    '--timestamp',
+    '--options',
+    'runtime',
+    '--entitlements',
+    path.join(repoRoot, 'src-tauri', 'entitlements-sidecar.plist'),
+    '--sign',
+    identity,
+    target,
+  ]);
+  console.log(`signed for distribution: ${identity}`);
+} else if (process.platform === 'darwin') {
   execFileSync('codesign', ['--force', '--sign', '-', target]);
-  console.log('ad-hoc signed');
+  console.log('ad-hoc signed — set APPLE_SIGNING_IDENTITY for a distributable build');
 }
 
 const megabytes = (statSync(target).size / 1024 / 1024).toFixed(0);
