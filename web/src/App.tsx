@@ -412,6 +412,24 @@ export function App() {
    * are what a group gets drawn around.
    */
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  /**
+   * The frame whose editor is open. A frame renders at a negative z-index —
+   * behind the boxes, which is the whole point of a frame — so its popover
+   * went behind them too. Only the canvas can lift a node, so the node says
+   * when it needs lifting and this holds the answer.
+   */
+  const [editingFrame, setEditingFrame] = useState<string | null>(null);
+  /**
+   * Where a frame was dragged to, until the server's own geometry catches up.
+   *
+   * The canvas is controlled, so React Flow moves a node during the drag and
+   * then hands the position back for the page to keep — and the page kept only
+   * selection. The frame snapped back on release and jumped again a round trip
+   * later when groups.json had been written and re-read: the hiccup this
+   * exists to remove. Cleared when the clusters arrive, because by then the
+   * stored geometry says the same thing.
+   */
+  const [dragged, setDragged] = useState<ReadonlyMap<string, { x: number; y: number }>>(() => new Map());
   /** The name field for a category about to be drawn, in the Categories section. */
   const [creating, setCreating] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
@@ -2416,11 +2434,16 @@ export function App() {
         {
           id: `group:${bounds.id}`,
           type: 'frame' as const,
-          position: { x: bounds.x, y: bounds.y },
+          // Where it was just dragged to, until groups.json says the same.
+          position: dragged.get(`group:${bounds.id}`) ?? { x: bounds.x, y: bounds.y },
           width: bounds.width,
           height: bounds.height,
-          // Outer frames sit behind the inner ones they contain.
-          zIndex: bounds.depth === 0 ? -2 : -1,
+          // Outer frames sit behind the inner ones they contain — and a frame
+          // with its editor open comes to the front, because the popover is
+          // taller than the padding strip it sits in and would otherwise be
+          // drawn behind the very boxes the frame encloses.
+          zIndex:
+            editingFrame === `group:${bounds.id}` ? 20 : bounds.depth === 0 ? -2 : -1,
           selectable: false,
           // Dragged by its label, the way a window moves by its title bar. The
           // frame body cannot be the handle: it is drawn behind the boxes it
@@ -2460,6 +2483,10 @@ export function App() {
             onDelete: () => editGroup({ action: 'delete', id: addressOf(group) }),
             onGeometry: (geometry: { x: number; y: number; width: number; height: number }) =>
               editGroup({ action: 'update', id: addressOf(group), geometry, locked: true }),
+            onEditing: (open: boolean) =>
+              setEditingFrame((was) =>
+                open ? `group:${bounds.id}` : was === `group:${bounds.id}` ? null : was,
+              ),
             onLock: (locked: boolean) =>
               editGroup({
                 action: 'update',
@@ -2507,7 +2534,30 @@ export function App() {
     decide,
     editGroup,
     renameGroup,
+    dragged,
+    editingFrame,
   ]);
+
+  // A local placement is dropped only once the stored geometry says the same
+  // thing — never on the clusters merely arriving. The list is refetched every
+  // few seconds and after every groups.json write, and a blanket clear would
+  // land mid-drag and snap the frame out from under the pointer, which is the
+  // hiccup this whole placement exists to remove.
+  useEffect(() => {
+    setDragged((was) => {
+      if (was.size === 0) return was;
+      const next = new Map(was);
+      for (const group of clusters) {
+        const geometry = group.geometry;
+        const held = next.get(`group:${group.id}`);
+        if (!geometry || !held) continue;
+        if (Math.abs(geometry.x - held.x) < 0.5 && Math.abs(geometry.y - held.y) < 0.5) {
+          next.delete(`group:${group.id}`);
+        }
+      }
+      return next.size === was.size ? was : next;
+    });
+  }, [clusters]);
 
   /** The box under the cursor. A ref, because a hover must not render. */
   const hoveredRef = useRef<string | null>(null);
@@ -2658,6 +2708,21 @@ export function App() {
    * without this there is no selection to pick a group out of.
    */
   const handleNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    // A frame being dragged: keep where it is being put, or the controlled
+    // canvas throws the position away and the frame springs back under the
+    // pointer. Boxes are not draggable, so anything here is a frame.
+    const moves = changes.flatMap((change) =>
+      change.type === 'position' && change.position !== undefined
+        ? [{ id: change.id, position: change.position }]
+        : [],
+    );
+    if (moves.length > 0) {
+      setDragged((was) => {
+        const next = new Map(was);
+        for (const move of moves) next.set(move.id, move.position);
+        return next;
+      });
+    }
     if (!changes.some((change) => change.type === 'select')) return;
     setPicked((was) => {
       const next = new Set(was);

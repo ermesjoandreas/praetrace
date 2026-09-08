@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useEffect, useState, type MouseEvent } from 'react';
 import { NodeResizer, type Node, type NodeProps } from '@xyflow/react';
 import type { GroupColor } from './api';
 
@@ -26,6 +26,13 @@ export type GroupData = {
   onDelete: () => void;
   /** A frame the user dragged or stretched. Placing one locks it by itself. */
   onGeometry: (geometry: { x: number; y: number; width: number; height: number }) => void;
+  /**
+   * The editor is a popover inside a node React Flow renders at a negative
+   * z-index — behind the boxes, which is what a frame is for. So the frame
+   * itself has to be lifted while the popover is open, and only the canvas
+   * can do that: a node's z-index is the canvas's to set, not the node's.
+   */
+  onEditing: (open: boolean) => void;
   onLock: (locked: boolean) => void;
 };
 
@@ -62,6 +69,18 @@ const COLOR_LABELS: Record<GroupColor, string> = {
 export function GroupNode({ data }: NodeProps<GroupNodeType>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(data.name ?? '');
+
+  /**
+   * Reported rather than read: the canvas lifts this frame while the popover
+   * is open. Told on unmount too — a frame that is dragged, renamed away or
+   * dropped by a live update while its editor is open would otherwise leave
+   * the canvas holding an id it will never hear about again.
+   */
+  const { onEditing } = data;
+  useEffect(() => {
+    onEditing(editing);
+    return () => onEditing(false);
+  }, [editing, onEditing]);
 
   const stop = (event: MouseEvent) => event.stopPropagation();
   const manual = data.origin === 'manual';
@@ -112,7 +131,10 @@ export function GroupNode({ data }: NodeProps<GroupNodeType>) {
         handleClassName="group-resize-dot"
       />
 
-      <div className="group-label" onMouseDown={stop} onClick={stop}>
+      {/* `stop` on the click only. A mousedown here has to reach the node
+          element, which is where React Flow listens for the drag — the frame
+          is dragged by its label the way a window moves by its title bar. */}
+      <div className="group-label" onClick={stop}>
         {/* The label is the handle for the whole group. It used to take two
             gestures — click the name to rename, find a separate ◍ to reach the
             colours — which meant the obvious thing to click did the least. The
