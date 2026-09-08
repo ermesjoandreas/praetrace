@@ -81,7 +81,7 @@ left running from an earlier session will happily keep serving the old code.
 The same graph as text, with no browser involved:
 
 ```
-$ npm run codemap -- ~/scratch
+$ npm run codemaps -- ~/scratch
 
 codemap  /Users/you/scratch
 2 files · 7 nodes · 10 edges · 47 ms
@@ -95,7 +95,7 @@ edges
   imports    src/store.ts -> src/logger.ts
 ```
 
-`npm run codemap -- <dir> --json` prints the raw nodes and edges.
+`npm run codemaps -- <dir> --json` prints the raw nodes and edges.
 
 ## Point it at your agent
 
