@@ -502,6 +502,15 @@ const LANGUAGE_LABEL: Record<LanguageId, string> = {
   csharp: 'C#',
   rust: 'Rust',
   python: 'Python',
+  kotlin: 'Kotlin',
+  php: 'PHP',
+  // One reader, two languages: `.h` is claimed by both, so a table forced to
+  // pick would mislabel one of them. The engine's own label says the same.
+  cpp: 'C/C++',
+  vue: 'Vue',
+  svelte: 'Svelte',
+  razor: 'Razor',
+  angular: 'Angular template',
 };
 
 /**

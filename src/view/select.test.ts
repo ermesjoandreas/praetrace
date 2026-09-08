@@ -984,3 +984,38 @@ test('a focus wins over a category, and a component diagram ignores it', () => {
   assert.equal('category' in components.spec, false);
   assert.equal(components.nodes.every((node) => node.kind === 'component'), true);
 });
+
+test('a class row carries the stereotype a declaration put on it, in words, with who said it', () => {
+  const range = { startLine: 1, endLine: 1 };
+  const context = 'Data/CatalogContext.cs';
+  const nodes = new Map<string, GraphNode>([
+    ['Basket.cs', { id: 'Basket.cs', kind: 'file', name: 'Basket.cs', filePath: 'Basket.cs', range }],
+    [
+      'Basket.cs#Basket',
+      {
+        id: 'Basket.cs#Basket',
+        kind: 'class',
+        name: 'Basket',
+        filePath: 'Basket.cs',
+        range,
+        stereotype: { name: 'table', statedBy: `${context}#CatalogContext.Baskets` },
+      },
+    ],
+    [context, { id: context, kind: 'file', name: 'CatalogContext.cs', filePath: context, range }],
+    [`${context}#CatalogContext`, { id: `${context}#CatalogContext`, kind: 'class', name: 'CatalogContext', filePath: context, range }],
+    [
+      `${context}#CatalogContext.Baskets`,
+      { id: `${context}#CatalogContext.Baskets`, kind: 'field', name: 'Baskets', filePath: context, range, owner: 'CatalogContext', many: true },
+    ],
+  ]);
+  const rows = selectView({ nodes, edges: [] }, root, 0).nodes.flatMap((node) => node.members);
+
+  // The id the graph holds becomes the sentence the page prints: who said it, and where.
+  assert.deepEqual(rows.find((row) => row.id === 'Basket.cs#Basket')?.stereotype, {
+    name: 'table',
+    statedBy: 'CatalogContext.Baskets',
+    statedIn: context,
+  });
+  // Every other row carries none: absent is the answer, never false.
+  assert.ok(rows.filter((row) => row.id !== 'Basket.cs#Basket').every((row) => !('stereotype' in row)));
+});

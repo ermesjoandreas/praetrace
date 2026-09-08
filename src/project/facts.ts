@@ -26,10 +26,12 @@ interface Manifests {
   packages: string[];
   cargo: string[];
   goMod: string[];
+  composer: string[];
 }
 
 function classify(name: string): keyof Manifests | null {
   if (name === 'package.json') return 'packages';
+  if (name === 'composer.json') return 'composer';
   if (name === 'Cargo.toml') return 'cargo';
   if (name === 'go.mod') return 'goMod';
   // Not just `tsconfig.json`: query keeps its `@tanstack/query-core` alias in a
@@ -416,16 +418,94 @@ async function readHead(absolutePath: string, bytes: number): Promise<string | n
   }
 }
 
+/** What is read out of composer.json. `unknown` throughout, because a manifest is user input. */
+interface ComposerManifest {
+  autoload?: unknown;
+  'autoload-dev'?: unknown;
+}
+
+/**
+ * Namespace prefix -> the directories composer says it lives in.
+ *
+ * PSR-4 is PHP's resolver: `"App\\": "app/"` in composer.json is the whole of
+ * how `App\Models\User` becomes `app/Models/User.php`, and the project states it
+ * rather than the tool guessing it. Read from every composer.json the walk
+ * found, because a monorepo of packages states it per package — symfony writes
+ * one map at the root and another in each of its 60 components, and the second
+ * is relative to the component's own directory.
+ *
+ * `autoload-dev` is merged in beside `autoload`. It maps the test tree, and a
+ * test naming the class it tests is real coupling the graph should draw, the
+ * same reason `devDependencies` is read a few functions up. `classmap` and
+ * `files` are not read: they name paths rather than a prefix, so there is
+ * nothing for a namespace to be turned into, and both are reachable anyway — a
+ * classmap file declares its namespace like any other, and php.ts's fallback
+ * finds it by that.
+ *
+ * Prefixes are stored with the trailing separator stripped and directories with
+ * the trailing slash stripped, so the resolver joins them itself and never has
+ * to ask which spelling it was handed. A `""` prefix is composer's fallback
+ * directory and stays the empty string.
+ */
+async function collectPsr4(
+  root: string,
+  composerFiles: readonly string[],
+): Promise<Map<string, string[]>> {
+  const psr4 = new Map<string, string[]>();
+
+  for (const file of composerFiles) {
+    const text = await readFile(file, 'utf8').catch(() => null);
+    if (text === null) continue;
+
+    let manifest: ComposerManifest;
+    try {
+      // Strict JSON, as package.json is: composer rejects anything else.
+      const parsed: unknown = JSON.parse(text);
+      if (parsed === null || typeof parsed !== 'object') continue;
+      manifest = parsed as ComposerManifest;
+    } catch {
+      continue;
+    }
+
+    const directory = directoryOf(root, file);
+    for (const section of [manifest.autoload, manifest['autoload-dev']]) {
+      if (section === null || typeof section !== 'object') continue;
+      const map = (section as { 'psr-4'?: unknown })['psr-4'];
+      if (map === null || typeof map !== 'object') continue;
+
+      for (const [prefix, target] of Object.entries(map)) {
+        const namespace = prefix.replace(/\\+$/, '');
+        const directories = (Array.isArray(target) ? target : [target]).filter(
+          (value): value is string => typeof value === 'string',
+        );
+        const existing = psr4.get(namespace) ?? [];
+        for (const value of directories) {
+          // A path relative to the manifest, as project-relative POSIX. A
+          // component manifest writes `""` for its own directory.
+          const resolved = path.posix
+            .normalize(path.posix.join(directory, value.replace(/\/+$/, '')))
+            .replace(/^\.$/, '');
+          if (!existing.includes(resolved)) existing.push(resolved);
+        }
+        if (existing.length > 0) psr4.set(namespace, existing);
+      }
+    }
+  }
+
+  return psr4;
+}
+
 export async function gatherFacts(root: string, files: readonly string[]): Promise<ProjectFacts> {
-  const found: Manifests = { tsconfigs: [], packages: [], cargo: [], goMod: [] };
+  const found: Manifests = { tsconfigs: [], packages: [], cargo: [], goMod: [], composer: [] };
   await visit(root, found);
 
   const scanned = new Set(files);
-  const [tsPaths, packages, crates, goModule, entryPoints] = await Promise.all([
+  const [tsPaths, packages, crates, goModule, psr4, entryPoints] = await Promise.all([
     collectTsPaths(root, found.tsconfigs),
     collectPackages(root, found.packages),
     collectCrates(root, found.cargo),
     collectGoModule(found.goMod),
+    collectPsr4(root, found.composer),
     collectEntryPoints(root, scanned, found),
   ]);
 
@@ -435,6 +515,10 @@ export async function gatherFacts(root: string, files: readonly string[]): Promi
     packages: withFiles(packages, populated),
     goModule,
     crates: withFiles(crates, populated),
+    // Not passed through `withFiles`: a PSR-4 prefix maps to a directory that
+    // may legitimately hold nothing yet, and php.ts checks the full path
+    // against `files` before it answers.
+    psr4,
     entryPoints,
   };
 }

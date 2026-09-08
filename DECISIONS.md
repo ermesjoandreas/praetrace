@@ -550,3 +550,175 @@ The list's per-row in and out matched `/api/detail` on the rows sampled; the
 category 404 was measured by curl and is not pinned, there being no route
 tests. Two interactions were driven with dispatched KeyboardEvents when OS
 keystrokes stopped reaching the tab, and were labelled so in the evidence.
+
+
+## Where the database is in the code (2026-09-08)
+
+The user asked whether the tool could show the database. CLAUDE.md said "ER
+diagrams are out of scope", decided in the abstract. It was reconsidered on
+evidence — eight stacks on real repositories, measured the same day — and the
+evidence narrowed the sentence rather than overturning it. The rule is in
+CLAUDE.md under the Graph model; this is what was measured, what was built,
+and what was refused by name.
+
+### The first fact
+
+The project the user opened has no database. On webapp-h26, `grep -rln
+"EntityFramework|DbContext|DbSet|ConnectionString"` over its `.cs`, `.csproj`
+and `.json` finds nothing; BackendAPI.csproj references one package
+(Microsoft.AspNetCore.OpenApi) and the API is the WeatherForecast template.
+Their other repositories are the same shape: astrup is Firestore — 243
+`collection(` calls, a firestore.rules, no schema in code because Firestore
+has none — and IdeaProjects has four files touching `java.sql` and no `CREATE
+TABLE`. Nothing under this heading draws a single mark on the project the
+question was asked about. It was built for the next project, and said so.
+
+### What the code states, stack by stack
+
+Two facts are stated in code almost everywhere: *this class is a table*, and
+*this class holds that one* — the navigation property, which the graph
+already draws as `associates` with a role and a multiplicity. What is stated
+past those two varies by stack, and that is what decided the design:
+
+- **EF Core** (eShopOnWeb, CleanArchitecture, dotnet/eShop): `DbSet<T>` is
+  the one line that says T is a table, and it never over-counts — every T it
+  names is a `CreateTable` in the migration beside it. Everything else is
+  convention or a lambda in another project: `[Key]`, `[ForeignKey]` and
+  `[Table]` are written **0 times in all three repositories** (56 `[Required]`
+  and 1 `[NotMapped]` are the only data annotations); keys are `Id` by
+  convention (5 of eShopOnWeb's 7 tables; 2 have `HasKey`); table names are
+  stated 1 in 7 (`ToTable("Catalog")`). eShopOnWeb's migration creates four
+  foreign keys: two from fluent `HasForeignKey`, one from a name convention
+  (`BasketItem.BasketId`), and one — `OrderItems.OrderId` — a **shadow column
+  no source line holds** (`grep -c OrderId OrderItem.cs` is 0). A reader that
+  took `XxxId` for a foreign key would be wrong 4 times in 7 on that repository
+  (CatalogItemId ×2, BuyerId ×2 are not) and still miss the shadow one.
+  dotnet/eShop names a foreign key on a *private field* by string,
+  `HasForeignKey("_cardTypeId")`, and declares 2 of its ordering schema's 7
+  tables only through `ApplyConfiguration`/`ToTable`, never a DbSet — so
+  `DbSet<T>` under-counts, and never over-counts. `: BaseEntity` is not a
+  table test either: Buyer and PaymentMethod extend it and are in no DbSet and
+  no migration, 2 of 9.
+- **JPA** (spring-petclinic, jhipster-sample-app): `@Entity` states the table,
+  `@Id` the key, the field's type the relation (100%), and `@JoinColumn` the
+  column — written 4 times in 7 across the two. petclinic's `@Id` sits on a
+  `@MappedSuperclass`, and the store does not walk inheritance for members.
+  Its `schema.sql` holds 5 `FOREIGN KEY` lines for 4 relations, and the graph
+  already draws all 4 associations.
+- **TypeORM** (typeorm's own test entities, 1 405 `@Entity`): the key is
+  always stated (`@PrimaryGeneratedColumn` 1 018 + `@PrimaryColumn` 485), the
+  target is the field's type (219 of 237 `@ManyToOne` agree with the arrow
+  function), the column name is convention 86% of the time (34 `@JoinColumn`
+  in 237) and the table name 88% (165 named). typescript.ts reads decorators
+  only for calls; the class's own are unread.
+- **Prisma** (cal.com, 2 851 lines): everything is stated column by column —
+  100 models, 175 `@relation(fields:)`, 93 `@id` + 4 `@@id`, one implicit
+  many-to-many — and it is the most expensive to reach: `.prisma` is claimed
+  by no language, and tree-sitter-prisma@1.6.0 parses the whole schema with 0
+  ERROR nodes but ships no prebuilds, so every `npm install` would compile it
+  (it fails under Homebrew's python 3.14 and needs `--python=/usr/bin/python3`)
+  and prepare-resources.mjs would have to ship the addon.
+- **Drizzle** (openstatus, 54 tables) and **Mongoose** (Overleaf, 33 models):
+  stated, and undrawable under the current model, because a table is
+  `export const monitor = sqliteTable(...)` — a top-level `const`, which
+  CLAUDE.md says is not a node. The engine draws 0 classifiers for either.
+  Mongoose's `ref` is optional and **36 of Overleaf's 73 ObjectId fields omit
+  it** (49%; devconnector 3 of 4).
+- **SQLAlchemy** (airflow, 52 `__tablename__`) and **Django** (saleor, 249
+  models): the table is stated (`__tablename__` is already a field row on
+  every model class; `models.Model` is in the extends), the key is stated
+  (`primary_key=True`), and the relation target is a **string** 85 times in 93
+  (`relationship("DagRun")`) and 67 in 242 (`ForeignKey("Product")`), which
+  python.ts does not read; `Mapped[DagRun]` is not in its TRANSPARENT list.
+  The engine draws 1 association for airflow's models and 0 for saleor's.
+
+### What was built
+
+- **`DbSet` is in C#'s `MANY`.** A bug by the rule the comment above `MANY`
+  states: `DbSet<T>` is a collection of T, and left out it reduced to a type
+  named `DbSet` that resolves to nothing. eShopOnWeb's CatalogContext drew
+  seven properties and no edge; it draws seven `1..*` lines now.
+- **A `«table»` stereotype on the class, not a NodeKind.** `GraphNode.stereotype`
+  is `{ name: 'table', statedBy }`, the id of the `DbSet<T>` property that said
+  it. UML's own data-modelling profile is a stereotype on a class, and the
+  model already holds classifier, field, association, role and multiplicity.
+  A `table` NodeKind was costed at the 15 files that switch over the kinds
+  (edges.ts REACHES, filter.ts, detail.ts, search.ts ranking, server/diff.ts,
+  oracle/checker.ts, parser/flow.ts, api.ts, the Sidebar, App and
+  RelationEdge) plus four kind-keyed CSS rules — and it would split a JPA
+  entity, which has methods and a superclass, into a class and a table, the
+  lie in the other direction. The mark follows `isAbstract`'s path instead.
+- **Derived in the store, reported by the parser on the field.** The
+  declaration sits on a different class in a different file from the class it
+  describes, and a file is parsed alone, so csharp.ts writes
+  `typeStereotype: 'table'` on the property and `derive()` stamps the class
+  `typeName` resolves to, beside the association it draws from the same
+  lookup. The first declaration to name a class keeps the credit; an
+  interface is never marked; a guessed resolution stamps nothing, because the
+  line is only as sure as its far end. Pinned in `store.test.ts`.
+- **On the class's own row, before the name.** UML puts a stereotype on a
+  line above the name; here `layout.ts` measures every box from its row
+  count, so a second line for one class would move every box under it. The
+  guillemets are text, like the visibility marks. The row's title names the
+  line that said it — "a table, by the word of CatalogContext.Baskets in
+  src/Infrastructure/Data/CatalogContext.cs" — and says that a class without
+  the mark may still be one, because a mark nobody can check against a line
+  is the convention this project refuses.
+
+### What was refused, by name
+
+- **EF Core keys, foreign-key columns and table names.** The numbers above:
+  0 attributes in three repositories, a shadow column, a private field named
+  by string, an `XxxId` rule wrong 4 in 7. The has-a line the navigation
+  property draws is what the source states, and it is drawn.
+- **`[Key]`, `[ForeignKey]` and `[Table]` when literally written.** Stated,
+  and readable off `attribute_list` in twenty lines — and written 0 times in
+  every repository measured, so there is nothing to check a reader against.
+  A language is finished when its edges are checked against a real
+  repository, not when it parses; this waits for a repository that writes
+  them.
+- **`: BaseEntity` and `XxxId` as evidence.** 2 of 9 and 4 of 7, above.
+- **JPA, TypeORM, SQLAlchemy and Django table marks.** Each is stated and
+  each is one reader's change (`@Entity` beside `isNullable` in java.ts; the
+  class's `decorator` children in typescript.ts; a `__tablename__` field-name
+  test and `Model` in the extends in python.ts). Deferred, not refused on
+  evidence: the brief was one stack, narrowly, and the user's is EF Core.
+  JPA is the cheapest next and spring-petclinic's `schema.sql` is its oracle.
+  The string-typed relation targets of SQLAlchemy and Django are a further
+  call-argument reader and a project-wide name lookup, and are not to be read
+  until that exists.
+- **Drizzle and Mongoose tables.** A top-level `const` is not a node, and
+  making one for a const bound to a known call is a graph-model decision to
+  argue for in writing, not to slip in under this heading. Mongoose's
+  ref-less ObjectIds — 49% of Overleaf's — are refused as edges either way.
+- **Prisma.** A language file, a grammar with no prebuilds compiled on every
+  install, and — once it existed — an island, because `prisma.booking.findMany()`
+  is a call on an untyped receiver and no app file would reach a model.
+
+### Verified
+
+Re-measured here on eShopOnWeb at 4da8212 with the CLI (`node dist/cli/index.js
+<clone> --json`): 256 files, 240 classes, **7 `«table»`** — Basket, BasketItem,
+CatalogBrand, CatalogItem, CatalogType, Order, OrderItem — each credited to
+its `CatalogContext.<DbSet>` property, and the same seven the initial
+migration's `CreateTable` calls make (Baskets, BasketItems, CatalogBrands,
+Catalog, CatalogTypes, Orders, OrderItems). Buyer and PaymentMethod are
+unmarked, as the migration has them. CatalogContext draws 7 associations, all
+`*`, 0 guessed of the graph's 2 155 edges. The migration's four foreign keys
+are the four has-a lines the entities already drew — Basket→BasketItem,
+CatalogItem→CatalogType, CatalogItem→CatalogBrand, Order→OrderItem — and none
+of them wears a key or a column name, because no source line names one. The
+seven `PrimaryKey(x => x.Id)` calls are convention and draw nothing.
+
+On the page, served from a copy of this tree on port 4901 with the focus on
+`CatalogContext.cs` at one hop and associations on: 9 boxes, 19 lines, the
+context's seven `1..*` lines each labelled with its property, and **7
+`.member-stereotype` rows reading `«table»`** — Basket, BasketItem,
+CatalogBrand, CatalogItem, CatalogType, Order, OrderItem — with CatalogContext
+the one class row without it. Every member row measured 17px by `offsetHeight`
+with the mark in it, so `ROW_HEIGHT` and the layout are untouched; the mark's
+colour read `rgb(157, 157, 157)`, the muted token; the row's title read "a
+table, by the word of CatalogContext.Baskets in
+src/Infrastructure/Data/CatalogContext.cs. A class without this mark may still
+be one: only a declaration puts it here". The screenshot was kept at
+`/tmp/eshop-tables.png`. The server and the copy were removed afterwards.

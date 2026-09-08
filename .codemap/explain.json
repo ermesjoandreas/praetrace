@@ -1,0 +1,220 @@
+{
+  "explanations": [
+    {
+      "id": "scripts/baseline.mjs",
+      "kind": "file",
+      "short": "This script measures what the analysis engine produces for a repository and records the numbers in a file so changes to the engine show up as diffs during review.",
+      "long": "The script sits outside the main code because it runs during testing to catch regressions—it's the guard that notices when the graph drifts. The file it writes, `baseline.json`, is committed to the repository so that any change to how nodes are parsed, how edges are inferred, or how views are built shows up as a changed baseline in the PR. The architecture here answers a specific problem: three rounds of testing found bugs that every unit test passed because each function worked correctly in isolation, but their composition lied. Individual functions can be right and still compose wrong, so measuring the output of the full pipeline and holding it steady is the only way to catch that. The script depends on the entire graph-building stack—the parser pool, the project scanner, the store and clustering and view selection—and it measures what comes out: node counts by kind, edge counts by kind, resolution quality (guessed edges, unresolved references), and the shape of the root view that opens when you load a repository. The counts themselves carry a design decision about what better means: each count is marked as `up` (more is good, means more resolved), `down` (less is good), or `watch` (just notice changes), because an exact-match test would fail on every improvement and get deleted. Without this baseline, the engine could silently start producing different edges and missing methods and nobody would know—the unit tests would still pass because each function still works.",
+      "at": 1788817419854,
+      "fingerprint": "sha256:f298ac84ffe1ecc866c81692ec49600f9329f14704a5e7ee4a926950540d5182",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "scripts/mcp.mjs",
+      "kind": "file",
+      "short": "This is an MCP server that bridges a running Claude agent to the codemap system, exposing the project's architectural structure as tools the agent can query and modify.",
+      "long": "Agents cannot reach out to external systems — they can only be called. This script is how codemap talks back: it runs as a stdio-connected subprocess that an agent can invoke, making the project graph readable and the ability to name groups available. The four tools (list_groups, name_group, describe_file, search_symbols) are all things agents need to understand a project's architecture but cannot access any other way. Each tool proxies to a running codemap server over HTTP, keying off a port file to find it. The script records which tool made which request in HTTP headers, so the UI can show the agent's architectural decisions alongside its code edits. It also solves the startup problem by checking three places for the project root — the environment variable, the current directory, or the repository this script lives in — so it works however it was invoked. Without this MCP server, agents would have no way to read the architectural graph or name groups; they would be blind to project structure entirely.",
+      "at": 1788371568944,
+      "fingerprint": "sha256:cf66f16acc5f6419320107b888335d92b95f79c163076cc04b116bd9dbdaa854",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "scripts/mcp.mjs#reply",
+      "kind": "symbol",
+      "short": "Formats a text string into the MCP response object structure.",
+      "long": "Reply is the thin translation layer between the work's output (a string) and the protocol's envelope (a nested object with type tags). It's called by run() to wrap successful results. The job is small but important: it makes the response shape explicit and consistent, so run() doesn't have to know the structure and handlers don't have to build it manually. Removing it would leave response construction logic scattered or force it back into run() itself, making both functions murkier about what they're responsible for.",
+      "at": 1788371607244,
+      "fingerprint": "sha256:e844fb03e5820c98534e3bf55952648d81f1530ba413bb4464ca5f71ce887613",
+      "relations": "sha256:38083f988f7ca6ee67fd831401794e2290a82264e9e030e8fcd3bae657484189"
+    },
+    {
+      "id": "scripts/mcp.mjs#run",
+      "kind": "symbol",
+      "short": "Wraps asynchronous work with error handling and response formatting, ensuring every result follows the MCP protocol structure whether it succeeds or fails.",
+      "long": "The run function is where all work enters the system. It sits between MCP protocol handlers and the actual business logic, taking any async operation and guaranteeing that its result comes back in the shape MCP expects—either a formatted response on success or an error object on failure. This keeps handlers clean: they just call run() with their work and don't have to think about catching exceptions or building response envelopes. Without this wrapper, error handling would scatter across every handler, and the protocol contract would live implicitly in each one, making it easy to forget or get wrong.",
+      "at": 1788371607244,
+      "fingerprint": "sha256:ea91ef28b6f55874a437284c32abc0b56a00cff0c49f61335e15b5bd170cc52f",
+      "relations": "sha256:38083f988f7ca6ee67fd831401794e2290a82264e9e030e8fcd3bae657484189"
+    },
+    {
+      "id": "src/graph/store.ts",
+      "kind": "file",
+      "short": "GraphStore is the central repository that holds parsed files and the derived dependency graph they generate. It bridges the parser's output and the facts learned from project metadata like tsconfig and package.json, producing a queryable graph of code symbols and their references.",
+      "long": "GraphStore sits between the parser and everything that needs to reason about the codebase. The parser runs incrementally, reparsing only changed files, but the graph is re-derived fresh on every mutation because derivation is pure in-memory work with no AST — cheap enough that the cost is outweighed by the benefit of never having stale cross-references. This matters for barrels and re-exports: a newly discovered file can satisfy an import that failed to resolve before, so deferring graph derivation to every store update sidesteps a category of bugs where the graph becomes inconsistent with the parsed state.\n\nThe store deliberately separates parsing (incremental) from graph derivation (complete rederive). Facts come from a different source—configuration files the parser never sees—and arrive asynchronously, so the store is usable empty: imports resolve on paths alone until aliases and package names are installed. Every system that needs to query the codebase—the CLI, the live server, the history tracker, the test suites—depends on this store to ask \"where is this symbol,\" \"what does it import,\" or \"who calls it.\" Without it, each would need to independently parse and track the graph, and changes to one piece would cascade through all of them.",
+      "at": 1788505474496,
+      "fingerprint": "sha256:64c2fc426e0927045d5fffc9dc60f6b94d9bff7b938e2e3d02b9ed27976d1838",
+      "relations": "sha256:bdaf69f31706da9cdfd9830d0b0111e5126dcb9ee42e7d9aea933a13121224f1"
+    },
+    {
+      "id": "src/lang/javascript.ts",
+      "kind": "file",
+      "short": "This file parses JavaScript source code and extracts symbols—classes, functions, fields, methods—along with what each one calls and inherits from, feeding that structured data into the broader analysis system.",
+      "long": "The file lives in a language-specific layer: `src/lang/registry.ts` dispatches to this parser when it encounters JavaScript, much as it does for Rust or TypeScript. JavaScript's grammar differs enough from TypeScript that it needs its own walker, even though the type signatures come from the shared `src/lang/types.ts`. The file does the hard work of understanding JavaScript's syntax trees—which node type means an identifier versus a property, where a class's methods hide inside its body, how to track calls without double-counting when a method contains nested functions. It carves out what matters for a dependency graph: the symbols themselves, their visibility, whether they're static, and every function or constructor they invoke. That information flows to whoever builds the graph, likely the parser layer, which stitches symbols together into edges.",
+      "at": 1788345125489,
+      "fingerprint": "sha256:d12d109273e3087222c6de7c11a29fbcfc96fb6bad89d969efc6d4315703173f",
+      "relations": "sha256:ba633d48fa58c298f3225e405021d121248c4a4a924dc89e8d32723625d89b75"
+    },
+    {
+      "id": "src/lang/registry.ts#languageFor",
+      "kind": "symbol",
+      "short": "Maps a file path to its language handler by looking up the file extension, returning a LanguageSupport object that knows how to parse and display that language or null if the extension is unknown.",
+      "long": "This function sits at a critical junction where file paths from the filesystem enter the system and need to be routed to the right language-specific handler. The parser uses it to choose which grammar to apply when analyzing code, and the view layer uses it to display what languages exist in a project. The special case for TypeScript declaration files (.d.ts, .d.mts, .d.cts) tells you there's domain knowledge baked in—even though those are text files, they parse as TypeScript regardless of what some generic walk module might decide. Without this function, the system has no way to dispatch different file types to their correct parsers and renderers; every file becomes anonymous.",
+      "at": 1788358902033,
+      "fingerprint": "sha256:550bfbbc0ee5644f4139209071790b8d6d7a6a7e59919aa69e6bd1394d608a13",
+      "relations": "sha256:c89e60dd24e37516378c3c992308a8b2284a312b3210882aaf1e77f437df134f"
+    },
+    {
+      "id": "src/lang/rust.ts",
+      "kind": "file",
+      "short": "This is the Rust language handler for a multi-language code analysis system, translating Rust source code into a normalized set of declarations, types, fields, and references that the registry understands.",
+      "long": "The system needs to analyze multiple languages — TypeScript, Rust, and likely others — but the analysis logic itself (building a symbol store, tracking dependencies, generating output) is language-agnostic. Each language gets its own handler that parses its source-specific syntax and produces the same normalized output format. This file reads Rust's tree-sitter grammar, walks the AST, extracts symbols, and feeds them to the central registry. The registry depends on this file to make Rust code visible to the system; without it, Rust projects would be invisible, and the whole design only works for languages that have handlers written.",
+      "at": 1788345149564,
+      "fingerprint": "sha256:1fdcd91aca73c611a8f9ff117d8e0f89798f29db8a4c4bc82583dad6a33c890d",
+      "relations": "sha256:7555bef0d0b9253c0a34a35154cf333ee80f9aa7b329fe28210210850a64ef2d"
+    },
+    {
+      "id": "src/lang/rust.ts#typeOf",
+      "kind": "symbol",
+      "short": "It extracts the underlying type name from a Rust AST node, unwrapping references, array wrappers, and generic containers to reveal what is actually stored.",
+      "long": "The system needs to understand what type a field or variable actually is, not what syntactic layer wraps it. A field declared as `Vec<String>` and one as `String` are different — one is \"many\", one is single — but both contain the type `String`. Since type information is needed by `collectFields`, which pulls struct and enum fields for the store, `typeOf` does the unwrapping here in the Rust-specific code where the AST details are known. Without it, the generic field collection would see `Vec` or `Option` as the actual type instead of what lies inside, breaking any code that tries to reason about what data the fields actually hold.",
+      "at": 1788345149564,
+      "fingerprint": "sha256:a7d9886d94118f6de8a7373b03dbea429f3de5c6aac163857e8214a5cbef6bca",
+      "relations": "sha256:677d9a20cfba05ada80be0864832c90ffe38d8dbbd1377f300e8d0c14fd961b4"
+    },
+    {
+      "id": "src/oracle/checker.ts",
+      "kind": "file",
+      "short": "This file validates the call graph by comparing edges the parser found against edges the TypeScript checker can resolve, exposing where the parser guessed wrong about what names actually point to.",
+      "long": "It is kept entirely outside the live graph-building path because the TypeScript checker is ten to forty times slower, works only for TypeScript and JavaScript (while the tool reads six languages), requires a fully installed repository to run, and can fail silently in ways that look like empty results. The checker is the oracle — it knows true declarations through barrels, aliases, inheritance, and requires — but that knowledge is expensive and narrow. The parser is the production path: it builds the graph with pattern-matching and guessing, fast enough and broad enough to handle any source. This file exists to measure how wrong the guesses are, by taking the parser's edges, asking the TypeScript checker what is really true about the same code, and reporting precision and recall. The graph itself comes from the parser; the comparison is a test harness, not part of the graph's construction. Nothing that reads the graph knows the checker exists.",
+      "at": 1788505296362,
+      "fingerprint": "sha256:6762631900dc9accd9b4f09c6c9f0a9cdb8436618e94a3510aa11e4866d668a2",
+      "relations": "sha256:3aea8e92f5dfe0bf9e7a379c0774615afdc5911f9d26b6d02bf910679f47811d"
+    },
+    {
+      "id": "src/parser/pool.ts",
+      "kind": "file",
+      "short": "A worker thread pool that offloads parsing jobs to prevent the main thread from blocking during burst file edits.",
+      "long": "The pool serves as the central parsing gateway for all consumers in the system—CLI, project scanner, updater, and server sessions—each of which needs synchronous-looking parse results. Parsing is CPU-bound work that blocks, so the pool spawns a fixed set of worker threads (sized to available CPU cores minus one to keep the main thread responsive) and queues jobs across them. The design assumes the system receives rapid consecutive edits from agents, which would stall event collection if parsing ran on the main thread. The consecutive-failure counter prevents broken installations from turning into hangs: if a worker keeps crashing before parsing anything, the pool detects a permanent fault and rejects all pending jobs rather than spinning through replacements forever. Without this isolation, the downstream consumers—which depend on near-immediate event turnaround—would experience cascading latency.",
+      "at": 1788344709646,
+      "fingerprint": "sha256:bfd71822342e1558451377031ca4a1cb01a7bcc51eb55c8b0e1c04ef280ae7a5",
+      "relations": "sha256:a65bea792d8d5bc1acb86ca5003de7958164948d210384b0772a14dd32016169"
+    },
+    {
+      "id": "src/parser/pool.ts#Job.resolve",
+      "kind": "symbol",
+      "short": "The resolve callback fulfills a Job promise after parsing completes, delivering the parsed result back to whoever requested the work.",
+      "long": "This is the completion handler half of a job queue pattern—Job.resolve pairs with a Promise (implied by the callback signature) that gets created when work is enqueued. Once a worker finishes parsing a file, it invokes resolve with the ParsedFile, which wakes up the code waiting for that specific parse result. The fact that nothing in the graph explicitly calls it suggests it's passed to worker code (likely in a separate thread or process) which calls it asynchronously, acting as the bridge between the worker execution context and the caller's Promise chain. Without this callback, there'd be no way for workers to return results back to the requesters.",
+      "at": 1788344663002,
+      "fingerprint": "sha256:8c53aba2b0552bd86523429ffb5d3147f7c46724f94be99c1cec747a6d62bd16",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/project/updater.ts",
+      "kind": "file",
+      "short": "The updater is the sole pipeline from file change events to graph updates, centralizing shadowing rules and deduplication of concurrent notifications.",
+      "long": "The updater occupies the deliberately centralized architectural position where all file change events from two independent sources—the Claude Code hook and the filesystem watcher—converge into a single pipeline to the graph store. The code explicitly states there is \"deliberately no second pipeline,\" establishing this as the enforcing point for the project-level decision that .ts implementations shadow .d.ts declarations, a rule that can only be correctly applied by examining the complete file set rather than individual events. Debouncing prevents redundant graph updates when multiple sources report the same edit or when agents write multiple files in succession. Session.ts depends on queuing changes through the updater; the updater depends on the parser pool, graph store, and walk module to complete the update cycle. Without this single point of coordination, the shadowing rule could not be enforced globally, concurrent events would create duplicate updates, and there would be no canonical authority over which files constitute the project.",
+      "at": 1788344632501,
+      "fingerprint": "sha256:fac4d329d889113f5c61412ae7f6d46b448dca8d8fa1de106de3578336f2aab1",
+      "relations": "sha256:8275fba71b4ababedd9f89cf6189454b074ce549a96cc435d0a875ac99316a50"
+    },
+    {
+      "id": "src/server/app.ts#GroupAction",
+      "kind": "symbol",
+      "short": "This interface describes a grouped object or action that carries both metadata and visual properties like color, padding, and geometry.",
+      "long": "The interface sits in the main server app but nothing in the codebase currently references it, which suggests it is either work in progress, a vestigial definition from a prior feature, or intended for external API use that the analysis did not capture. The structure itself—combining a files array with visual properties like color, padding, and geometry—hints at a system for bundling design elements or canvas objects into reusable groups, similar to how a design tool might let you lock and style a set of layers together. Without call sites to show what creates it or consumes it, the interface's actual role in the runtime flow is opaque. If this is meant to be active, the missing references suggest it has been defined but not yet wired into the action flow.",
+      "at": 1788363207711,
+      "fingerprint": "sha256:be7e51f4d55de68869f95574efd0fbbcfe26d552909917c080c58333284b98d4",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/live.ts#LiveHub",
+      "kind": "symbol",
+      "short": "This is the central hub for pushing real-time updates to all connected clients. It manages which clients are connected, what view each one is looking at, and broadcasts state changes and progress messages to them.",
+      "long": "The hub sits between the server's internal state and the browser clients. When something changes—files are edited, an agent finishes an action, a project loads, or an explain run streams in—the hub is what gets told and what decides who sees what. Different clients might be looking at different parts of the system, so the hub filters each update through that client's ViewSpec before sending it. The separation of methods here is also load-bearing: view changes go through publish (which can be filtered per client), but agent actions and streaming text go through their own messages because they're not state updates—they're just progress announcements, and sending them per-client would cause thrashing.",
+      "at": 1788359325177,
+      "fingerprint": "sha256:e1ff68cb87a3d1c74559cb2cac866559a1d5780622802e14acb67aba5f5bb79b",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/live.ts#LiveHub.add",
+      "kind": "symbol",
+      "short": "This registers a newly connected client and tells the hub what view it wants to see.",
+      "long": "This is the entry point: a new WebSocket connects, the server calls add with the socket and the client's initial ViewSpec, and the hub starts tracking it for future broadcasts.",
+      "at": 1788359325177,
+      "fingerprint": "sha256:2474a0e43c0a5f34789a14377b0c7cea83e91f76d8ecb97a7188646518698491",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/live.ts#LiveHub.setSpec",
+      "kind": "symbol",
+      "short": "This updates which part of the system a client is viewing—its viewport into the graph.",
+      "long": "When a client navigates to a different directory or changes what it's looking at, this is called. The hub uses the spec to filter future view updates: if the graph changed but not in the client's current view, no message is sent. This is why publish exists as a separate step from setSpec—the hub needs to know the viewport before it can slice the update correctly.",
+      "at": 1788359325177,
+      "fingerprint": "sha256:48eb7d81ba399c68bd1e119187e061b757b08a6661416194c64b7c6a05a4e941",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/live.ts#LiveSocket.readyState",
+      "kind": "symbol",
+      "short": "This is a property from the WebSocket API: a number indicating whether the connection is open (1), closing (2), or closed (3).",
+      "long": "The hub needs to know which clients are still reachable before broadcasting to them. A closed socket should not receive messages.",
+      "at": 1788359325177,
+      "fingerprint": "sha256:2bd136239dc3c31cfc14a0dc0d61741371386b5de9a5aff36f43a24313cbce02",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/live.ts#LiveSocket.send",
+      "kind": "symbol",
+      "short": "This is the method that actually writes a message onto one client's WebSocket connection.",
+      "long": "It's the concrete write operation, called by the hub when it's time to send a message to a specific client. Without this, messages have nowhere to go.",
+      "at": 1788359325177,
+      "fingerprint": "sha256:12e91a78e1420c6822958e056c1d2cfb39953c56b48bbe27456ad606fbc30342",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/server/main.ts",
+      "kind": "file",
+      "short": "This is the server's entry point. It wires together the project session host, the live update hub, and the HTTP app, then holds the process alive while coordinating their shutdown.",
+      "long": "Main.ts sits at the boundary between the Node.js runtime and the application, so it handles three things that only it can: starting the event loop, making a contract with supervising processes, and keeping the process from exiting. The app, the session host, and the live hub all need to exist before they're useful—if one fails to initialize, the whole thing should fail fast—so main is where they're created in order and handed off to each other. The hub needs a way to ask the host what project is currently loaded, but it does this through a callback rather than capturing the host at construction time. That design lets the host switch projects without the hub knowing or caring, which keeps them loosely coupled. The port file is created only after the app has bound to a port, so it can write the actual address that a supervising process should use; if that were written earlier, a supervisor might try to connect before the app is ready. Main also owns the stdout contract: the first line is always `codemap-port=PORT` so a supervisor can read just that line and stop, while everything else is human-readable prose. Without this file, the server process wouldn't start, the app wouldn't initialize, supervising processes wouldn't know where to connect, and there would be no clean shutdown on signals.",
+      "at": 1788359370969,
+      "fingerprint": "sha256:29a60fb30ad4abbbc466666b7d67822afc5a5cf39cea7f9c881ea2f62e854bdd",
+      "relations": "sha256:025f412cf5c847b548fbc994c1bc131b3e5f37d9353ce599b11d72daa4ec0316"
+    },
+    {
+      "id": "src/server/session.ts#AgentCall",
+      "kind": "symbol",
+      "short": "This is a record of a single tool call made by an agent—capturing which tool ran, when, and what it operated on.",
+      "long": "The structure suggests it's meant to track agent activity for logging or analysis, but nothing in the codebase currently uses it, which means either it's incomplete infrastructure waiting to be wired up or it's been prepared ahead of actual use. The `at` timestamp, `tool` name, and optional `target` (a path or query the tool received) form the minimal information needed to audit or replay what an agent did. Without something like this, you'd lose the trail of which tools an agent invoked and what they asked each tool about—useful when debugging why an agent took a certain path or when you need to understand what work was already done.",
+      "at": 1788363052446,
+      "fingerprint": "sha256:69c5aa15f80ccfaf0e42b514ddf8cd080c29e9b79fafddba6bc474a0e7763f71",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "src/view/filter.ts#parseDuration",
+      "kind": "symbol",
+      "short": "Converts user-readable duration strings (like \"5m\" or \"2h\") into milliseconds for internal time calculations.",
+      "long": "This function sits in the filter module because it's part of parsing filter parameters that users supply, turning them into a standard form the server can work with. It's called by toFilter in the server code, which means the system accepts human-friendly duration syntax in requests and needs to translate it before applying filters or time-based logic. Without this conversion, the server would either need to accept durations as raw milliseconds (unfriendly) or duplicate this parsing logic elsewhere. The function returns 0 for unparseable input rather than throwing, which silently degrades to \"no time constraint\" instead of failing the request.",
+      "at": 1788345040934,
+      "fingerprint": "sha256:3014826c07e8ae3c72ae968dd23e082d6d63293acb6176fc941041d98e645c9f",
+      "relations": "sha256:df08de68ff1ed17a666c10aaeb765a0266b8b7370ee3956634506706dc97c4af"
+    },
+    {
+      "id": "web/src/BoxNode.tsx",
+      "kind": "file",
+      "short": "BoxNode renders a single node in the diagram — a visual card that represents either a file or a folder, along with its metadata (git status, language, code members) and tracking state (whether it's being followed, what's related, what's aside).",
+      "long": "The component sits at the boundary between the App's data model and the visual flow diagram. App.tsx uses it as the node renderer for @xyflow/react, passing it BoxData that describes what to show. BoxNode translates that data into CSS classes and HTML elements, handles clicks to expand member lists or open the editor, and stops propagation to prevent graph navigation when you click a button. It depends on api.ts for type definitions and openInEditor, and on layout.ts for the MAX_MEMBERS constant that governs how many members show before the expand button appears. Without it, the diagram would have no visual representation of files and folders — just an empty graph. It's also the only place that enforces the visual hierarchy (members nested under their owner class, git badges separate from colored surfaces, language tags muted and small) and the only place that knows how to interpret the follow and related sets to light or fade rows.",
+      "at": 1788345390426,
+      "fingerprint": "sha256:544303158542f60e123dd018247a5ba5e866110c60e4fba3e8588d83dc7deea8",
+      "relations": "sha256:477efc421dcd7d0e8931db4572756e1c2d0e3430ee1b5eeec208fec43d3148a6"
+    },
+    {
+      "id": "web/src/BoxNode.tsx#BoxData",
+      "kind": "symbol",
+      "short": "BoxData is the props interface for the BoxNode component, bundling display state, git metadata, and interaction handlers for one expandable box in a code explorer UI.",
+      "long": "The type sits at the component boundary, defining the contract between whatever creates BoxNode instances and the component that renders them. The wealth of fields shows this is not a simple container — a box needs to know not just what to display (label, members, files, language) but also interaction state (focused, expanded, queried, aside) and git context (gitStatus, gitChanged). The presence of follow-related fields (following, related, followed, onFollow, onFollowFile) indicates the larger system tracks which symbols the user is interested in and propagates that state down to each box so it can highlight related items or hide itself when not relevant.\n\nThe comment explaining why followed is separate from following reveals a design choice embedded here: the system treats followed symbols as a lens that drives what the UI highlights, while followed files are just a queue of things to explain later. Conflating them would make one gesture mean two things and break the accounting. Without this type, the component tree would lose its typed boundary, making refactoring brittle and forcing prop-passing to remain informal.",
+      "at": 1788345437146,
+      "fingerprint": "sha256:e13a6649545f51f866848b1b376105a75f56ec65e839758845a2b7b349bac356",
+      "relations": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}

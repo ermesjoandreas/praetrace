@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import type Parser from 'tree-sitter';
 import { languageFor } from '../lang/registry.js';
+import type { LanguageParse, LanguageSupport } from '../lang/types.js';
 import type { ParsedFile } from './types.js';
 
 // tree-sitter and its grammars are native CommonJS addons with no ESM entry
@@ -32,6 +33,27 @@ function parserFor(grammar: unknown): Parser {
 }
 
 /**
+ * The tree half of `parseSource`, kept apart so the scanned half needs no cast.
+ *
+ * `preprocess` is what a single-file component uses to be parsed by the grammar
+ * of the language its script is written in: it hands back a string of exactly
+ * the file's length with everything outside the script blanked to spaces, so
+ * every row, column and offset in the tree is the *file's* and no range has to
+ * be shifted afterwards. `source` stays the file as written for everything
+ * downstream — the line count is the file's, and the extractor still has the
+ * template to read.
+ */
+function readTree(
+  language: LanguageSupport,
+  filePath: string,
+  source: string,
+): { parse: LanguageParse; hasError: boolean } {
+  const parsed = language.preprocess === undefined ? source : language.preprocess(source);
+  const tree = parserFor(language.grammar(filePath)).parse(parsed);
+  return { parse: language.extract(tree.rootNode, source, filePath), hasError: tree.rootNode.hasError };
+}
+
+/**
  * Parse one file with whichever language claims it.
  *
  * Nothing here knows a language's syntax. This picks the grammar, runs
@@ -44,8 +66,13 @@ export function parseSource(filePath: string, source: string, modifiedAt = 0): P
   // so a file with no language got here by a bug rather than by being unusual.
   if (!language) throw new Error(`no language claims ${filePath}`);
 
-  const tree = parserFor(language.grammar(filePath)).parse(source);
-  const parse = language.extract(tree.rootNode, source);
+  // A language with no grammar reads the text itself, and has no syntax errors
+  // to report: `hasError` below is the grammar's word, and there is none. See
+  // ScannedLanguage.
+  const { parse, hasError } =
+    'scan' in language
+      ? { parse: language.scan(source), hasError: false }
+      : readTree(language, filePath, source);
 
   return {
     filePath,
@@ -56,7 +83,7 @@ export function parseSource(filePath: string, source: string, modifiedAt = 0): P
     // tree-sitter is error-tolerant, so a malformed file parses to something and
     // loses symbols quietly: `export const broken = {{{ ;` drew "0 symbols" and
     // looked like an empty file. The flag is what lets a box say otherwise.
-    hasError: tree.rootNode.hasError,
+    hasError,
     modifiedAt,
     ...(parse.moduleName === undefined ? {} : { moduleName: parse.moduleName }),
     // Without this the store's re-export following never sees a barrel, and a

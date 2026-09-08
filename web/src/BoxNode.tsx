@@ -181,6 +181,15 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
   csharp: 'c#',
   rust: 'rs',
   python: 'py',
+  kotlin: 'kt',
+  php: 'php',
+  // One id reads both languages, and the box cannot say which without its own
+  // filename, which is on the row beside this. So the tag says both.
+  cpp: 'c/c++',
+  vue: 'vue',
+  svelte: 'svelte',
+  razor: 'cshtml',
+  angular: 'html',
 };
 
 /**

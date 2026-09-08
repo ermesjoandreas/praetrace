@@ -70,7 +70,10 @@ async function handleFlow(request: FlowRequest): Promise<FlowResponse> {
     if (!language) {
       return { id: request.id, ok: true, answer: { flow: null, reason: `no language reads ${request.filePath}` } };
     }
-    if (!hasFlowSyntax(language.id)) {
+    // `'grammar' in language` is not a second question: a scanned language has
+    // no tree to walk, and hasFlowSyntax already refuses every one of them. It
+    // is here so the type knows what the list already decided.
+    if (!hasFlowSyntax(language.id) || !('grammar' in language)) {
       const reads = FLOW_LANGUAGES.map((id) => languageFor(`x.${id === 'typescript' ? 'ts' : id === 'javascript' ? 'js' : id}`)?.label ?? id);
       return {
         id: request.id,

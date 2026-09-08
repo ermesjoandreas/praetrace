@@ -39,8 +39,15 @@ export function resolveModulePath(base: string, knownFiles: ReadonlySet<string>)
  * In preference order. An implementation beats the declaration that restates
  * it, which is why `.d.ts` is last: a project with both is describing one thing
  * twice, and the source is the half worth drawing.
+ *
+ * `.vue` is here rather than in `vue.ts`, because the file importing a
+ * component is usually not itself a component: `import TabPane from
+ * './components/TabPane'` is `TabPane.vue` and `import Layout from '@/layout'`
+ * is `layout/index.vue`, and both are as often written in a `.ts` router as in
+ * an SFC. It sits after the JavaScript family so `./foo` still prefers `foo.ts`
+ * where a project holds both.
  */
-const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.d.ts'];
+const EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.d.ts'];
 
 const WRITTEN = new Set(EXTENSIONS);
 /** NodeNext ESM writes `./foo.js` for what is `./foo.ts` on disk. */
@@ -67,7 +74,17 @@ function candidatesFor(base: string): string[] {
     return EXTENSIONS.map((candidate) => stem + candidate);
   }
 
-  return [...EXTENSIONS.map((candidate) => base + candidate), ...indexes];
+  // An extension no language here rewrites is the name of a real file or of
+  // nothing: `./Modal.svelte` is Modal.svelte, and appending `.ts` to it names
+  // nothing anywhere. Tried first, and it costs nothing when the project holds
+  // no such file — only a walked file is ever in `knownFiles`. The appended
+  // candidates still follow, because `auth-manager.svelte` is also how a Svelte
+  // 5 rune module named `auth-manager.svelte.ts` is imported.
+  return [
+    ...(extension === undefined ? [] : [base]),
+    ...EXTENSIONS.map((candidate) => base + candidate),
+    ...indexes,
+  ];
 }
 
 /**
@@ -138,6 +155,20 @@ export function looksInternal(
   }
   if (/^(crate|self|super)::/.test(specifier)) return true;
   if (facts.goModule !== null && specifier.startsWith(facts.goModule)) return true;
-  const head = specifier.split(/[.:/]/)[0];
+  // C and C++ say which is which in the punctuation: a quoted include is a path
+  // the project could hold, an angled one is a system or third-party header and
+  // is no more missing than `node:http` is. Kept in the specifier because that
+  // is how the resolver tells them apart too.
+  if (language === 'cpp') return specifier.startsWith('"');
+  // A Kotlin bare type name arrives as the packages it *might* have come from,
+  // separated — a guess list, not an import the file wrote. Its head is the
+  // file's own package, so it read as internal, and every `String`, `List` and
+  // `Exception` counted as coupling the project had lost. Counting them is the
+  // express failure again: 133 of 141 files marked, claiming lost coupling
+  // where there was none. A written `import` line still counts.
+  if (specifier.includes('|')) return false;
+  // PHP separates a namespace with a backslash, so without it the head was the
+  // whole specifier and nothing PHP ever wrote could be counted.
+  const head = specifier.split(/[.:/\\]/)[0];
   return head !== undefined && head !== '' && modulePrefixes.has(head);
 }

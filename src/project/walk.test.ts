@@ -15,9 +15,6 @@ test('program text no language reads is counted under its extension', () => {
     ['Git.pm', '.pm'],
     ['fmt.pl', '.pl'],
     ['Rakefile.rb', '.rb'],
-    ['App.vue', '.vue'],
-    ['builtin.c', '.c'],
-    ['cache.h', '.h'],
     ['meson.build', '.build'],
     ['SETUP.SH', '.sh'],
   ]) {
@@ -32,9 +29,27 @@ test('a name with no extension anyone would name is one bucket, not a kind each'
 });
 
 test('what a language claims is read, whatever the scan later decides about it', () => {
-  for (const name of ['index.ts', 'App.tsx', 'types.d.ts', '.eslintrc.js', 'main.go', 'Foo.java', 'lib.rs', 'Program.cs', 'x.min.js']) {
+  // `builtin.c` and `cache.h` were counted as unread above until C and C++
+  // were added, which is the whole point of deriving this from the registry:
+  // the census is the complement of what some language claims, so a language
+  // arriving moves files out of it and nothing else has to be edited.
+  for (const name of [
+    'index.ts', 'App.tsx', 'types.d.ts', '.eslintrc.js', 'main.go', 'Foo.java', 'lib.rs',
+    'Program.cs', 'x.min.js', 'Store.kt', 'User.php', 'builtin.c', 'cache.h', 'gmock.cc',
+    // The view layer, which was the whole of "Cannot read" on an MVC project:
+    // 7 of the user's 11 files were `.cshtml` and none of them was drawn.
+    'App.vue', 'Modal.svelte', 'Index.cshtml',
+  ]) {
     assert.equal(unreadExtension(name), null, name);
   }
+});
+
+test('a Gradle build script is not read, and that is a decision rather than an omission', () => {
+  // `.kts` is deliberately not on Kotlin's extension list — a build script's
+  // top level is a DSL Gradle supplies, so its declarations are configuration
+  // and would draw boxes that say nothing about the architecture. The honest
+  // answer is the status bar counting them, so it has to be counted.
+  assert.equal(unreadExtension('build.gradle.kts'), '.kts');
 });
 
 test('prose, data, images, fonts, archives, lockfiles and dotfiles were never source', () => {
@@ -68,6 +83,35 @@ test('the census walks what the scan walks, skips what it skips, and counts noth
       { extension: '.sh', files: 2 },
       { extension: NO_EXTENSION, files: 1 },
     ]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The one seam a view-layer reader can rot at, and it rots silently.
+ *
+ * `findSourceFiles` and `countUnreadable` are complements of each other through
+ * `knownExtensions()`, so a language arriving has to move its files across in
+ * one motion. The failure to refuse is the half-move: the diagram draws seven
+ * Razor views while the status bar goes on saying "not read: .cshtml 7", which
+ * is the interface contradicting itself about the same seven files.
+ */
+test('a view file is walked and is no longer counted as unread', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codemap-views-'));
+  try {
+    await mkdir(path.join(root, 'Views/Home'), { recursive: true });
+    for (const file of ['App.vue', 'Modal.svelte', 'Views/Home/Index.cshtml', 'index.html']) {
+      await writeFile(path.join(root, file), '');
+    }
+
+    assert.deepEqual(
+      (await findSourceFiles(root)).map((file) => file.filePath).sort(),
+      ['App.vue', 'Modal.svelte', 'Views/Home/Index.cshtml'],
+    );
+    // `.html` is the one still counted, and on purpose: an `.html` file is a
+    // view only when a component named it, which no extension can say.
+    assert.deepEqual(await countUnreadable(root), [{ extension: '.html', files: 1 }]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -251,6 +251,17 @@ export interface ViewMember {
    * row in both is never marked — a line moved is not news. Absent otherwise.
    */
   change?: 'added' | 'removed';
+  /**
+   * Classes only: a UML stereotype a declaration in the project put on this
+   * class, and who said it — `statedBy` the field as a reader names it,
+   * `CatalogContext.Baskets`, and `statedIn` the file it sits in. In words
+   * rather than the id `GraphNode.stereotype` carries, because the point of
+   * the mark is the sentence "a table — stated by X in Y": a «table» with no
+   * line behind it would be the convention this project refuses to draw, and
+   * a reader who cannot see the line cannot check it. Absent means no
+   * declaration said so, never that it is not one.
+   */
+  stereotype?: { name: 'table'; statedBy: string; statedIn: string };
 }
 
 export interface ViewNode {

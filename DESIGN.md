@@ -116,6 +116,7 @@ Each one is a different *kind* of mark, not just a different hue:
 | too many boxes to place quickly | a chip in the breadcrumb row, `⚠ 289 boxes — depth 1 is quicker` | warning |
 | a stored name that matches nothing | a row under "Stored, matches nothing" in Categories | muted |
 | a symbol the test suite never ran | a 5px dot in the member row, left of the follow mark | disabled grey |
+| a class a declaration says is a table | UML's `«table»` before the name on the class's own row — text, never a second line, which would move every box under it — with the line that said it in the row's title. Absent means no declaration said so, not that it is not one | muted |
 | an association | the line in the field colour; UML's diamond at the holder's end — filled when the class builds the part, hollow (the canvas showing through) when it is handed in, none when the source did not say — and the role name with `1`, `0..1` or `*` at the far end, 11px muted with a canvas-coloured knockout | field |
 | a dependency | dashed `6 4`, 1.2px, an open arrowhead at the far end. `implements` is dashed in the same hue; the head and the longer dash are what tell them apart | type |
 | the component diagram is on | the `Components` crumb, filled | accent |
@@ -326,8 +327,9 @@ the accent. No glow.
 
 **Icon** — a Codicon, 16px, `currentColor`, `aria-hidden`, with the meaning kept in
 the button's `title` and `aria-label`. Never an emoji, never a unicode glyph. The UML
-visibility marks (`+ − #`), the multiplicities (`1`, `0..1`, `*`) and role names on
-a line, the git letters, and `·` are text and stay text.
+visibility marks (`+ − #`), the stereotype guillemets (`«table»`), the
+multiplicities (`1`, `0..1`, `*`) and role names on a line, the git letters, and
+`·` are text and stay text.
 
 **File icon** — the one exception, and it is VS Code's own: the editor draws its
 files with a separate, coloured file icon theme, because the colour *is* the

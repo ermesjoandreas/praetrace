@@ -6,6 +6,7 @@ import { applyBatch, createStore } from '../graph/store.js';
 import type { Graph } from '../graph/types.js';
 import type { ParsedFile, ParsedSymbol } from '../parser/types.js';
 import { csharp } from './csharp.js';
+import { razor } from './razor.js';
 
 // The grammar is a native addon; the test parses real trees rather than
 // hand-built ones because the node shapes are the thing under test.
@@ -190,7 +191,7 @@ test('a type the file named lands on the file the namespaces chose, not on the f
   assert.deepEqual(edges(graph, 'associates'), []);
 });
 
-/** The five things a field says about the part it holds, and nothing else. */
+/** The six things a field says about the part it holds, and nothing else. */
 const attribute = (symbols: readonly ParsedSymbol[], name: string) => {
   const symbol = symbols.find((candidate) => candidate.name === name);
   assert.ok(symbol, `no symbol named ${name} in ${symbols.map((s) => s.name).join(', ')}`);
@@ -200,6 +201,7 @@ const attribute = (symbols: readonly ParsedSymbol[], name: string) => {
     ...(symbol.optional === undefined ? {} : { optional: symbol.optional }),
     ...(symbol.composed === undefined ? {} : { composed: symbol.composed }),
     ...(symbol.handedIn === undefined ? {} : { handedIn: symbol.handedIn }),
+    ...(symbol.typeStereotype === undefined ? {} : { typeStereotype: symbol.typeStereotype }),
   };
 };
 
@@ -250,4 +252,101 @@ test('a parameter the constructor reassigns is no longer what was handed in', ()
   const config = symbols.find((symbol) => symbol.name === 'config');
   assert.ok(config);
   assert.equal(config.handedIn, undefined);
+});
+
+test('a DbSet<T> property is many of T, and says T is a table', () => {
+  const { symbols } = parse(`
+    namespace Shop.Infrastructure;
+    public class CatalogContext : DbContext
+    {
+        public DbSet<Basket> Baskets { get; set; }
+        public List<Basket> Recent { get; set; }
+        public DbSet<int> Counters { get; set; }
+    }
+  `);
+  // Before this, the property's type was \`DbSet\`, which resolves to nothing:
+  // a DbContext drew seven properties and no edge on eShopOnWeb.
+  assert.deepEqual(attribute(symbols, 'Baskets'), { typeName: 'Basket', many: true, typeStereotype: 'table' });
+  // The same shape without the word says nothing about tables.
+  assert.deepEqual(attribute(symbols, 'Recent'), { typeName: 'Basket', many: true });
+  // No type name to mark, so no mark.
+  assert.deepEqual(attribute(symbols, 'Counters'), { many: true });
+});
+
+/** A view as the store receives it: Razor's own scanner, under a path. */
+function razorFile(filePath: string, source: string): ParsedFile {
+  return {
+    filePath,
+    language: 'razor',
+    lineCount: source.split('\n').length,
+    modifiedAt: 0,
+    ...razor.scan(source),
+  };
+}
+
+/**
+ * The edge the WHY of the view-layer round was written about: on the user's own
+ * MVC project a controller drew as a box that reached nothing, while it in fact
+ * drives three pages.
+ *
+ * `return View()` names no file — the view is `Views/{Controller}/{Action}`,
+ * falling back to `Views/Shared` — so C# writes down the two halves the call
+ * site knows and razor.ts, which holds the view-location order, turns them into
+ * a file. Measured through the store rather than off `imports`, because the
+ * composition is what lied every previous time a unit test passed.
+ */
+test('an action returns a view, and the view is where the framework puts it', () => {
+  const controller = parsedFile(
+    'Controllers/HomeController.cs',
+    `
+    namespace Web.Controllers;
+    public class HomeController : Controller
+    {
+        public IActionResult Index() { return View(); }
+        public IActionResult Privacy() { return View(); }
+        public IActionResult Error() { return View(); }
+        public IActionResult About() { return View("Privacy"); }
+        public IActionResult Detail() { return View(nameof(Privacy)); }
+        public IActionResult Data() { return View(model); }
+    }
+  `,
+  );
+
+  const graph = graphOf(
+    controller,
+    razorFile('Views/Home/Index.cshtml', '<h1>Index</h1>\n'),
+    razorFile('Views/Home/Privacy.cshtml', '<h1>Privacy</h1>\n'),
+    // Not under Home: the framework looks in Shared next, and only next.
+    razorFile('Views/Shared/Error.cshtml', '<h1>Error</h1>\n'),
+  );
+
+  assert.deepEqual(edges(graph, 'imports'), [
+    'Controllers/HomeController.cs -> Views/Home/Index.cshtml',
+    'Controllers/HomeController.cs -> Views/Home/Privacy.cshtml',
+    'Controllers/HomeController.cs -> Views/Shared/Error.cshtml',
+  ]);
+  // `View(model)` names no view, so `Data` falls back to its own name — and
+  // there is no Data.cshtml, so it draws nothing rather than drawing a guess.
+  assert.ok(!controller.imports.includes('action:Home/Data.cshtml'));
+  assert.deepEqual(
+    controller.imports.filter((reference) => reference.startsWith('action:')),
+    [
+      'action:Home/Index',
+      'action:Home/Privacy',
+      'action:Home/Error',
+      'action:Home/Privacy',
+      'action:Home/Privacy',
+      'action:Home/Data',
+    ],
+  );
+});
+
+test('a class that is not a controller returns no view, whatever it calls View on', () => {
+  const { imports } = parse(`
+    public class ViewHelper
+    {
+        public string Render() { return View("Index"); }
+    }
+  `);
+  assert.deepEqual(imports.filter((reference) => reference.startsWith('action:')), []);
 });

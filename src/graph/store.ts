@@ -729,6 +729,18 @@ function derive(files: ReadonlyMap<string, ParsedFile>, facts: ProjectFacts): Gr
         const target = lookup(symbol.typeName);
         const edge = target ? addEdge(owner, target.id, 'associates', target.guessed) : null;
         if (edge) (edge.roles ??= []).push(roleOf(symbol));
+        // A field can say what the type it holds *is* — `DbSet<T>` says T is a
+        // table — and the class it describes is in another file, which is why
+        // the mark is written here and not by the parser. Only a class: an
+        // interface has no rows. The first declaration to name a class keeps
+        // the credit, and a guessed resolution names no class surely enough
+        // to stamp one — the line is drawn and marked, the class is not.
+        if (target && !target.guessed && symbol.typeStereotype !== undefined) {
+          const named = nodes.get(target.id);
+          if (named?.kind === 'class' && named.stereotype === undefined) {
+            named.stereotype = { name: symbol.typeStereotype, statedBy: id };
+          }
+        }
       }
       if (symbol.dependsOn !== undefined && symbol.dependsOn.length > 0) dependencies.push([id, symbol.dependsOn]);
     });

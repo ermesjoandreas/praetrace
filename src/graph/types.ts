@@ -71,6 +71,22 @@ export interface GraphNode {
   /** Fields only: `Logger[]` rather than `Logger`, for the association's 1..*. */
   many?: boolean;
   /**
+   * Classes only: a UML stereotype a declaration in the project put on this
+   * classifier, and the declaration that did — `statedBy` is the node id of
+   * the field whose type stated it, so the panel can say "a table — stated by
+   * CatalogContext.Baskets in CatalogContext.cs" rather than assert it.
+   *
+   * `table` is the one value: an Entity Framework `DbSet<T>` names T. Derived
+   * in the store rather than parsed, because the line that says it sits on a
+   * different class in a different file from the class it describes — the
+   * same reason a role rides on the edge. A stereotype and not a NodeKind: a
+   * JPA entity has methods and a superclass and is a class, and a second box
+   * kind would split one declaration in two. Absent means no line said so,
+   * never "not a table": EF reaches tables through fluent configuration the
+   * graph does not read, so the mark under-counts and never over-counts.
+   */
+  stereotype?: { name: 'table'; statedBy: string };
+  /**
    * Fields only: `x?: T`, `T | null`, C#'s `T?`, Java's `Optional<T>` — the
    * far end may be absent, which is the association's 0..1. Present rather
    * than false, like the flags above.

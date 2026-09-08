@@ -1,0 +1,11 @@
+@{
+    ViewData["Title"] = "Home";
+}
+@* A partial named in a comment is not an edge:
+<partial name="_NeverRendered" /> *@
+<div>
+    @await Component.InvokeAsync("CartBadge")
+    <partial name="_Callout" />
+    @await Html.PartialAsync("_LoginPartial")
+    <vc:cart-badge></vc:cart-badge>
+</div>

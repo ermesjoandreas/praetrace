@@ -62,6 +62,10 @@ and the MCP server from phase 4 — so read that table as a menu, not a schedule
   past 30 boxes is a list, `/` is a front page, a category is a scope, and the
   structural diff (VISION.md phase 1) draws what came, went and moved between
   two graphs, a removed file as a ghost
+- The database, as far as the code states it: a class wears `«table»` on the
+  class diagram where an Entity Framework `DbSet<T>` names it, and nothing is
+  drawn from convention — see "A table is a class with a stereotype" under the
+  Graph model, and DECISIONS.md for the eight stacks measured
 
 **What to build next, in this order.** Each is small, and each is here because
 something in the last round of work argued for it:
@@ -133,11 +137,32 @@ under "The view layer"; the numbers that decided it are in DECISIONS.md.
 
 ## Many languages
 
-**The direction changed on 2026-09-01.** The tool reads TypeScript, JavaScript,
-Java, Go, C#, Rust and Python. Anyone can point it at their repository. VISION.md's
-"language sprawl" line is overridden by this section, and its reasoning — a
-mediocre parser for seven languages is worse than an excellent one for a single
-language — is answered by the rule below rather than dismissed.
+**The direction changed on 2026-09-01.** The tool reads **twelve languages**
+across 25 extensions: TypeScript, JavaScript, Java, Go, C#, Rust, Python,
+Kotlin, PHP, C/C++, and the two single-file component formats, Vue and Svelte —
+plus Razor, which is a view rather than a language and is read by a line
+scanner rather than a grammar. Anyone can point it at their repository.
+VISION.md's "language sprawl" line is overridden by this section, and its
+reasoning — a mediocre parser for many languages is worse than an excellent one
+for a single language — is answered by the rule below rather than dismissed.
+
+**A view is not a language, and three of these are views.** Vue and Svelte are
+one component in one file: the reader is a block splitter that hands the
+`<script>` to the TypeScript reader with the file's own rows kept, so no range
+is shifted, and reads the template for component names — and a tag is an edge
+**only when the file imported that name**, never from the tag alone. Vue's
+native-tag list is `@vue/shared`'s own, because `<table>` beside an imported
+type called `Table` drew a component calling itself. An SFC usually declares no
+symbol at all (1 395 of 2 172 files measured), so the component itself is a
+`class` node named by the source or by the file — without it those are empty
+boxes and the render edge has nothing to point at. Razor has no usable grammar
+(the only one on npm was unpublished; the one people build by hand fails a
+third of real files on a DOCTYPE line), so it is a line scanner for eight
+forms, which recovered every edge the grammar found plus every one it lost
+across 236 files. **Angular is written and not registered**: an `.html` file is
+a view only when a component's `templateUrl` names it, and adding `.html` as an
+extension would draw every static page in every project. `src/lang/angular.ts`
+waits for the second pass that reads `templateUrl` out of the TypeScript side.
 
 **The graph model did not change, and that is why this was affordable.** File,
 class, interface, method, field, and extends / implements / calls / contains /
@@ -356,6 +381,29 @@ and **a dependency does not vote in the clustering**: a type named only in a
 signature is not the coupling label propagation measures, and letting it vote
 moved every stored name on every typed project the day the kind arrived.
 
+**A table is a class with a stereotype, where a declaration says so.**
+`GraphNode.stereotype` is `{ name: 'table', statedBy }` on a class an Entity
+Framework `DbSet<T>` names — `statedBy` the id of the property that said it, so
+the box's title can say "a table, by the word of CatalogContext.Baskets in
+CatalogContext.cs" rather than assert it. The parser reports
+`ParsedSymbol.typeStereotype: 'table'` on the *field*, because the class it
+describes is in another file and a file is parsed alone; the store writes the
+mark onto the class `typeName` resolves to — the first declaration wins, a
+guessed resolution stamps nothing, an interface is never marked. `DbSet` is in
+C#'s `MANY`, which it should always have been: a DbContext used to draw seven
+properties and no edge. A stereotype and not a NodeKind, because a JPA entity
+has methods and a superclass and is a class; absent means no line said so,
+never "not a table". Keys and foreign-key columns are **not** marked for EF
+Core, by name and on a number: `[Key]`, `[ForeignKey]` and `[Table]` are
+written 0 times across eShopOnWeb, CleanArchitecture and dotnet/eShop, `Id` is
+convention, `HasKey` and `HasForeignKey` are lambdas in another project,
+`OrderItems.OrderId` is a shadow column no source line holds, and a rule on
+properties named `XxxId` is wrong 4 times in 7 — the has-a line the
+navigation property already draws is what the source states. Measured on
+eShopOnWeb: 7 `DbSet<T>`, 7 `«table»`, the same seven the migration creates;
+Buyer and PaymentMethod extend `BaseEntity` and are in neither. DECISIONS.md
+has the eight-stack survey and what was refused by name.
+
 **Ownership is written only when the source said one thing.** `composed` when
 the class builds the part (`= new T()` inline, `this.x = new T()` in the
 constructor), `handedIn` when the constructor stored a parameter in it; the
@@ -465,8 +513,11 @@ from a review: a function handed to a call is never the symbol's own body
 (`items = xs.map((x) => …)` puts an arrow on the field's line, and the route
 served that arrow's flow as the flow of `items`), and a `finally` that exits
 on its own replaces every exit it was carrying — an edge out of the finally box
-for the try's `return` was a path no run takes. ER diagrams are out of
-scope. A package diagram is the root diagram, `?scope=&as=diagram`, and exists;
+for the try's `return` was a path no run takes. An ER diagram is not drawn
+and there is no ER view: a table is a class wearing `«table»` on the class
+diagram where a declaration says so, and nothing more — the Graph model above
+says what is stated, DECISIONS.md says which stacks leave it to convention and
+were refused. A package diagram is the root diagram, `?scope=&as=diagram`, and exists;
 a component diagram is `?diagram=components` — the categories as boxes, each
 listing what files outside it reach — and it is honest for the reason the
 package diagram is: the same import data, summed one level up.
@@ -535,6 +586,19 @@ src/
     javascript.ts, java.ts, go.ts, csharp.ts, rust.ts
     python.ts     module path -> file from every source root; `a.b#c` for a
                   from-import, decided by the resolver; every import a re-export
+    kotlin.ts     resolves by (package, declared name), because a Kotlin file
+                  is named after none of what it holds; an extension function
+                  is not a member of the type it extends
+    php.ts        PSR-4 out of composer.json turns a namespace into a directory
+                  — the resolver is stated by the project, not guessed
+    cpp.ts        .c .h .cpp .hpp .cc .hh .cxx .hxx; a quoted include is a path
+                  we follow, an angled one is a system header and is not a miss
+    vue.ts        blocks, not a grammar: the script goes to the TypeScript
+                  reader with the file's own rows; the component is a node
+    svelte.ts     the same, for a script and a module script
+    razor.ts      a line scanner for eight forms; _ViewImports applies to every
+                  view beneath it, which is what makes the rest resolve
+    angular.ts    written, tested, and deliberately not registered — see above
   oracle/         a second opinion, and a memory — dev only, never in the live
                   path, never imported from server/, cli/ or project/: it pulls
                   in `typescript`, a devDependency
@@ -1645,6 +1709,20 @@ the graph can be trusted at a glance on a project that is not this one:
   the greyed item says where to pick one; the canvas way in depends on BoxNode
   stamping `data-member-id` on each row. C#, Rust and Python get a greyed item or
   the engine's sentence, never a diagram.
+- **The table mark is EF Core's `DbSet<T>` and nothing else yet.** A table
+  reached only through fluent configuration — dotnet/eShop's `requests` and
+  `orderstatus`, 2 of its ordering schema's 7 — is a plain class; an owned type
+  (`OwnsOne`: eShopOnWeb's Address, CatalogItemOrdered) is drawn as the
+  association it is and not folded into its owner; a `[NotMapped]` property is
+  a row like any other. A project declaring its own `DbSet<T>` would wear the
+  mark falsely, the way its own `List<T>` would read as a collection. JPA's
+  `@Entity`, TypeORM's `@Entity`, SQLAlchemy's `__tablename__` and Django's
+  `models.Model` state the same fact and are not read yet — each is one
+  reader's change; Drizzle, Mongoose and Prisma are not, because a top-level
+  `const` is not a node and `.prisma` has no language. The mark is on the box
+  and in `/api/view` only: `view/diffview.ts` builds its own rows and drops
+  it under a structural diff, and `view/detail.ts` does not say it in the
+  panel.
 - Grouping keys off the directory tree only. There is no filtering by name, kind or
   path glob, and a flat directory above the threshold cannot be grouped at all (it
   reports `grouped: false` honestly rather than claiming otherwise).

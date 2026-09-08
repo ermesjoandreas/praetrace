@@ -149,3 +149,74 @@ test('a manifest naming build output names nothing; a project without manifests 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * The shape symfony forces: one map at the root and one in each component,
+ * whose directories are relative to the component rather than to the project.
+ * `\` is one backslash in a JS string, which is the single separator composer
+ * writes doubled in JSON.
+ */
+const COMPOSER_FIXTURE: Record<string, string> = {
+  'composer.json': JSON.stringify({
+    autoload: {
+      'psr-4': { 'App\\': 'app/', 'Multi\\': ['src/a/', 'src/b'], '': 'fallback/' },
+      classmap: ['database/'],
+      files: ['app/helpers.php'],
+    },
+    'autoload-dev': { 'psr-4': { 'Tests\\': 'tests/' } },
+  }),
+  'app/Models/User.php': '',
+  'tests/UserTest.php': '',
+
+  // A component states its own map, and `""` is the component's directory.
+  'packages/core/composer.json': JSON.stringify({
+    autoload: { 'psr-4': { 'Vendor\\Core\\': 'src/', 'Vendor\\Core\\Root\\': '' } },
+  }),
+  'packages/core/src/Kernel.php': '',
+
+  // Installed rather than written: `vendor` is an ignored directory, so its
+  // manifest is never opened and its prefixes never enter the map.
+  'vendor/acme/lib/composer.json': JSON.stringify({ autoload: { 'psr-4': { 'Acme\\': 'src/' } } }),
+};
+
+test('composer states the PSR-4 map, per manifest, and a broken one costs only itself', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codemap-facts-'));
+  try {
+    const files = await writeFixture(root, COMPOSER_FIXTURE);
+    const facts = await gatherFacts(root, files);
+    const psr4 = new Map([...(facts.psr4 ?? new Map())].map(([k, v]) => [k, [...v]]));
+
+    assert.deepEqual(psr4, new Map<string, string[]>([
+      // The trailing separator is stripped from the prefix and the trailing
+      // slash from the directory, so the resolver joins them itself.
+      ['App', ['app']],
+      ['Multi', ['src/a', 'src/b']],
+      // composer's fallback directory: an empty prefix stays the empty string.
+      ['', ['fallback']],
+      // `autoload-dev` counts. A test naming the class it tests is real coupling.
+      ['Tests', ['tests']],
+      ['Vendor\\Core', ['packages/core/src']],
+      // `""` is the manifest's own directory, and the project root is `''`.
+      ['Vendor\\Core\\Root', ['packages/core']],
+    ]));
+
+    // A manifest that is not JSON at all is skipped, and the rest still answer.
+    await writeFile(path.join(root, 'packages/core/composer.json'), '{ not json', 'utf8');
+    const survivor = await gatherFacts(root, files);
+    assert.deepEqual([...(survivor.psr4 ?? new Map())].map(([prefix]) => prefix), [
+      'App',
+      'Multi',
+      '',
+      'Tests',
+    ]);
+
+    // No composer.json is an empty map, never absent: gathered-and-empty is an
+    // answer, and php.ts falls back to what each file declared about itself.
+    await rm(path.join(root, 'composer.json'));
+    await rm(path.join(root, 'packages/core/composer.json'));
+    const bare = await gatherFacts(root, files);
+    assert.deepEqual(bare.psr4, new Map());
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

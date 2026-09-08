@@ -49,3 +49,29 @@ test('what a file bound by importing, and what it exports by default, survive pa
   assert.equal(parseSource('m.rs', 'use crate::imp::*;\npub fn f() {}\n').bindings, undefined);
   assert.deepEqual(parseSource('n.rs', 'pub fn f() {}\n').bindings, []);
 });
+
+/**
+ * The two seams a view-layer language rides on, and both are invisible when
+ * they break: a scanned file that never reaches `scan` parses as nothing, and a
+ * preprocessed one gets line numbers from a block instead of from the file.
+ */
+test('a language with no grammar is scanned, and a scanner has no syntax errors to report', () => {
+  const view = parseSource('Views/Home/Index.cshtml', '@model Web.Models.Order\n<h1>Hi</h1>\n');
+  assert.equal(view.language, 'razor');
+  assert.deepEqual(view.imports, ['type:Web.Models.Order']);
+  // A tree's word about a tree, and there is no tree. Never `true`, so a view
+  // cannot wear the parse-error badge the status bar counts.
+  assert.equal(view.hasError, false);
+  // A view declares nothing the graph models. The box is empty, and honest.
+  assert.deepEqual(view.symbols, []);
+});
+
+test('a symbol in a single-file component is at the line the file has it on, not the block', () => {
+  const sfc = ['<template>', '  <p>{{ n }}</p>', '</template>', '', '<script>', 'export function load() {}', '</script>', ''].join('\n');
+  const parsed = parseSource('App.vue', sfc);
+  const load = parsed.symbols.find((symbol) => symbol.name === 'load');
+  // `export function load()` is the sixth line of the file and the second of
+  // the block. Without `preprocess` blanking the markup it would read as 2.
+  assert.equal(load?.startLine, 6);
+  assert.equal(parsed.lineCount, 7);
+});

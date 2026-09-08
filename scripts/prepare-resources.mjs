@@ -28,20 +28,30 @@ const staging = path.join(repoRoot, 'dist-app');
 const RUNTIME_DEPENDENCIES = [
   '@fastify/static',
   '@fastify/websocket',
+  '@tree-sitter-grammars/tree-sitter-kotlin',
+  '@tree-sitter-grammars/tree-sitter-svelte',
   'chokidar',
   'fastify',
   'tree-sitter',
+  'tree-sitter-c',
   'tree-sitter-c-sharp',
+  'tree-sitter-cpp',
   'tree-sitter-go',
   'tree-sitter-java',
   'tree-sitter-javascript',
+  'tree-sitter-php',
   'tree-sitter-python',
   'tree-sitter-rust',
   'tree-sitter-typescript',
 ];
 
-/** Where a package keeps a generated parser. tree-sitter-typescript ships two. */
-const GENERATED_SOURCES = ['src', 'typescript/src', 'tsx/src'];
+/**
+ * Where a package keeps a generated parser. tree-sitter-typescript ships two,
+ * and tree-sitter-php ships two for the same reason — a `.php` file that opens
+ * in HTML and one that never leaves `<?php` are different grammars, and its
+ * `php/src` and `php_only/src` are 14.1 MB of generated C between them.
+ */
+const GENERATED_SOURCES = ['src', 'typescript/src', 'tsx/src', 'php/src', 'php_only/src'];
 
 const platformPrebuild = `${process.platform === 'win32' ? 'win32' : process.platform}-${
   process.arch === 'x64' ? 'x64' : process.arch

@@ -19,12 +19,19 @@ import { flowOf, functionAt, hasFlowSyntax, type FlowGraph } from './flow.js';
 const require = createRequire(import.meta.url);
 const TreeSitter = require('tree-sitter') as new () => Parser;
 
+/** The grammar of a parsed language. Every language flowed here has one. */
+function grammarOf(filePath: string): Parser.Language {
+  const language = languageFor(filePath);
+  assert.ok(language && 'grammar' in language, `no language with a grammar for ${filePath}`);
+  return language.grammar(filePath) as Parser.Language;
+}
+
 /** Parse a fixture, find the function whose range the whole fixture is, and walk it. */
 function flow(source: string, filePath = 'a.ts'): FlowGraph {
   const language = languageFor(filePath);
   assert.ok(language, `no language for ${filePath}`);
   const parser = new TreeSitter();
-  parser.setLanguage(language.grammar(filePath) as Parser.Language);
+  parser.setLanguage(grammarOf(filePath));
   const root = parser.parse(source).rootNode;
   const lines = source.split('\n').length;
   const fn = functionAt(root, { startLine: 1, endLine: lines }, language.id);
@@ -475,7 +482,7 @@ test('a method is found by its range inside a class, and this.x calls are plain'
     }
   `;
   const parser = new TreeSitter();
-  parser.setLanguage(languageFor('a.ts')?.grammar('a.ts') as Parser.Language);
+  parser.setLanguage(grammarOf('a.ts'));
   const root = parser.parse(source).rootNode;
   const fn = functionAt(root, { startLine: 4, endLine: 8 }, 'typescript');
   assert.equal(fn?.type, 'method_definition');
@@ -499,7 +506,7 @@ test('a language without a table answers null, never a diagram', () => {
     ['typescript', 'javascript', 'java', 'go'],
   );
   const parser = new TreeSitter();
-  parser.setLanguage(languageFor('a.py')?.grammar('a.py') as Parser.Language);
+  parser.setLanguage(grammarOf('a.py'));
   const root = parser.parse('def f(x):\n    if x:\n        return 1\n    return 2\n').rootNode;
   assert.equal(functionAt(root, { startLine: 1, endLine: 4 }, 'python'), null);
 });
@@ -735,7 +742,7 @@ test('a function handed to a call is never the flow of the symbol whose line it 
   const parser = new TreeSitter();
   const language = languageFor('a.ts');
   assert.ok(language);
-  parser.setLanguage(language.grammar('a.ts') as Parser.Language);
+  parser.setLanguage(grammarOf('a.ts'));
   const root = parser.parse(source).rootNode;
   assert.equal(functionAt(root, { startLine: 1, endLine: 1 }, language.id), null);
 });

@@ -1,9 +1,9 @@
 import type { Coverage, FileCoverage } from '../report/types.js';
 import type { GitStatus } from '../git/types.js';
 import { diffGraphs } from '../graph/diff.js';
-import type { AssociationRole, Graph } from '../graph/types.js';
+import type { AssociationRole, Graph, GraphNode } from '../graph/types.js';
 import { languageFor } from '../lang/registry.js';
-import type { LanguageId, LanguageSupport } from '../lang/types.js';
+import type { Language, LanguageId } from '../lang/types.js';
 import { partitionByCategory, type ComponentSource } from './components.js';
 // A cycle on purpose: diffview.ts reads `presentationOf`, `ownershipOf` and
 // `projectLanguages` from here so the diff's boxes and lines are made by the
@@ -389,7 +389,7 @@ function soleLanguage(files: readonly string[]): LanguageId | null {
  * graph and must not get a second answer.
  */
 export function projectLanguages(graph: Graph): LanguageCount[] {
-  const counted = new Map<LanguageSupport, number>();
+  const counted = new Map<Language, number>();
 
   for (const node of graph.nodes.values()) {
     if (node.kind !== 'file') continue;
@@ -428,6 +428,22 @@ interface FileEdge {
   roles?: AssociationRole[];
 }
 
+/**
+ * A stereotype in words the page can print: the field that stated it, as a
+ * reader names it, and the file it sits in — read off the graph, because the
+ * node carries the declaration's id and an id is not a sentence. Nothing when
+ * the declaration is not in this graph, which a derived graph never does.
+ */
+function stereotypeOf(graph: Graph, mark: NonNullable<GraphNode['stereotype']>): ViewMember['stereotype'] {
+  const by = graph.nodes.get(mark.statedBy);
+  if (by === undefined) return undefined;
+  return {
+    name: mark.name,
+    statedBy: by.owner === undefined ? by.name : `${by.owner}.${by.name}`,
+    statedIn: by.filePath,
+  };
+}
+
 /** File path -> the symbols it declares, in declaration order. */
 function collectFiles(
   graph: Graph,
@@ -457,6 +473,7 @@ function collectFiles(
   for (const node of graph.nodes.values()) {
     if (node.kind === 'file' || !keepsKind(node.kind, filter)) continue;
     const measured = coverage?.symbols[node.id];
+    const stereotype = node.stereotype === undefined ? undefined : stereotypeOf(graph, node.stereotype);
     files.get(node.filePath)?.members.push({
       id: node.id,
       name: node.name,
@@ -470,6 +487,7 @@ function collectFiles(
       // is drawn without rather than one it carries.
       ...(measured === 'covered' || measured === 'never' ? { coverage: measured } : {}),
       ...(node.aliasOf === undefined ? {} : { aliasOf: node.aliasOf }),
+      ...(stereotype === undefined ? {} : { stereotype }),
     });
   }
 

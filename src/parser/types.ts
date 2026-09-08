@@ -80,6 +80,17 @@ export interface ParsedSymbol {
   /** `Logger[]` rather than `Logger`, so the association can carry 1..*. */
   many?: boolean;
   /**
+   * What this field's declaration says the type it holds *is*, in UML's word
+   * for it: `DbSet<Basket>` on an Entity Framework context is the one line in
+   * a C# project that says Basket is a table. The stereotype is on the field
+   * and not on the class, because the class is in another file and a file is
+   * parsed alone; the graph writes it onto the class `typeName` resolves to.
+   * Absent means no declaration said so — never "not a table": two of seven
+   * tables in dotnet/eShop's ordering schema are reached only through fluent
+   * configuration, and the graph does not read lambdas.
+   */
+  typeStereotype?: 'table';
+  /**
    * The far end may be absent: `x?: T`, `T | undefined`, `T | null`, C#'s
    * `T?`, Java's `Optional<T>` or `@Nullable T`. The association's 0..1, where
    * `many` is its 1..*. Absent means the source did not say — never false.

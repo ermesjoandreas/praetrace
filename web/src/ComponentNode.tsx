@@ -56,6 +56,13 @@ const LANGUAGE_TAG: Record<LanguageId, string> = {
   csharp: 'c#',
   rust: 'rs',
   python: 'py',
+  kotlin: 'kt',
+  php: 'php',
+  cpp: 'c/c++',
+  vue: 'vue',
+  svelte: 'svelte',
+  razor: 'cshtml',
+  angular: 'html',
 };
 
 /**

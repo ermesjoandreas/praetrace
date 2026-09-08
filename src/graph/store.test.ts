@@ -967,3 +967,69 @@ test('an interface owns its members, and its typed property is an association fr
   ]);
   assert.deepEqual(edges(graph, 'associates'), ['node.ts#ViewNode -> member.ts#ViewMember']);
 });
+
+// --- stereotypes ------------------------------------------------------------
+
+test('a field that says what its type is stamps the class it resolves to, and names the line', () => {
+  const graph = graphOf(
+    file('basket.ts', { symbols: [symbol('Basket', 'class', { exported: true })] }),
+    // Extends the base every entity does, and no DbSet names it: eShopOnWeb's
+    // Buyer, which is in no migration either. The base class is not evidence.
+    file('buyer.ts', { symbols: [symbol('Buyer', 'class', { extends: ['BaseEntity'], exported: true })] }),
+    file('shape.ts', { symbols: [symbol('Shape', 'interface', { exported: true })] }),
+    file('context.ts', {
+      imports: ['./basket', './shape'],
+      bindings: [
+        { local: 'Basket', specifier: './basket', imported: 'Basket' },
+        { local: 'Shape', specifier: './shape', imported: 'Shape' },
+      ],
+      symbols: [
+        symbol('CatalogContext', 'class'),
+        symbol('Baskets', 'field', { owner: 'CatalogContext', typeName: 'Basket', many: true, typeStereotype: 'table' }),
+        // An interface has no rows: the line is drawn, the mark is not made.
+        symbol('Shapes', 'field', { owner: 'CatalogContext', typeName: 'Shape', many: true, typeStereotype: 'table' }),
+      ],
+    }),
+    // A second context naming the same class: the first declaration keeps the credit.
+    file('other.ts', {
+      imports: ['./basket'],
+      bindings: [{ local: 'Basket', specifier: './basket', imported: 'Basket' }],
+      symbols: [
+        symbol('OtherContext', 'class'),
+        symbol('Baskets', 'field', { owner: 'OtherContext', typeName: 'Basket', many: true, typeStereotype: 'table' }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(graph.nodes.get('basket.ts#Basket')?.stereotype, {
+    name: 'table',
+    statedBy: 'context.ts#CatalogContext.Baskets',
+  });
+  assert.equal('stereotype' in (graph.nodes.get('buyer.ts#Buyer') ?? {}), false);
+  assert.equal('stereotype' in (graph.nodes.get('shape.ts#Shape') ?? {}), false);
+  // The association is drawn either way: the mark sits on top of it, never instead of it.
+  assert.deepEqual(edges(graph, 'associates'), [
+    'context.ts#CatalogContext -> basket.ts#Basket',
+    'context.ts#CatalogContext -> shape.ts#Shape',
+    'other.ts#OtherContext -> basket.ts#Basket',
+  ]);
+});
+
+test('a stereotype is never stamped through a guessed resolution', () => {
+  const graph = graphOf(
+    file('thing.ts', { symbols: [symbol('Thing', 'class', { exported: true })] }),
+    // Imports the file and records no bindings, so the name is matched against
+    // the whole table: the line is drawn and wears guessed, and a mark on the
+    // class would be a claim about a class the file never surely named.
+    file('legacy.ts', {
+      imports: ['./thing'],
+      symbols: [
+        symbol('Ctx', 'class'),
+        symbol('Things', 'field', { owner: 'Ctx', typeName: 'Thing', many: true, typeStereotype: 'table' }),
+      ],
+    }),
+  );
+
+  assert.deepEqual(marked(graph, 'associates'), ['legacy.ts#Ctx ~> thing.ts#Thing']);
+  assert.equal('stereotype' in (graph.nodes.get('thing.ts#Thing') ?? {}), false);
+});

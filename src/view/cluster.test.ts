@@ -141,3 +141,19 @@ test('a dependency edge does not vote on who belongs together', () => {
     [members('a'), members('b')],
   );
 });
+
+test('a pair of files that touch is not a category: three pairs among eleven files find nothing', () => {
+  // webapp-h26's shape: two ASP.NET apps and a React front end, eleven files,
+  // three imports, each between a file and one other — a controller and its
+  // model twice, and main.jsx → App.jsx. MIN_SIZE is what keeps a pair from
+  // being offered as 100% architecture; the page's answer to a project this
+  // small is to say how a category is drawn by hand, not to find one.
+  const alone = ['BackendAPI/Program.cs', 'ProsjektMVC/Program.cs', 'FrontendReact/vite.config.js', 'FrontendReact/eslint.config.js', 'FrontendReact/src/index.css'];
+  const pairs: [string, string][] = [
+    ['ProsjektMVC/Controllers/HomeController.cs', 'ProsjektMVC/Models/ErrorViewModel.cs'],
+    ['BackendAPI/Controllers/WeatherForecastController.cs', 'BackendAPI/WeatherForecast.cs'],
+    ['FrontendReact/src/main.jsx', 'FrontendReact/src/App.jsx'],
+  ];
+  const graph = graphOf([...alone, ...pairs.flat()], pairs);
+  assert.deepEqual(clusterFiles(graph), []);
+});
