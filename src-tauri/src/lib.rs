@@ -46,7 +46,7 @@ async fn get_server_port(server: State<'_, Server>) -> Result<u16, String> {
             return Ok(port);
         }
         if std::time::Instant::now() >= deadline {
-            return Err("the codemap server did not report a port in time".into());
+            return Err("the codemaps server did not report a port in time".into());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -298,7 +298,7 @@ fn spawn_server(app: &AppHandle) -> Result<(), String> {
                         if let Some(port) = line.trim().strip_prefix(PORT_LINE_PREFIX) {
                             match port.parse::<u16>() {
                                 Ok(port) => {
-                                    log::info!("codemap server listening on {port}");
+                                    log::info!("codemaps server listening on {port}");
                                     if let Ok(mut slot) = app.state::<Server>().port.lock() {
                                         *slot = Some(port);
                                     }
@@ -309,10 +309,10 @@ fn spawn_server(app: &AppHandle) -> Result<(), String> {
                     }
                 }
                 CommandEvent::Stderr(bytes) => {
-                    log::warn!("codemap server: {}", String::from_utf8_lossy(&bytes).trim());
+                    log::warn!("codemaps server: {}", String::from_utf8_lossy(&bytes).trim());
                 }
                 CommandEvent::Terminated(status) => {
-                    log::error!("codemap server exited: {status:?}");
+                    log::error!("codemaps server exited: {status:?}");
                     if let Ok(mut slot) = app.state::<Server>().port.lock() {
                         *slot = None;
                     }
@@ -351,6 +351,14 @@ pub fn run() {
                 )?;
             }
 
+            // This path is the bundle identifier. Renaming the app to codemaps
+            // moved it from ~/Library/Application Support/com.codemap.app to
+            // .../com.praetrace.codemaps, so an install from before that rename
+            // finds no recents, no window geometry and no per-project settings:
+            // the old directory is abandoned, not migrated. Nobody outside this
+            // machine had an install when it changed, and the file names inside
+            // are unchanged, so the one person affected can copy the old
+            // directory's contents across by hand if they want it back.
             let directory = app.path().app_config_dir()?;
             app.manage(Store::open(&directory)?);
 

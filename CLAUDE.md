@@ -1,4 +1,4 @@
-# Codemap — project context
+# codemaps — project context
 
 ## What this is
 
@@ -19,6 +19,38 @@ Four files carry the project, and they answer different questions:
 
 When this file and VISION.md disagree, this one wins. VISION.md is the destination;
 this one is the road.
+
+## The name is codemaps
+
+**One name, and it is `codemaps`.** The product, the window title, the wordmark in
+the menu bar, the page `<title>`, the `.app`, the Cargo package, `package.json`'s
+name and its `codemaps` bin — and the bundle identifier `com.praetrace.codemaps`,
+because the company owns the reverse domain and the product does not. **One
+version, 0.1.0**, in `package.json` and `src-tauri/tauri.conf.json` both: `0.1.0`
+is what a `.dmg` had already been built as, and `package.json`'s `0.0.1` was npm's
+default that nothing had ever shipped under.
+
+**The old spelling survives on disk, and that is deliberate.** `.codemap/` in every
+project that has one, `.claude/codemap.port`, the `codemap-port=` line the sidecar
+prints for Rust to parse, `CODEMAP_PROJECT`, `codemap.db`, the `codemap.layout`
+key in localStorage, the `/api` routes and the MCP server's own name and tools are
+**contracts** — with projects that already hold a `.codemap/`, with a hook
+definition sitting in someone's `settings.json`, with the one stdout line
+`src-tauri/src/lib.rs` reads a port out of. Renaming them breaks something real and
+shows nobody anything. Do not "fix" either side toward the other: it is the same
+rule as *a category on the page is a group in the code*.
+
+**Changing the identifier abandoned the app's own data.** macOS derives the config
+directory from it, so recents, window geometry and per-project settings written by
+an install made as `com.codemap.app` are simply not found. Only this machine ever
+had one, the file names inside the directory are unchanged, so a hand copy recovers
+it, and `lib.rs` says so at the line that opens the directory.
+
+**Prose still says the old name in files this rename did not reach:** the three
+`codemap:` message prefixes in `src/cli/index.ts`, and the sentences in `web/src/`
+(StatusBar, BoxNode, Repository, Overview, Activity, Sidebar, ListView,
+ComponentNode, AgentStatus). Those are user-visible and should follow — unlike the
+`.codemap/` paths in the same files, which must not.
 
 ---
 
@@ -538,8 +570,8 @@ npm run build        # tsc -> dist/, then vite -> dist/web
 npm run serve -- <dir>            # http://127.0.0.1:4400, watches for changes
 npm run serve -- <dir> --port=5000
 npm run dev:web                   # vite dev server, proxies /api to a running serve
-npm run codemap -- <dir>          # the same graph as text
-npm run codemap -- <dir> --json   # raw nodes + edges
+npm run codemaps -- <dir>         # the same graph as text
+npm run codemaps -- <dir> --json  # raw nodes + edges
 npm run typecheck                 # checks src/ and web/
 node scripts/corpus.mjs <dir>...  # what the engine makes of real projects
 node scripts/oracle.mjs <dir>     # where the TypeScript checker says we are wrong

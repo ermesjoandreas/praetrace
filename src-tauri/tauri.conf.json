@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "codemap",
+  "productName": "codemaps",
   "version": "0.1.0",
-  "identifier": "com.codemap.app",
+  "identifier": "com.praetrace.codemaps",
   "build": {
     "frontendDist": "../dist/web",
     "devUrl": "http://localhost:5173",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "codemap",
+        "title": "codemaps",
         "width": 1400,
         "height": 900,
         "minWidth": 900,

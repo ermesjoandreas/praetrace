@@ -49,13 +49,13 @@ export function Welcome({
         )}
 
         {/* One line, because Help → "What this is" opens this screen. */}
-        <p className="welcome-sub">codemap — a live map of a codebase while an agent changes it.</p>
+        <p className="welcome-sub">codemaps — a live map of a codebase while an agent changes it.</p>
 
         {unreadable !== null && (
           <p className="welcome-warn">
             <i className="codicon codicon-warning" aria-hidden="true" />
             <span>
-              codemap cannot read {unreadable.files} of the files here (
+              codemaps cannot read {unreadable.files} of the files here (
               {unreadable.kinds.join(', ')}), so nothing they declare or import is in the graph.
               It reads {unreadable.reads.join(', ')}.
             </span>
@@ -74,9 +74,16 @@ export function Welcome({
                 <kbd>⌘O</kbd>
               </button>
             ) : (
+              // Only the desktop app can open a folder: a browser tab has no
+              // picker, so here the way to another project is the command that
+              // started this one. The two halves must not be merged into one
+              // line — a downloaded app telling someone to run npm would be
+              // telling them to check out the source they do not have.
               <span className="welcome-row">
                 <span className="welcome-label">Open a project</span>
-                <code>npm run serve -- ~/your-project</code>
+                <code title="A browser tab cannot open a folder; start the server on another project to see it here. The desktop app has a folder picker.">
+                  npm run serve -- ~/your-project
+                </code>
               </span>
             )}
           </li>

@@ -1,4 +1,4 @@
-# Codemap — how it looks
+# codemaps — how it looks
 
 This file is binding for every change to `web/`. [CLAUDE.md](CLAUDE.md) says what to
 know before touching the code; this says what the result has to look like. When the
@@ -153,7 +153,7 @@ the file icons: their colours are the file type's, and the icon theme's — see
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ MENU BAR  35px   codemap  File Edit Selection View Go Help      │ chrome
+│ MENU BAR  35px   codemaps  File Edit Selection View Go Help     │ chrome
 ├─────────────────────────────────────────────────────────────────┤
 │ BREADCRUMB 22px  root › src  [Viewing 7fe7f88 ✕] [filters] ⌘K   │ chrome
 ├──────────┬──────────────────────────────────────┬───────────────┤

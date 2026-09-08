@@ -68,6 +68,11 @@ fn now() -> i64 {
 impl Store {
     pub fn open(directory: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        // Still `codemap.db` after the rename to codemaps. The directory around
+        // it already changed with the bundle identifier, so this file name is
+        // the only thing that lets an old install's state be recovered by
+        // copying the directory contents across; renaming it too would buy
+        // nothing a user can see and take that away.
         let connection = Connection::open(directory.join("codemap.db")).map_err(|e| e.to_string())?;
 
         // WAL so a reader is never blocked by a write, and foreign keys on so the

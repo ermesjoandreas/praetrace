@@ -80,7 +80,7 @@ await writeFile(
   path.join(staging, 'package.json'),
   `${JSON.stringify(
     {
-      name: 'codemap-app',
+      name: 'codemaps-app',
       private: true,
       type: 'module',
       dependencies: Object.fromEntries(

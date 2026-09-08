@@ -46,7 +46,7 @@ export function MenuBar({ menus, trailing }: { menus: Menu[]; trailing?: ReactNo
 
   return (
     <div className="menubar" ref={bar}>
-      <span className="menubar-brand">codemap</span>
+      <span className="menubar-brand">codemaps</span>
 
       {menus.map((menu) => (
         <div className="menu" key={menu.title}>

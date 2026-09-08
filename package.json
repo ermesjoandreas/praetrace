@@ -1,17 +1,17 @@
 {
-  "name": "codemap",
-  "version": "0.0.1",
+  "name": "codemaps",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "bin": {
-    "codemap": "./dist/cli/index.js"
+    "codemaps": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc && vite build --config web/vite.config.ts",
     "dev:web": "vite --config web/vite.config.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web",
     "test": "tsc && node --test \"dist/**/*.test.js\" \"web/src/*.test.ts\"",
-    "codemap": "node dist/cli/index.js",
+    "codemaps": "node dist/cli/index.js",
     "serve": "node dist/server/main.js",
     "tauri": "tauri"
   },
